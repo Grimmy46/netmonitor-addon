@@ -1,0 +1,21 @@
+name: "NetMonitor"
+description: "Automated network diagnostics — ping, HTTP, API, traceroute & bandwidth tests with a live web dashboard."
+version: "2.0.0"
+slug: "netmonitor"
+init: false
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+startup: services
+boot: auto
+ports:
+  8088/tcp: 8088
+ports_description:
+  8088/tcp: "NetMonitor web dashboard"
+map:
+  - config:rw
+options: {}
+schema: {}

@@ -1,523 +1,648 @@
 #!/usr/bin/env python3
 """
-Network Test Automation Tool v2
-- Ping / connectivity tests
-- HTTP endpoint checks
-- API tests (method, headers, auth, expected status/body)
-- Traceroute
-- Bandwidth test
-- Live target management via web UI
-- Scheduled + on-demand execution
-- CSV logging + web dashboard
+NetMonitor v3
+- Ping, HTTP, API, Traceroute, Bandwidth tests
+- Per-target custom intervals
+- Latency/loss thresholds with toast popups + Warnings tab
+- Uptime % tracking (24h rolling)
+- Historical trend graphs (Chart.js)
+- Failures dropdown with full details on each card
+- Fixed bandwidth with reliable fallback URLs + progress %
+- HA sidebar embed support
 """
 
-import subprocess
-import time
-import csv
-import json
-import os
-import threading
-import urllib.request
-import urllib.error
-from datetime import datetime
+import subprocess, time, csv, json, os, threading, urllib.request, urllib.error
+from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# ─── CONFIG FILE ─────────────────────────────────────────────────────────────
+# ─── FILES ───────────────────────────────────────────────────────────────────
+CONFIG_FILE   = "targets.json"
+CSV_FILE      = "network_results.csv"
+RESULTS_FILE  = "latest_results.json"
+WARNINGS_FILE = "warnings.json"
+WEB_PORT      = 8088
 
-CONFIG_FILE  = "targets.json"
-CSV_FILE     = "network_results.csv"
-RESULTS_FILE = "latest_results.json"
-WEB_PORT     = 8088
-SCHEDULE_INTERVAL_MINUTES = 5
+BW_URLS = [
+    "https://speed.cloudflare.com/__down?bytes=5000000",
+    "http://proof.ovh.net/files/1Mb.dat",
+    "http://speedtest.tele2.net/5MB.bin",
+]
 
 DEFAULT_CONFIG = {
     "ping": [
-        {"name": "Google DNS",     "host": "8.8.8.8"},
-        {"name": "Cloudflare DNS", "host": "1.1.1.1"},
-        {"name": "Google",         "host": "google.com"},
+        {"name":"Google DNS",     "host":"8.8.8.8",    "interval":5,"warn_rtt_ms":100,"warn_loss_pct":10},
+        {"name":"Cloudflare DNS", "host":"1.1.1.1",    "interval":5,"warn_rtt_ms":100,"warn_loss_pct":10},
+        {"name":"Google",         "host":"google.com", "interval":5,"warn_rtt_ms":150,"warn_loss_pct":10},
     ],
     "http": [
-        {"name": "Google",     "url": "https://www.google.com"},
-        {"name": "Cloudflare", "url": "https://www.cloudflare.com"},
-        {"name": "GitHub",     "url": "https://api.github.com"},
+        {"name":"Google",    "url":"https://www.google.com",    "interval":5,"warn_latency_ms":500},
+        {"name":"Cloudflare","url":"https://www.cloudflare.com","interval":5,"warn_latency_ms":500},
+        {"name":"GitHub",    "url":"https://api.github.com",    "interval":5,"warn_latency_ms":800},
     ],
     "api": [
-        {
-            "name": "GitHub API",
-            "url": "https://api.github.com",
-            "method": "GET",
-            "headers": {"Accept": "application/vnd.github.v3+json"},
-            "body": "",
-            "expected_status": 200,
-            "expected_body": ""
-        },
-        {
-            "name": "JSONPlaceholder",
-            "url": "https://jsonplaceholder.typicode.com/posts/1",
-            "method": "GET",
-            "headers": {},
-            "body": "",
-            "expected_status": 200,
-            "expected_body": "userId"
-        },
+        {"name":"GitHub API","url":"https://api.github.com","method":"GET",
+         "headers":{"Accept":"application/vnd.github.v3+json"},"body":"",
+         "expected_status":200,"expected_body":"","interval":10,"warn_latency_ms":1000},
+        {"name":"JSONPlaceholder","url":"https://jsonplaceholder.typicode.com/posts/1",
+         "method":"GET","headers":{},"body":"","expected_status":200,"expected_body":"userId",
+         "interval":10,"warn_latency_ms":1000},
     ],
-    "traceroute": [
-        {"name": "Google DNS",  "host": "8.8.8.8"},
-        {"name": "Cloudflare",  "host": "1.1.1.1"},
+    "traceroute":[
+        {"name":"Google DNS","host":"8.8.8.8","interval":30},
+        {"name":"Cloudflare","host":"1.1.1.1","interval":30},
     ],
-    "bandwidth_url": "http://speedtest.tele2.net/1MB.bin"
+    "bandwidth_url":BW_URLS[0],
+    "bandwidth_interval":30,
+    "warn_speed_mbps":10,
 }
 
+# ─── UPTIME ───────────────────────────────────────────────────────────────────
+_uptime = {}
+_uptime_lock = threading.Lock()
 
+def record_uptime(name, ok):
+    now = datetime.now()
+    cutoff = now - timedelta(hours=24)
+    with _uptime_lock:
+        if name not in _uptime:
+            _uptime[name] = []
+        _uptime[name].append((now, ok))
+        _uptime[name] = [(t,v) for t,v in _uptime[name] if t > cutoff]
+
+def get_uptime_pct(name):
+    with _uptime_lock:
+        data = _uptime.get(name, [])
+    if not data:
+        return None
+    return round(sum(1 for _,v in data if v) / len(data) * 100, 1)
+
+# ─── CONFIG ───────────────────────────────────────────────────────────────────
 def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE) as f:
                 cfg = json.load(f)
-            for k, v in DEFAULT_CONFIG.items():
-                cfg.setdefault(k, v)
+            for k,v in DEFAULT_CONFIG.items():
+                cfg.setdefault(k,v)
             return cfg
         except Exception:
             pass
     save_config(DEFAULT_CONFIG)
     return DEFAULT_CONFIG.copy()
 
-
 def save_config(cfg):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(cfg, f, indent=2)
+    with open(CONFIG_FILE,"w") as f:
+        json.dump(cfg,f,indent=2)
 
+# ─── WARNINGS ─────────────────────────────────────────────────────────────────
+_warnings = []
+_warn_lock = threading.Lock()
 
-# ─── TEST FUNCTIONS ──────────────────────────────────────────────────────────
+def add_warning(name, wtype, message, value=None):
+    entry = {"timestamp":datetime.now().isoformat(),"name":name,
+             "type":wtype,"message":message,"value":value,"acknowledged":False}
+    with _warn_lock:
+        _warnings.insert(0, entry)
+        del _warnings[200:]
+    _flush_warnings()
+    return entry
 
+def _flush_warnings():
+    with _warn_lock:
+        data = list(_warnings)
+    with open(WARNINGS_FILE,"w") as f:
+        json.dump(data,f)
+
+def load_warnings():
+    global _warnings
+    if os.path.exists(WARNINGS_FILE):
+        try:
+            with open(WARNINGS_FILE) as f:
+                loaded = json.load(f)
+            with _warn_lock:
+                _warnings = loaded
+        except Exception:
+            pass
+
+def ack_warning(idx):
+    with _warn_lock:
+        if 0 <= idx < len(_warnings):
+            _warnings[idx]["acknowledged"] = True
+    _flush_warnings()
+
+def ack_all():
+    with _warn_lock:
+        for w in _warnings:
+            w["acknowledged"] = True
+    _flush_warnings()
+
+# ─── TESTS ────────────────────────────────────────────────────────────────────
 def ping_test(host, count=4):
     try:
-        result = subprocess.run(
-            ["ping", "-c", str(count), "-W", "2", host],
-            capture_output=True, text=True, timeout=30
-        )
-        lines = result.stdout.splitlines()
+        r = subprocess.run(["ping","-c",str(count),"-W","2",host],
+                           capture_output=True,text=True,timeout=30)
         loss, rtt_avg = 100.0, None
-        for line in lines:
+        for line in r.stdout.splitlines():
             if "packet loss" in line:
                 for p in line.split(","):
                     if "packet loss" in p:
-                        loss = float(p.strip().split("%")[0])
+                        try: loss = float(p.strip().split("%")[0])
+                        except: pass
             if "rtt" in line or "round-trip" in line:
                 nums = line.split("=")[-1].strip().split("/")
                 if len(nums) >= 2:
-                    rtt_avg = float(nums[1])
-        return {
-            "type": "ping", "target": host,
-            "status": "OK" if loss < 50 else "FAIL",
-            "packet_loss_pct": loss, "rtt_avg_ms": rtt_avg, "error": None
-        }
+                    try: rtt_avg = float(nums[1])
+                    except: pass
+        return {"type":"ping","target":host,
+                "status":"OK" if loss<50 else "FAIL",
+                "packet_loss_pct":loss,"rtt_avg_ms":rtt_avg,"error":None}
     except Exception as e:
-        return {"type": "ping", "target": host, "status": "ERROR",
-                "packet_loss_pct": 100, "rtt_avg_ms": None, "error": str(e)}
-
+        return {"type":"ping","target":host,"status":"ERROR",
+                "packet_loss_pct":100,"rtt_avg_ms":None,"error":str(e)}
 
 def http_test(url):
     try:
         start = time.time()
-        req = urllib.request.Request(url, headers={"User-Agent": "NetTester/2.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        req = urllib.request.Request(url,headers={"User-Agent":"NetTester/3.0"})
+        with urllib.request.urlopen(req,timeout=10) as resp:
             code = resp.getcode()
-            elapsed = (time.time() - start) * 1000
-        return {
-            "type": "http", "target": url,
-            "status": "OK" if 200 <= code < 400 else "FAIL",
-            "http_code": code, "latency_ms": round(elapsed, 2), "error": None
-        }
+            elapsed = (time.time()-start)*1000
+        return {"type":"http","target":url,
+                "status":"OK" if 200<=code<400 else "FAIL",
+                "http_code":code,"latency_ms":round(elapsed,2),"error":None}
     except urllib.error.HTTPError as e:
-        return {"type": "http", "target": url, "status": "FAIL",
-                "http_code": e.code, "latency_ms": None, "error": str(e)}
+        return {"type":"http","target":url,"status":"FAIL",
+                "http_code":e.code,"latency_ms":None,"error":str(e)}
     except Exception as e:
-        return {"type": "http", "target": url, "status": "ERROR",
-                "http_code": None, "latency_ms": None, "error": str(e)}
-
+        return {"type":"http","target":url,"status":"ERROR",
+                "http_code":None,"latency_ms":None,"error":str(e)}
 
 def api_test(cfg_entry):
-    url        = cfg_entry["url"]
-    method     = cfg_entry.get("method", "GET").upper()
-    headers    = dict(cfg_entry.get("headers") or {})
-    body       = cfg_entry.get("body", "") or ""
-    exp_status = cfg_entry.get("expected_status")
-    exp_body   = cfg_entry.get("expected_body", "") or ""
-    headers.setdefault("User-Agent", "NetTester/2.0")
+    url       = cfg_entry["url"]
+    method    = cfg_entry.get("method","GET").upper()
+    headers   = dict(cfg_entry.get("headers") or {})
+    body      = cfg_entry.get("body","") or ""
+    exp_st    = cfg_entry.get("expected_status")
+    exp_body  = cfg_entry.get("expected_body","") or ""
+    headers.setdefault("User-Agent","NetTester/3.0")
     start = time.time()
     try:
         data = body.encode() if body else None
-        req  = urllib.request.Request(url, data=data, headers=headers, method=method)
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        req  = urllib.request.Request(url,data=data,headers=headers,method=method)
+        with urllib.request.urlopen(req,timeout=15) as resp:
             code      = resp.getcode()
             resp_body = resp.read().decode(errors="replace")
-            elapsed   = (time.time() - start) * 1000
-        body_match   = (exp_body in resp_body) if exp_body else True
-        status_match = (code == exp_status)    if exp_status else (200 <= code < 400)
-        if status_match and body_match:
-            status = "OK"
-        elif not status_match:
-            status = "FAIL"
-        else:
-            status = "WARN"
-        return {
-            "type": "api", "target": url, "status": status,
-            "http_code": code, "latency_ms": round(elapsed, 2),
-            "method": method, "body_match": body_match,
-            "resp_snippet": resp_body[:200], "error": None
-        }
+            elapsed   = (time.time()-start)*1000
+        bm = (exp_body in resp_body) if exp_body else True
+        sm = (code==exp_st) if exp_st else (200<=code<400)
+        status = "OK" if (sm and bm) else ("FAIL" if not sm else "WARN")
+        return {"type":"api","target":url,"status":status,
+                "http_code":code,"latency_ms":round(elapsed,2),
+                "method":method,"body_match":bm,
+                "resp_snippet":resp_body[:300],"error":None}
     except urllib.error.HTTPError as e:
-        return {"type": "api", "target": url, "status": "FAIL",
-                "http_code": e.code, "latency_ms": round((time.time()-start)*1000, 2),
-                "method": method, "body_match": False, "resp_snippet": "", "error": str(e)}
+        return {"type":"api","target":url,"status":"FAIL",
+                "http_code":e.code,"latency_ms":round((time.time()-start)*1000,2),
+                "method":method,"body_match":False,"resp_snippet":"","error":str(e)}
     except Exception as e:
-        return {"type": "api", "target": url, "status": "ERROR",
-                "http_code": None, "latency_ms": None, "method": method,
-                "body_match": False, "resp_snippet": "", "error": str(e)}
+        return {"type":"api","target":url,"status":"ERROR",
+                "http_code":None,"latency_ms":None,"method":method,
+                "body_match":False,"resp_snippet":"","error":str(e)}
 
+def _is_float(s):
+    try: float(s); return True
+    except: return False
 
 def traceroute_test(host, max_hops=20):
-    def parse_traceroute(output):
-        hops = []
-        for line in output.strip().splitlines()[1:]:
-            parts = line.split()
-            if not parts:
-                continue
-            try:
-                hop_num = int(parts[0])
-            except ValueError:
-                continue
-            ip = parts[1] if len(parts) > 1 else "*"
-            rtts = []
-            for p in parts[2:]:
-                try:
-                    rtts.append(float(p))
-                except ValueError:
-                    pass
-            avg_rtt = round(sum(rtts) / len(rtts), 2) if rtts else None
-            hops.append({"hop": hop_num, "ip": ip, "rtt_avg_ms": avg_rtt})
+    def parse_tr(out):
+        hops=[]
+        for line in out.strip().splitlines()[1:]:
+            parts=line.split()
+            if not parts: continue
+            try: hop=int(parts[0])
+            except: continue
+            ip = parts[1] if len(parts)>1 else "*"
+            rtts=[float(p) for p in parts[2:] if _is_float(p)]
+            hops.append({"hop":hop,"ip":ip,"rtt_avg_ms":round(sum(rtts)/len(rtts),2) if rtts else None})
         return hops
-
-    def parse_tracepath(output):
-        hops = []
-        for line in output.strip().splitlines():
-            parts = line.split()
-            if not parts:
-                continue
-            try:
-                hop_num = int(parts[0].rstrip(":").rstrip("?"))
-            except ValueError:
-                continue
-            ip = parts[1] if len(parts) > 1 else "*"
-            rtts = []
-            for p in parts:
-                if p.endswith("ms"):
-                    try:
-                        rtts.append(float(p[:-2]))
-                    except Exception:
-                        pass
-            avg_rtt = round(sum(rtts) / len(rtts), 2) if rtts else None
-            hops.append({"hop": hop_num, "ip": ip, "rtt_avg_ms": avg_rtt})
+    def parse_tp(out):
+        hops=[]
+        for line in out.strip().splitlines():
+            parts=line.split()
+            if not parts: continue
+            try: hop=int(parts[0].rstrip(":?"))
+            except: continue
+            ip = parts[1] if len(parts)>1 else "*"
+            rtts=[float(p[:-2]) for p in parts if p.endswith("ms") and _is_float(p[:-2])]
+            hops.append({"hop":hop,"ip":ip,"rtt_avg_ms":round(sum(rtts)/len(rtts),2) if rtts else None})
         return hops
-
-    # Try traceroute first, then tracepath
-    for cmd, parser in [
-        (["traceroute", "-m", str(max_hops), "-w", "2", "-n", host], parse_traceroute),
-        (["tracepath",  "-n", host], parse_tracepath),
+    for cmd,parser in [
+        (["traceroute","-m",str(max_hops),"-w","2","-n",host], parse_tr),
+        (["tracepath","-n",host], parse_tp),
     ]:
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-            hops   = parser(result.stdout)
-            return {
-                "type": "traceroute", "target": host,
-                "status": "OK" if hops else "FAIL",
-                "hops": hops, "hop_count": len(hops), "error": None
-            }
-        except FileNotFoundError:
-            continue
+            r=subprocess.run(cmd,capture_output=True,text=True,timeout=60)
+            hops=parser(r.stdout)
+            return {"type":"traceroute","target":host,
+                    "status":"OK" if hops else "FAIL",
+                    "hops":hops,"hop_count":len(hops),"error":None}
+        except FileNotFoundError: continue
         except Exception as e:
-            return {"type": "traceroute", "target": host, "status": "ERROR",
-                    "hops": [], "hop_count": 0, "error": str(e)}
-
-    return {"type": "traceroute", "target": host, "status": "ERROR",
-            "hops": [], "hop_count": 0,
-            "error": "traceroute/tracepath not found — install with: sudo apt install traceroute"}
-
+            return {"type":"traceroute","target":host,"status":"ERROR",
+                    "hops":[],"hop_count":0,"error":str(e)}
+    return {"type":"traceroute","target":host,"status":"ERROR",
+            "hops":[],"hop_count":0,"error":"traceroute not found"}
 
 def bandwidth_test(url):
     try:
-        req   = urllib.request.Request(url, headers={"User-Agent": "NetTester/2.0"})
+        req   = urllib.request.Request(url,headers={"User-Agent":"NetTester/3.0"})
         start = time.time()
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = resp.read()
-        elapsed    = time.time() - start
-        bytes_dl   = len(data)
-        speed_mbps = round((bytes_dl * 8) / (elapsed * 1_000_000), 2)
-        return {
-            "type": "bandwidth", "target": url, "status": "OK",
-            "speed_mbps": speed_mbps, "bytes_downloaded": bytes_dl,
-            "duration_s": round(elapsed, 2), "error": None
-        }
+        chunks, total = [], 0
+        content_length = None
+        with urllib.request.urlopen(req,timeout=30) as resp:
+            cl = resp.headers.get("Content-Length")
+            if cl:
+                content_length = int(cl)
+            limit = 5*1024*1024
+            while True:
+                chunk = resp.read(65536)
+                if not chunk: break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total >= limit: break
+        elapsed    = max(time.time()-start, 0.001)
+        speed_mbps = round((total*8)/(elapsed*1_000_000), 2)
+        progress   = round(total/content_length*100,1) if content_length else 100.0
+        return {"type":"bandwidth","target":url,"status":"OK",
+                "speed_mbps":speed_mbps,"bytes_downloaded":total,
+                "duration_s":round(elapsed,2),"progress_pct":progress,"error":None}
     except Exception as e:
-        return {"type": "bandwidth", "target": url, "status": "ERROR",
-                "speed_mbps": None, "bytes_downloaded": None,
-                "duration_s": None, "error": str(e)}
+        return {"type":"bandwidth","target":url,"status":"ERROR",
+                "speed_mbps":None,"bytes_downloaded":None,
+                "duration_s":None,"progress_pct":0,"error":str(e)}
 
+def bandwidth_with_fallback():
+    cfg = load_config()
+    primary = cfg.get("bandwidth_url", BW_URLS[0])
+    urls = [primary] + [u for u in BW_URLS if u != primary]
+    for url in urls:
+        r = bandwidth_test(url)
+        if r["status"] == "OK":
+            return r
+    return r
 
-# ─── RUN ALL TESTS ───────────────────────────────────────────────────────────
+# ─── THRESHOLD CHECKS ─────────────────────────────────────────────────────────
+_last_status = {}
 
+def check_thresholds(result, cfg_entry):
+    name   = result.get("name","?")
+    status = result.get("status")
+    new_w  = []
+
+    prev = _last_status.get(name)
+    if prev == "OK" and status in ("FAIL","ERROR"):
+        new_w.append(add_warning(name,"down",
+            f"{name} is DOWN — {result.get('error') or status}",status))
+    elif prev in ("FAIL","ERROR") and status == "OK":
+        new_w.append(add_warning(name,"up",f"{name} is back UP",status))
+    _last_status[name] = status
+
+    if status != "OK":
+        return new_w
+
+    lat = result.get("latency_ms") or result.get("rtt_avg_ms")
+    warn_lat = cfg_entry.get("warn_latency_ms") or cfg_entry.get("warn_rtt_ms")
+    if lat and warn_lat and lat > warn_lat:
+        new_w.append(add_warning(name,"latency",
+            f"{name} high latency: {lat}ms (threshold {warn_lat}ms)",lat))
+
+    loss = result.get("packet_loss_pct")
+    warn_loss = cfg_entry.get("warn_loss_pct")
+    if loss is not None and warn_loss is not None and loss > warn_loss:
+        new_w.append(add_warning(name,"loss",
+            f"{name} packet loss: {loss}% (threshold {warn_loss}%)",loss))
+
+    if result.get("type") == "bandwidth":
+        cfg = load_config()
+        warn_spd = cfg.get("warn_speed_mbps")
+        spd = result.get("speed_mbps")
+        if spd and warn_spd and spd < warn_spd:
+            new_w.append(add_warning(name,"speed",
+                f"Download speed low: {spd} Mbps (threshold {warn_spd} Mbps)",spd))
+    return new_w
+
+# ─── RUN ALL TESTS ────────────────────────────────────────────────────────────
 def run_all_tests():
     cfg       = load_config()
     timestamp = datetime.now().isoformat()
-    print(f"\n[{timestamp}] Running network tests...")
+    print(f"\n[{timestamp}] Running tests...")
     results   = []
 
-    for t in cfg.get("ping", []):
-        r = ping_test(t["host"])
-        r["name"] = t["name"]; r["timestamp"] = timestamp
+    def process(r, cfg_entry):
+        r["timestamp"] = timestamp
+        record_uptime(r["name"], r["status"]=="OK")
+        r["uptime_pct"] = get_uptime_pct(r["name"])
+        check_thresholds(r, cfg_entry)
         results.append(r)
-        icon = "v" if r["status"] == "OK" else "x"
-        print(f"  [{icon}] PING       {t['name']:22s} | loss={r['packet_loss_pct']}% rtt={r['rtt_avg_ms']}ms")
 
-    for t in cfg.get("http", []):
-        r = http_test(t["url"])
-        r["name"] = t["name"]; r["timestamp"] = timestamp
-        results.append(r)
-        icon = "v" if r["status"] == "OK" else "x"
-        print(f"  [{icon}] HTTP       {t['name']:22s} | {r['http_code']} {r['latency_ms']}ms")
+    for t in cfg.get("ping",[]):
+        r = ping_test(t["host"]); r["name"] = t["name"]
+        process(r,t)
+        print(f"  PING {t['name']:22s}| {r['status']} loss={r['packet_loss_pct']}% rtt={r['rtt_avg_ms']}ms")
 
-    for t in cfg.get("api", []):
-        r = api_test(t)
-        r["name"] = t["name"]; r["timestamp"] = timestamp
-        results.append(r)
-        icon = "v" if r["status"] == "OK" else ("~" if r["status"] == "WARN" else "x")
-        print(f"  [{icon}] API        {t['name']:22s} | {r['http_code']} {r['latency_ms']}ms [{t.get('method','GET')}]")
+    for t in cfg.get("http",[]):
+        r = http_test(t["url"]); r["name"] = t["name"]
+        process(r,t)
+        print(f"  HTTP {t['name']:22s}| {r['status']} {r['http_code']} {r['latency_ms']}ms")
 
-    for t in cfg.get("traceroute", []):
-        print(f"  [~] TRACEROUTE {t['name']:20s} | running...")
-        r = traceroute_test(t["host"])
-        r["name"] = t["name"]; r["timestamp"] = timestamp
-        results.append(r)
-        icon = "v" if r["status"] == "OK" else "x"
-        print(f"  [{icon}] TRACEROUTE {t['name']:22s} | {r['hop_count']} hops")
+    for t in cfg.get("api",[]):
+        r = api_test(t); r["name"] = t["name"]
+        process(r,t)
+        print(f"  API  {t['name']:22s}| {r['status']} {r['http_code']} {r['latency_ms']}ms")
 
-    bw_url = cfg.get("bandwidth_url", DEFAULT_CONFIG["bandwidth_url"])
-    print(f"  [~] BW         Download speed test...")
-    r = bandwidth_test(bw_url)
-    r["name"] = "Download Speed"; r["timestamp"] = timestamp
-    results.append(r)
-    icon = "v" if r["status"] == "OK" else "x"
-    print(f"  [{icon}] BW         Download Speed         | {r['speed_mbps']} Mbps")
+    for t in cfg.get("traceroute",[]):
+        r = traceroute_test(t["host"]); r["name"] = t["name"]
+        process(r,t)
+        print(f"  TR   {t['name']:22s}| {r['status']} {r['hop_count']} hops")
+
+    r = bandwidth_with_fallback(); r["name"] = "Download Speed"
+    process(r,{"warn_speed_mbps": cfg.get("warn_speed_mbps",10)})
+    print(f"  BW   Download Speed          | {r['status']} {r['speed_mbps']} Mbps ({r['progress_pct']}%)")
 
     save_csv(results)
     save_json(results)
-    print(f"  -> Saved to {CSV_FILE}")
+    print(f"  -> Done. {len(results)} results.")
     return results
 
-
-# ─── STORAGE ─────────────────────────────────────────────────────────────────
-
+# ─── STORAGE ──────────────────────────────────────────────────────────────────
 def save_csv(results):
-    file_exists = os.path.exists(CSV_FILE)
-    fieldnames  = [
-        "timestamp", "name", "type", "target", "status",
-        "packet_loss_pct", "rtt_avg_ms",
-        "http_code", "latency_ms", "method", "body_match",
-        "hop_count", "speed_mbps", "bytes_downloaded", "duration_s", "error"
-    ]
-    with open(CSV_FILE, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-        if not file_exists:
-            writer.writeheader()
-        writer.writerows(results)
-
+    exists = os.path.exists(CSV_FILE)
+    fields = ["timestamp","name","type","target","status",
+              "packet_loss_pct","rtt_avg_ms","http_code","latency_ms",
+              "method","body_match","hop_count","speed_mbps","bytes_downloaded",
+              "duration_s","progress_pct","uptime_pct","error"]
+    with open(CSV_FILE,"a",newline="") as f:
+        w = csv.DictWriter(f,fieldnames=fields,extrasaction="ignore")
+        if not exists: w.writeheader()
+        w.writerows(results)
 
 def save_json(results):
-    history = {}
+    history={}
     if os.path.exists(RESULTS_FILE):
         try:
-            with open(RESULTS_FILE) as f:
-                history = json.load(f)
-        except Exception:
-            history = {}
+            with open(RESULTS_FILE) as f: history=json.load(f)
+        except: history={}
     for r in results:
-        key = r["name"]
-        history.setdefault(key, []).append(r)
-        history[key] = history[key][-50:]
-    with open(RESULTS_FILE, "w") as f:
-        json.dump(history, f)
+        k=r["name"]
+        history.setdefault(k,[]).append(r)
+        history[k]=history[k][-200:]
+    with open(RESULTS_FILE,"w") as f:
+        json.dump(history,f)
 
+# ─── SCHEDULER ────────────────────────────────────────────────────────────────
+def start_scheduler():
+    last_run = {}
+    print("  Scheduler running")
+    while True:
+        time.sleep(30)
+        now = datetime.now()
+        cfg = load_config()
+        needs_run = False
+        for section in ["ping","http","api","traceroute"]:
+            for t in cfg.get(section,[]):
+                interval = t.get("interval",5)*60
+                key      = f"{section}:{t.get('name','')}"
+                lr       = last_run.get(key)
+                if lr is None or (now-lr).total_seconds() >= interval:
+                    needs_run = True; break
+        bw_iv = cfg.get("bandwidth_interval",30)*60
+        lr_bw = last_run.get("bw")
+        if lr_bw is None or (now-lr_bw).total_seconds() >= bw_iv:
+            needs_run = True
+        if needs_run:
+            run_all_tests()
+            for section in ["ping","http","api","traceroute"]:
+                for t in cfg.get(section,[]):
+                    last_run[f"{section}:{t.get('name','')}"] = now
+            last_run["bw"] = now
 
-# ─── HTML DASHBOARD ──────────────────────────────────────────────────────────
-
-HTML_DASHBOARD = r"""<!DOCTYPE html>
+# ─── HTML ─────────────────────────────────────────────────────────────────────
+HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NetMonitor</title>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;500;600;800&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
-:root{
-  --bg:#050a0f;--panel:#0a1520;--panel2:#0d1e30;--border:#0d2d4a;
+:root{--bg:#050a0f;--panel:#0a1520;--panel2:#0d1e30;--border:#0d2d4a;
   --accent:#00d4ff;--accent2:#00ff9d;--warn:#ffcc00;--danger:#ff2d55;
-  --text:#c8e6f5;--dim:#4a7a99;--api:#b36bff;--trace:#ff9d3b;
-}
+  --text:#c8e6f5;--dim:#4a7a99;--api:#b36bff;--trace:#ff9d3b;}
 *{box-sizing:border-box;margin:0;padding:0;}
 body{background:var(--bg);color:var(--text);font-family:'Exo 2',sans-serif;min-height:100vh;
-  background-image:linear-gradient(rgba(0,212,255,.025) 1px,transparent 1px),
-  linear-gradient(90deg,rgba(0,212,255,.025) 1px,transparent 1px);
+  background-image:linear-gradient(rgba(0,212,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(0,212,255,.025) 1px,transparent 1px);
   background-size:40px 40px;}
-header{display:flex;align-items:center;justify-content:space-between;padding:1.2rem 2rem;
-  border-bottom:1px solid var(--border);background:rgba(10,21,32,.95);
-  backdrop-filter:blur(10px);position:sticky;top:0;z-index:200;}
-.logo{display:flex;align-items:center;gap:.75rem;}
-.logo-dot{width:32px;height:32px;border:2px solid var(--accent);border-radius:8px;
-  display:flex;align-items:center;justify-content:center;box-shadow:0 0 18px rgba(0,212,255,.3);}
-.logo-dot::before{content:'';width:10px;height:10px;background:var(--accent);border-radius:50%;
-  box-shadow:0 0 8px var(--accent);animation:pulse 2s infinite;}
-@keyframes pulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.4;transform:scale(.7);}}
-.logo h1{font-size:1.2rem;font-weight:800;letter-spacing:.12em;color:var(--accent);}
-.logo small{font-family:'Share Tech Mono';font-size:.65rem;color:var(--dim);display:block;}
-.hdr-actions{display:flex;gap:.75rem;align-items:center;flex-wrap:wrap;}
-.badge-pill{font-family:'Share Tech Mono';font-size:.7rem;padding:.3rem .8rem;border-radius:4px;
+header{display:flex;align-items:center;justify-content:space-between;padding:1rem 1.5rem;
+  border-bottom:1px solid var(--border);background:rgba(10,21,32,.97);backdrop-filter:blur(10px);
+  position:sticky;top:0;z-index:300;}
+.logo{display:flex;align-items:center;gap:.65rem;}
+.logo-dot{width:30px;height:30px;border:2px solid var(--accent);border-radius:8px;
+  display:flex;align-items:center;justify-content:center;box-shadow:0 0 14px rgba(0,212,255,.3);}
+.logo-dot::before{content:'';width:9px;height:9px;background:var(--accent);border-radius:50%;
+  box-shadow:0 0 7px var(--accent);animation:pulse 2s infinite;}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.3;transform:scale(.6);}}
+.logo h1{font-size:1.1rem;font-weight:800;letter-spacing:.12em;color:var(--accent);}
+.logo small{font-family:'Share Tech Mono';font-size:.6rem;color:var(--dim);display:block;}
+.hdr-r{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;}
+.pill{font-family:'Share Tech Mono';font-size:.65rem;padding:.25rem .7rem;border-radius:4px;
   border:1px solid var(--accent2);color:var(--accent2);background:rgba(0,255,157,.05);}
-.btn{font-family:'Exo 2';font-weight:600;font-size:.82rem;padding:.45rem 1.1rem;
+.btn{font-family:'Exo 2';font-weight:600;font-size:.78rem;padding:.4rem 1rem;
   border-radius:6px;cursor:pointer;transition:all .2s;letter-spacing:.04em;border:none;}
-.btn-outline{border:1px solid var(--accent);color:var(--accent);background:rgba(0,212,255,.07);}
-.btn-outline:hover{background:rgba(0,212,255,.18);box-shadow:0 0 14px rgba(0,212,255,.3);}
-.btn-green{border:1px solid var(--accent2) !important;color:var(--accent2);background:rgba(0,255,157,.06);}
+.btn-blue{border:1px solid var(--accent)!important;color:var(--accent);background:rgba(0,212,255,.07);}
+.btn-blue:hover{background:rgba(0,212,255,.18);box-shadow:0 0 12px rgba(0,212,255,.25);}
+.btn-green{border:1px solid var(--accent2)!important;color:var(--accent2);background:rgba(0,255,157,.06);}
 .btn-green:hover{background:rgba(0,255,157,.15);}
+.btn-warn{border:1px solid var(--warn)!important;color:var(--warn);background:rgba(255,204,0,.06);position:relative;}
+.btn-warn:hover{background:rgba(255,204,0,.14);}
 .btn:disabled{opacity:.5;cursor:not-allowed;}
 a.btn{text-decoration:none;display:inline-block;}
-.tabs{display:flex;border-bottom:1px solid var(--border);background:rgba(10,21,32,.8);
-  padding:0 2rem;position:sticky;top:64px;z-index:150;}
-.tab{font-family:'Exo 2';font-size:.78rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
-  padding:.75rem 1.4rem;cursor:pointer;color:var(--dim);border-bottom:2px solid transparent;transition:all .2s;}
-.tab:hover{color:var(--text);}
-.tab.active{color:var(--accent);border-bottom-color:var(--accent);}
-main{padding:1.5rem 2rem;max-width:1500px;margin:0 auto;}
-.page{display:none;}
-.page.active{display:block;}
-.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:1rem;margin-bottom:1.5rem;}
-.sc{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:1.1rem;position:relative;overflow:hidden;}
+.warn-badge{position:absolute;top:-7px;right:-7px;background:var(--danger);color:#fff;
+  font-size:.56rem;font-weight:800;width:16px;height:16px;border-radius:50%;
+  display:none;align-items:center;justify-content:center;font-family:'Exo 2';}
+.tabs{display:flex;border-bottom:1px solid var(--border);background:rgba(10,21,32,.9);
+  padding:0 1.5rem;position:sticky;top:62px;z-index:200;}
+.tab{font-family:'Exo 2';font-size:.75rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
+  padding:.7rem 1.2rem;cursor:pointer;color:var(--dim);border-bottom:2px solid transparent;transition:all .2s;}
+.tab:hover{color:var(--text);}.tab.active{color:var(--accent);border-bottom-color:var(--accent);}
+.tab.tab-warn{color:rgba(255,204,0,.6);}.tab.tab-warn.active{color:var(--warn);border-bottom-color:var(--warn);}
+main{padding:1.2rem 1.5rem;max-width:1600px;margin:0 auto;}
+.page{display:none;}.page.active{display:block;}
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:.8rem;margin-bottom:1.2rem;}
+.sc{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:1rem;position:relative;overflow:hidden;}
 .sc::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--accent),var(--accent2));}
-.sc .lbl{font-size:.65rem;letter-spacing:.15em;color:var(--dim);text-transform:uppercase;margin-bottom:.4rem;}
-.sc .val{font-size:1.9rem;font-weight:800;line-height:1;}
-.sc .sub{font-family:'Share Tech Mono';font-size:.7rem;color:var(--dim);margin-top:.3rem;}
-.section{margin-bottom:2rem;}
-.sec-hdr{display:flex;align-items:center;gap:.6rem;margin-bottom:.9rem;padding-bottom:.7rem;border-bottom:1px solid var(--border);}
-.sec-hdr h2{font-size:.85rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;}
-.cnt{font-family:'Share Tech Mono';font-size:.65rem;padding:.15rem .5rem;border-radius:99px;border:1px solid var(--border);background:rgba(255,255,255,.03);}
-.test-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:.9rem;}
-.test-grid.traceroute-grid{grid-template-columns:repeat(auto-fill,minmax(420px,1fr));}
-.tc{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:1rem;transition:border-color .2s,box-shadow .2s;min-width:0;overflow:hidden;}
-.tc:hover{border-color:var(--accent);box-shadow:0 0 18px rgba(0,212,255,.1);}
-.tc.ok{border-left:3px solid var(--accent2);}
-.tc.fail{border-left:3px solid var(--danger);}
-.tc.warn{border-left:3px solid var(--warn);}
-.tc.error{border-left:3px solid #ff6b35;}
+.sc .lbl{font-size:.6rem;letter-spacing:.15em;color:var(--dim);text-transform:uppercase;margin-bottom:.35rem;}
+.sc .val{font-size:1.75rem;font-weight:800;line-height:1;}
+.sc .sub{font-family:'Share Tech Mono';font-size:.62rem;color:var(--dim);margin-top:.25rem;}
+.sc.clickable{cursor:pointer;transition:border-color .2s;}.sc.clickable:hover{border-color:var(--danger);}
+.section{margin-bottom:1.8rem;}
+.sec-hdr{display:flex;align-items:center;gap:.5rem;margin-bottom:.8rem;padding-bottom:.6rem;border-bottom:1px solid var(--border);}
+.sec-hdr h2{font-size:.82rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;}
+.cnt{font-family:'Share Tech Mono';font-size:.62rem;padding:.12rem .45rem;border-radius:99px;border:1px solid var(--border);background:rgba(255,255,255,.03);}
+.test-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:.8rem;}
+.test-grid.tr-grid{grid-template-columns:repeat(auto-fill,minmax(400px,1fr));}
+.tc{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:.9rem;
+  transition:border-color .2s,box-shadow .2s;min-width:0;overflow:hidden;}
+.tc:hover{border-color:rgba(0,212,255,.35);box-shadow:0 0 16px rgba(0,212,255,.07);}
+.tc.ok{border-left:3px solid var(--accent2);}.tc.fail{border-left:3px solid var(--danger);}
+.tc.warn{border-left:3px solid var(--warn);}.tc.error{border-left:3px solid #ff6b35;}
 .tc.unknown{border-left:3px solid var(--dim);}
-.tc-hdr{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:.7rem;}
-.tc-name{font-weight:600;font-size:.9rem;}
-.tc-tgt{font-family:'Share Tech Mono';font-size:.6rem;color:var(--dim);margin-top:.2rem;word-break:break-all;}
-.badge{font-family:'Share Tech Mono';font-size:.62rem;font-weight:700;padding:.18rem .55rem;border-radius:4px;letter-spacing:.08em;white-space:nowrap;}
+.tc-hdr{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:.6rem;}
+.tc-name{font-weight:600;font-size:.88rem;}
+.tc-tgt{font-family:'Share Tech Mono';font-size:.58rem;color:var(--dim);margin-top:.15rem;word-break:break-all;}
+.badge{font-family:'Share Tech Mono';font-size:.6rem;font-weight:700;padding:.15rem .5rem;border-radius:4px;letter-spacing:.08em;white-space:nowrap;}
 .badge.ok{background:rgba(0,255,157,.1);color:var(--accent2);border:1px solid rgba(0,255,157,.3);}
 .badge.fail{background:rgba(255,45,85,.1);color:var(--danger);border:1px solid rgba(255,45,85,.3);}
 .badge.warn{background:rgba(255,204,0,.1);color:var(--warn);border:1px solid rgba(255,204,0,.3);}
 .badge.error{background:rgba(255,107,53,.1);color:#ff6b35;border:1px solid rgba(255,107,53,.3);}
 .badge.unknown{background:rgba(74,122,153,.1);color:var(--dim);border:1px solid var(--border);}
-.metrics{display:flex;gap:1.1rem;flex-wrap:wrap;}
-.metric .ml{font-size:.58rem;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;}
-.metric .mv{font-family:'Share Tech Mono';font-size:.88rem;}
-.sparkline{margin-top:.7rem;height:28px;}
-.sparkline svg{width:100%;height:100%;}
-.hops-wrap{overflow-x:auto;margin-top:.7rem;max-width:100%;}
-.hops-table{width:100%;border-collapse:collapse;font-family:'Share Tech Mono';font-size:.7rem;table-layout:fixed;}
-.hops-table colgroup col:nth-child(1){width:32px;}
-.hops-table colgroup col:nth-child(2){width:38%;}
-.hops-table colgroup col:nth-child(3){width:70px;}
-.hops-table colgroup col:nth-child(4){width:auto;}
-.hops-table th{color:var(--dim);font-weight:400;text-align:left;padding:.28rem .45rem;border-bottom:1px solid var(--border);white-space:nowrap;}
-.hops-table td{padding:.28rem .45rem;border-bottom:1px solid rgba(13,45,74,.35);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.metrics{display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:.45rem;}
+.metric .ml{font-size:.56rem;color:var(--dim);text-transform:uppercase;letter-spacing:.1em;}
+.metric .mv{font-family:'Share Tech Mono';font-size:.85rem;}
+.mv.warn-val{color:var(--warn);}.mv.ok-val{color:var(--accent2);}
+.uptime-row{display:flex;align-items:center;gap:.5rem;margin-bottom:.45rem;}
+.uptime-label{font-family:'Share Tech Mono';font-size:.58rem;color:var(--dim);white-space:nowrap;}
+.uptime-bar-bg{flex:1;height:4px;background:rgba(255,255,255,.07);border-radius:3px;overflow:hidden;}
+.uptime-bar-fill{height:100%;border-radius:3px;transition:width .5s;}
+.uptime-pct{font-family:'Share Tech Mono';font-size:.6rem;white-space:nowrap;min-width:36px;text-align:right;}
+.chart-wrap{height:52px;position:relative;margin-top:.4rem;}
+.chart-wrap canvas{width:100%!important;}
+.fail-toggle{margin-top:.5rem;font-family:'Share Tech Mono';font-size:.63rem;color:var(--dim);
+  cursor:pointer;display:flex;align-items:center;gap:.3rem;user-select:none;padding:.2rem 0;}
+.fail-toggle:hover{color:var(--danger);}
+.fail-arrow{transition:transform .2s;display:inline-block;}
+.fail-toggle.open .fail-arrow{transform:rotate(90deg);}
+.fail-list{display:none;margin-top:.3rem;border-top:1px solid var(--border);padding-top:.4rem;}
+.fail-list.open{display:block;}
+.fail-item{font-family:'Share Tech Mono';font-size:.6rem;padding:.28rem .45rem;
+  border-left:2px solid var(--danger);background:rgba(255,45,85,.04);margin-bottom:.28rem;border-radius:0 4px 4px 0;}
+.fail-ts{color:var(--dim);font-size:.56rem;}
+.fail-msg{color:#ffb3c0;margin-top:.1rem;word-break:break-word;}
+.bw-prog-wrap{margin-top:.4rem;}
+.bw-prog-lbl{font-family:'Share Tech Mono';font-size:.58rem;color:var(--dim);margin-bottom:.2rem;}
+.bw-prog-bar{height:5px;background:rgba(255,255,255,.07);border-radius:3px;overflow:hidden;}
+.bw-prog-fill{height:100%;border-radius:3px;background:linear-gradient(90deg,var(--accent),var(--accent2));}
+.hops-wrap{overflow-x:auto;margin-top:.6rem;max-width:100%;}
+.hops-table{width:100%;border-collapse:collapse;font-family:'Share Tech Mono';font-size:.68rem;table-layout:fixed;}
+.hops-table th{color:var(--dim);font-weight:400;text-align:left;padding:.25rem .4rem;border-bottom:1px solid var(--border);white-space:nowrap;}
+.hops-table td{padding:.25rem .4rem;border-bottom:1px solid rgba(13,45,74,.3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .hops-table tr:last-child td{border:none;}
-.hop-bar{height:5px;background:var(--trace);border-radius:3px;min-width:2px;opacity:.7;max-width:100%;}
-.mgr-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:1.2rem;}
-.mgr-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:1.2rem;}
-.mgr-card h3{font-size:.78rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;margin-bottom:1rem;padding-bottom:.6rem;border-bottom:1px solid var(--border);}
-.target-list{display:flex;flex-direction:column;gap:.45rem;margin-bottom:.9rem;min-height:36px;}
-.target-item{display:flex;align-items:center;justify-content:space-between;background:var(--panel2);border:1px solid var(--border);border-radius:6px;padding:.45rem .7rem;}
-.ti-name{font-family:'Share Tech Mono';font-size:.72rem;color:var(--text);font-weight:700;}
-.ti-val{font-family:'Share Tech Mono';font-size:.62rem;color:var(--dim);}
-.btn-del{background:none;border:none;color:var(--dim);cursor:pointer;font-size:.85rem;padding:.1rem .35rem;border-radius:4px;transition:color .2s;}
+.hop-bar{height:4px;background:var(--trace);border-radius:2px;min-width:2px;opacity:.7;}
+.warn-toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.5rem;}
+.warn-filters{display:flex;gap:.35rem;flex-wrap:wrap;}
+.wf-btn{font-family:'Share Tech Mono';font-size:.63rem;padding:.22rem .6rem;border-radius:4px;
+  border:1px solid var(--border);color:var(--dim);background:var(--panel2);cursor:pointer;transition:all .15s;}
+.wf-btn.active{border-color:var(--warn);color:var(--warn);background:rgba(255,204,0,.07);}
+.warn-list{display:flex;flex-direction:column;gap:.45rem;}
+.warn-item{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:.75rem 1rem;
+  display:flex;align-items:flex-start;gap:.75rem;}
+.warn-item.acked{opacity:.4;}
+.warn-item.type-down{border-left:3px solid var(--danger);}
+.warn-item.type-up{border-left:3px solid var(--accent2);}
+.warn-item.type-latency,.warn-item.type-loss,.warn-item.type-speed{border-left:3px solid var(--warn);}
+.wi-icon{font-size:.95rem;margin-top:.1rem;flex-shrink:0;}
+.wi-body{flex:1;min-width:0;}
+.wi-msg{font-size:.8rem;font-weight:600;}
+.wi-meta{font-family:'Share Tech Mono';font-size:.6rem;color:var(--dim);margin-top:.18rem;}
+.wi-ack{font-family:'Share Tech Mono';font-size:.58rem;padding:.18rem .45rem;
+  border:1px solid var(--border);color:var(--dim);background:none;border-radius:4px;
+  cursor:pointer;flex-shrink:0;transition:all .15s;white-space:nowrap;align-self:center;}
+.wi-ack:hover{border-color:var(--accent2);color:var(--accent2);}
+.no-warns{text-align:center;padding:3rem;font-family:'Share Tech Mono';color:var(--dim);}
+.mgr-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(305px,1fr));gap:1rem;}
+.mgr-card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:1.1rem;}
+.mgr-card h3{font-size:.75rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+  margin-bottom:.9rem;padding-bottom:.5rem;border-bottom:1px solid var(--border);}
+.target-list{display:flex;flex-direction:column;gap:.38rem;margin-bottom:.8rem;min-height:30px;}
+.ti{display:flex;align-items:center;justify-content:space-between;background:var(--panel2);
+  border:1px solid var(--border);border-radius:6px;padding:.38rem .6rem;}
+.ti-name{font-family:'Share Tech Mono';font-size:.68rem;color:var(--text);font-weight:700;}
+.ti-val{font-family:'Share Tech Mono';font-size:.58rem;color:var(--dim);}
+.btn-del{background:none;border:none;color:var(--dim);cursor:pointer;font-size:.78rem;padding:.1rem .3rem;border-radius:4px;transition:color .15s;}
 .btn-del:hover{color:var(--danger);}
-.add-form{display:flex;flex-direction:column;gap:.5rem;}
+.add-form{display:flex;flex-direction:column;gap:.38rem;}
 .add-form input,.add-form select,.add-form textarea{
   background:var(--panel2);border:1px solid var(--border);color:var(--text);
-  font-family:'Share Tech Mono';font-size:.75rem;padding:.42rem .65rem;border-radius:6px;
+  font-family:'Share Tech Mono';font-size:.7rem;padding:.36rem .58rem;border-radius:6px;
   outline:none;transition:border-color .2s;width:100%;}
 .add-form input:focus,.add-form select:focus,.add-form textarea:focus{border-color:var(--accent);}
-.add-form textarea{resize:vertical;min-height:56px;}
-.add-form .row{display:flex;gap:.5rem;}
-.add-form .row>*{flex:1;min-width:0;}
-.add-form label{font-size:.6rem;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;display:block;margin-bottom:.2rem;}
+.add-form textarea{resize:vertical;min-height:50px;}
+.add-form .row{display:flex;gap:.38rem;}.add-form .row>*{flex:1;min-width:0;}
+.add-form label{font-size:.57rem;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;display:block;margin-bottom:.12rem;}
 .form-group{display:flex;flex-direction:column;}
-.save-notice{font-family:'Share Tech Mono';font-size:.68rem;color:var(--accent2);margin-top:.5rem;opacity:0;transition:opacity .4s;}
+.save-notice{font-family:'Share Tech Mono';font-size:.62rem;color:var(--accent2);margin-top:.38rem;opacity:0;transition:opacity .4s;}
 .save-notice.show{opacity:1;}
-.last-upd{font-family:'Share Tech Mono';font-size:.68rem;color:var(--dim);text-align:right;margin-bottom:1rem;}
+.last-upd{font-family:'Share Tech Mono';font-size:.63rem;color:var(--dim);text-align:right;margin-bottom:.8rem;}
 .empty{text-align:center;padding:3rem;color:var(--dim);font-family:'Share Tech Mono';}
-#toast{position:fixed;bottom:2rem;right:2rem;background:var(--panel);border:1px solid var(--accent);
-  color:var(--accent);font-family:'Share Tech Mono';font-size:.8rem;padding:.7rem 1.2rem;
-  border-radius:8px;box-shadow:0 0 28px rgba(0,212,255,.3);opacity:0;transform:translateY(8px);
-  transition:all .3s;pointer-events:none;z-index:999;}
-#toast.show{opacity:1;transform:translateY(0);}
-.type-ping{color:var(--accent2);}
-.type-http{color:var(--accent);}
-.type-api{color:var(--api);}
-.type-traceroute{color:var(--trace);}
-.type-bandwidth{color:var(--warn);}
+.toast-stack{position:fixed;bottom:1.5rem;right:1.5rem;display:flex;flex-direction:column-reverse;gap:.4rem;z-index:999;pointer-events:none;max-width:320px;}
+.toast{background:var(--panel2);font-family:'Share Tech Mono';font-size:.73rem;padding:.55rem .9rem;
+  border-radius:7px;box-shadow:0 4px 20px rgba(0,0,0,.5);opacity:0;transform:translateY(10px);
+  transition:all .3s;border-left:3px solid var(--accent);}
+.toast.show{opacity:1;transform:translateY(0);}
+.toast.t-warn{border-left-color:var(--warn);color:var(--warn);}
+.toast.t-danger{border-left-color:var(--danger);color:var(--danger);}
+.toast.t-ok{border-left-color:var(--accent2);color:var(--accent2);}
+.toast.t-info{border-left-color:var(--accent);color:var(--accent);}
+.type-ping{color:var(--accent2);}.type-http{color:var(--accent);}
+.type-api{color:var(--api);}.type-traceroute{color:var(--trace);}.type-bandwidth{color:var(--warn);}
 </style>
 </head>
 <body>
-
 <header>
   <div class="logo">
     <div class="logo-dot"></div>
-    <div>
-      <h1>NETMONITOR</h1>
-      <small>AUTOMATED NETWORK DIAGNOSTICS v2</small>
-    </div>
+    <div><h1>NETMONITOR</h1><small>AUTOMATED NETWORK DIAGNOSTICS v3</small></div>
   </div>
-  <div class="hdr-actions">
-    <span class="badge-pill">&#9201; SCHEDULED: EVERY 5 MIN</span>
+  <div class="hdr-r">
+    <span class="pill">&#9201; SCHEDULED</span>
     <a class="btn btn-green" href="/download-csv">&#8595; CSV</a>
-    <button class="btn btn-outline" id="run-btn" onclick="runTests()">&#9654; RUN NOW</button>
+    <button class="btn btn-warn" onclick="showTab('warnings',document.querySelector('[data-tab=warnings]'))">
+      &#9888; Warnings<span class="warn-badge" id="warn-badge">0</span>
+    </button>
+    <button class="btn btn-blue" id="run-btn" onclick="runTests()">&#9654; RUN NOW</button>
   </div>
 </header>
-
 <div class="tabs">
-  <div class="tab active" onclick="showTab('dashboard',this)">Dashboard</div>
-  <div class="tab" onclick="showTab('targets',this)">&#9881; Manage Targets</div>
+  <div class="tab active"   data-tab="dashboard" onclick="showTab('dashboard',this)">Dashboard</div>
+  <div class="tab"          data-tab="targets"   onclick="showTab('targets',this)">&#9881; Targets</div>
+  <div class="tab tab-warn" data-tab="warnings"  onclick="showTab('warnings',this)">&#9888; Warnings</div>
 </div>
-
 <main>
   <div class="page active" id="page-dashboard">
     <div class="last-upd" id="last-updated">Loading...</div>
     <div class="summary-grid" id="summary"></div>
     <div id="sections"></div>
   </div>
-
-  <div class="page" id="page-targets">
-    <div style="margin-bottom:1.2rem;display:flex;align-items:center;justify-content:space-between;">
-      <div style="font-size:.8rem;color:var(--dim);font-family:'Share Tech Mono';">
-        Changes save instantly and apply on the next test run.
+  <div class="page" id="page-warnings">
+    <div class="warn-toolbar">
+      <div class="warn-filters">
+        <button class="wf-btn active" onclick="filterW('all',this)">All</button>
+        <button class="wf-btn" onclick="filterW('down',this)">&#128308; Down</button>
+        <button class="wf-btn" onclick="filterW('up',this)">&#128994; Recovered</button>
+        <button class="wf-btn" onclick="filterW('latency',this)">&#9203; Latency</button>
+        <button class="wf-btn" onclick="filterW('speed',this)">&#8681; Speed</button>
+        <button class="wf-btn" onclick="filterW('unacked',this)">Unread only</button>
       </div>
-      <button class="btn btn-outline" onclick="runTests()">&#9654; Run Tests Now</button>
+      <button class="btn btn-blue" onclick="ackAllW()" style="font-size:.7rem;padding:.32rem .75rem">Mark all read</button>
+    </div>
+    <div class="warn-list" id="warn-list"></div>
+  </div>
+  <div class="page" id="page-targets">
+    <div style="margin-bottom:1rem;display:flex;align-items:center;justify-content:space-between;">
+      <span style="font-size:.72rem;color:var(--dim);font-family:'Share Tech Mono'">Changes save instantly. Set intervals and thresholds per target.</span>
+      <button class="btn btn-blue" onclick="runTests()" style="font-size:.7rem">&#9654; Run Now</button>
     </div>
     <div class="mgr-grid">
-
-      <!-- PING -->
       <div class="mgr-card">
         <h3 class="type-ping">&#11044; Ping Targets</h3>
         <div class="target-list" id="list-ping"></div>
@@ -526,12 +651,15 @@ main{padding:1.5rem 2rem;max-width:1500px;margin:0 auto;}
             <div class="form-group"><label>Name</label><input id="ping-name" placeholder="My Server"></div>
             <div class="form-group"><label>Host / IP</label><input id="ping-host" placeholder="192.168.1.1"></div>
           </div>
-          <button class="btn btn-outline" onclick="addTarget('ping')">+ Add Ping Target</button>
+          <div class="row">
+            <div class="form-group"><label>Interval (min)</label><input id="ping-interval" type="number" value="5" min="1"></div>
+            <div class="form-group"><label>Warn RTT &gt; ms</label><input id="ping-warn-rtt" type="number" placeholder="100"></div>
+            <div class="form-group"><label>Warn Loss &gt; %</label><input id="ping-warn-loss" type="number" placeholder="10"></div>
+          </div>
+          <button class="btn btn-blue" onclick="addTarget('ping')">+ Add Ping</button>
         </div>
         <div class="save-notice" id="notice-ping">&#10003; Saved</div>
       </div>
-
-      <!-- HTTP -->
       <div class="mgr-card">
         <h3 class="type-http">&#11044; HTTP Targets</h3>
         <div class="target-list" id="list-http"></div>
@@ -540,12 +668,14 @@ main{padding:1.5rem 2rem;max-width:1500px;margin:0 auto;}
             <div class="form-group"><label>Name</label><input id="http-name" placeholder="My Site"></div>
             <div class="form-group"><label>URL</label><input id="http-url" placeholder="https://example.com"></div>
           </div>
-          <button class="btn btn-outline" onclick="addTarget('http')">+ Add HTTP Target</button>
+          <div class="row">
+            <div class="form-group"><label>Interval (min)</label><input id="http-interval" type="number" value="5" min="1"></div>
+            <div class="form-group"><label>Warn Latency &gt; ms</label><input id="http-warn-lat" type="number" placeholder="500"></div>
+          </div>
+          <button class="btn btn-blue" onclick="addTarget('http')">+ Add HTTP</button>
         </div>
         <div class="save-notice" id="notice-http">&#10003; Saved</div>
       </div>
-
-      <!-- API -->
       <div class="mgr-card">
         <h3 class="type-api">&#11044; API Targets</h3>
         <div class="target-list" id="list-api"></div>
@@ -553,29 +683,24 @@ main{padding:1.5rem 2rem;max-width:1500px;margin:0 auto;}
           <div class="row">
             <div class="form-group"><label>Name</label><input id="api-name" placeholder="My API"></div>
             <div class="form-group"><label>Method</label>
-              <select id="api-method">
-                <option>GET</option><option>POST</option><option>PUT</option>
-                <option>PATCH</option><option>DELETE</option>
-              </select>
+              <select id="api-method"><option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option></select>
             </div>
           </div>
-          <div class="form-group"><label>URL</label><input id="api-url" placeholder="https://api.example.com/v1/health"></div>
+          <div class="form-group"><label>URL</label><input id="api-url" placeholder="https://api.example.com/health"></div>
           <div class="row">
-            <div class="form-group"><label>Expected Status</label><input id="api-status" placeholder="200" type="number"></div>
+            <div class="form-group"><label>Interval (min)</label><input id="api-interval" type="number" value="10" min="1"></div>
+            <div class="form-group"><label>Expected Status</label><input id="api-status" type="number" placeholder="200"></div>
+            <div class="form-group"><label>Warn Latency ms</label><input id="api-warn-lat" type="number" placeholder="1000"></div>
+          </div>
+          <div class="row">
             <div class="form-group"><label>Body Must Contain</label><input id="api-body-check" placeholder="ok"></div>
+            <div class="form-group"><label>Headers JSON</label><input id="api-headers" placeholder='{"Auth":"Bearer X"}'></div>
           </div>
-          <div class="form-group"><label>Headers JSON (optional)</label>
-            <textarea id="api-headers" placeholder='{"Authorization":"Bearer TOKEN"}'></textarea>
-          </div>
-          <div class="form-group"><label>Request Body (POST/PUT)</label>
-            <textarea id="api-body" placeholder='{"key":"value"}'></textarea>
-          </div>
-          <button class="btn btn-outline" onclick="addTarget('api')">+ Add API Target</button>
+          <div class="form-group"><label>Request Body</label><textarea id="api-body" placeholder='{"key":"value"}'></textarea></div>
+          <button class="btn btn-blue" onclick="addTarget('api')">+ Add API</button>
         </div>
         <div class="save-notice" id="notice-api">&#10003; Saved</div>
       </div>
-
-      <!-- TRACEROUTE -->
       <div class="mgr-card">
         <h3 class="type-traceroute">&#11044; Traceroute Targets</h3>
         <div class="target-list" id="list-traceroute"></div>
@@ -584,404 +709,462 @@ main{padding:1.5rem 2rem;max-width:1500px;margin:0 auto;}
             <div class="form-group"><label>Name</label><input id="tr-name" placeholder="My Gateway"></div>
             <div class="form-group"><label>Host / IP</label><input id="tr-host" placeholder="10.0.0.1"></div>
           </div>
-          <button class="btn btn-outline" onclick="addTarget('traceroute')">+ Add Traceroute Target</button>
+          <div class="form-group"><label>Interval (min)</label><input id="tr-interval" type="number" value="30" min="1"></div>
+          <button class="btn btn-blue" onclick="addTarget('traceroute')">+ Add Traceroute</button>
         </div>
         <div class="save-notice" id="notice-traceroute">&#10003; Saved</div>
       </div>
-
-      <!-- BANDWIDTH -->
       <div class="mgr-card">
-        <h3 class="type-bandwidth">&#11044; Bandwidth Test URL</h3>
-        <div style="font-family:'Share Tech Mono';font-size:.7rem;color:var(--dim);margin-bottom:.8rem;line-height:1.5;">
-          Direct URL to a binary file for download speed testing.<br>
-          Tip: use a 10MB+ file for more accurate results.
-        </div>
+        <h3 class="type-bandwidth">&#11044; Bandwidth &amp; Thresholds</h3>
         <div class="add-form">
-          <div class="form-group">
-            <label>Test File URL</label>
-            <input id="bw-url" placeholder="http://speedtest.tele2.net/10MB.bin">
+          <div class="form-group"><label>Test File URL</label><input id="bw-url" placeholder="https://speed.cloudflare.com/__down?bytes=5000000"></div>
+          <div class="row">
+            <div class="form-group"><label>BW Interval (min)</label><input id="bw-interval" type="number" value="30" min="1"></div>
+            <div class="form-group"><label>Warn if Speed &lt; Mbps</label><input id="bw-warn-speed" type="number" placeholder="10"></div>
           </div>
-          <button class="btn btn-outline" onclick="saveBwUrl()">Save URL</button>
+          <button class="btn btn-blue" onclick="saveBwSettings()">Save Settings</button>
         </div>
         <div class="save-notice" id="notice-bw">&#10003; Saved</div>
       </div>
-
     </div>
   </div>
 </main>
-
-<div id="toast"></div>
-
+<div class="toast-stack" id="toast-stack"></div>
 <script>
-let allData = {}, allConfig = {};
+let allData={},allConfig={},allWarnings=[],warnFilter='all';
 
-function showTab(name, el) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  el.classList.add('active');
-  document.getElementById('page-' + name).classList.add('active');
+function showTab(name,el){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  if(el) el.classList.add('active');
+  document.getElementById('page-'+name).classList.add('active');
+  if(name==='warnings') renderWarnings();
 }
 
-function toast(msg, ok=true) {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.style.borderColor = ok ? 'var(--accent)' : 'var(--danger)';
-  t.style.color = ok ? 'var(--accent)' : 'var(--danger)';
-  t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 3000);
+function toast(msg,type='info'){
+  const stack=document.getElementById('toast-stack');
+  const t=document.createElement('div');
+  t.className=`toast t-${type}`;
+  t.textContent=msg;
+  stack.appendChild(t);
+  requestAnimationFrame(()=>requestAnimationFrame(()=>t.classList.add('show')));
+  setTimeout(()=>{t.classList.remove('show');setTimeout(()=>t.remove(),350);},4500);
 }
 
-function showNotice(id) {
-  const el = document.getElementById('notice-' + id);
-  if (!el) return;
-  el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 2500);
+function sc(s){return(s||'unknown').toLowerCase();}
+
+function uptimeBar(pct){
+  if(pct==null) return '';
+  const color=pct>=99?'var(--accent2)':pct>=90?'var(--warn)':'var(--danger)';
+  return `<div class="uptime-row">
+    <span class="uptime-label">24H UPTIME</span>
+    <div class="uptime-bar-bg"><div class="uptime-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+    <span class="uptime-pct" style="color:${color}">${pct}%</span>
+  </div>`;
 }
 
-function sparkline(history, key) {
-  const vals = history.map(h => h[key]).filter(v => v != null);
-  if (vals.length < 2) return '';
-  const min = Math.min(...vals), max = Math.max(...vals), range = max - min || 1;
-  const w = 260, h = 26;
-  const pts = vals.map((v,i) => `${(i/(vals.length-1))*w},${h-((v-min)/range)*h}`).join(' ');
-  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
-    <polyline points="${pts}" fill="none" stroke="rgba(0,212,255,.55)" stroke-width="1.5"/>
-  </svg>`;
+function failDropdown(name,history){
+  const fails=history.filter(r=>['FAIL','ERROR','WARN'].includes(r.status)).slice(-20).reverse();
+  if(!fails.length) return '';
+  const id='fd_'+name.replace(/\W/g,'_');
+  return `<div class="fail-toggle" onclick="toggleFail('${id}')">
+    <span class="fail-arrow">&#9654;</span>&nbsp;${fails.length} recent issue${fails.length>1?'s':''}
+  </div>
+  <div class="fail-list" id="${id}">
+    ${fails.map(f=>`<div class="fail-item">
+      <div class="fail-ts">${new Date(f.timestamp).toLocaleString()}</div>
+      <div class="fail-msg">${f.status}${f.error?' &mdash; '+f.error:''}${f.http_code?' [HTTP '+f.http_code+']':''}${f.latency_ms?' latency: '+f.latency_ms+'ms':''}${f.packet_loss_pct!=null&&f.packet_loss_pct>0?' loss: '+f.packet_loss_pct+'%':''}</div>
+    </div>`).join('')}
+  </div>`;
 }
 
-function sc(s) { return (s||'unknown').toLowerCase(); }
+function toggleFail(id){
+  const el=document.getElementById(id);
+  if(!el) return;
+  el.classList.toggle('open');
+  el.previousElementSibling.classList.toggle('open');
+}
 
-function renderDashboard(data) {
-  allData = data;
-  const all = Object.values(data).flat();
-  if (!all.length) {
-    document.getElementById('summary').innerHTML = '';
-    document.getElementById('sections').innerHTML = '<div class="empty">No data yet. Click RUN NOW to start.</div>';
-    document.getElementById('last-updated').textContent = 'No data yet';
+const _charts={};
+function makeChart(id,labels,datasets,yLabel){
+  if(_charts[id]) _charts[id].destroy();
+  const ctx=document.getElementById(id);
+  if(!ctx) return;
+  _charts[id]=new Chart(ctx,{
+    type:'line',
+    data:{labels,datasets:datasets.map(d=>({
+      label:d.label||'',data:d.data,borderColor:d.color||'rgba(0,212,255,.7)',
+      backgroundColor:d.fill||'rgba(0,212,255,.05)',borderWidth:1.5,
+      pointRadius:0,tension:.3,fill:!!d.fill
+    }))},
+    options:{animation:false,responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:datasets.length>1,labels:{color:'rgba(200,230,245,.45)',font:{size:9},boxWidth:10}}},
+      scales:{
+        x:{display:false,grid:{display:false}},
+        y:{display:true,grid:{color:'rgba(13,45,74,.5)',drawBorder:false},
+          ticks:{color:'rgba(74,122,153,.8)',font:{size:8},maxTicksLimit:4},
+          title:{display:!!yLabel,text:yLabel,color:'rgba(74,122,153,.6)',font:{size:8}}}
+      }}
+  });
+}
+
+function renderDashboard(data){
+  allData=data;
+  const all=Object.values(data).flat();
+  if(!all.length){
+    document.getElementById('summary').innerHTML='';
+    document.getElementById('sections').innerHTML='<div class="empty">No data yet. Click RUN NOW.</div>';
+    document.getElementById('last-updated').textContent='No data yet';
     return;
   }
-  const latest = {};
-  for (const [n, rs] of Object.entries(data)) latest[n] = rs[rs.length-1];
-  const arr = Object.values(latest);
-  const ts  = arr[0]?.timestamp;
-  if (ts) document.getElementById('last-updated').textContent =
-    'Last updated: ' + new Date(ts).toLocaleString();
-
-  const total = arr.length;
-  const ok    = arr.filter(r => r.status === 'OK').length;
-  const fail  = arr.filter(r => ['FAIL','ERROR'].includes(r.status)).length;
-  const lats  = arr.filter(r => r.latency_ms).map(r => r.latency_ms);
-  const avgLat = lats.length ? (lats.reduce((a,b)=>a+b,0)/lats.length).toFixed(0) : '&#8212;';
-  const bw    = arr.find(r => r.type === 'bandwidth');
-
-  document.getElementById('summary').innerHTML = `
-    <div class="sc"><div class="lbl">Online</div>
-      <div class="val" style="color:var(--accent2)">${ok}/${total}</div>
-      <div class="sub">targets OK</div></div>
-    <div class="sc"><div class="lbl">Failures</div>
-      <div class="val" style="color:${fail?'var(--danger)':'var(--dim)'}">${fail}</div>
-      <div class="sub">tests failing</div></div>
-    <div class="sc"><div class="lbl">Avg Latency</div>
-      <div class="val">${avgLat}</div><div class="sub">milliseconds</div></div>
+  const latest={};
+  for(const[n,rs] of Object.entries(data)) latest[n]=rs[rs.length-1];
+  const arr=Object.values(latest);
+  const ts=arr[0]?.timestamp;
+  if(ts) document.getElementById('last-updated').textContent='Last updated: '+new Date(ts).toLocaleString();
+  const total=arr.length,ok=arr.filter(r=>r.status==='OK').length;
+  const fails=arr.filter(r=>['FAIL','ERROR'].includes(r.status));
+  const lats=arr.filter(r=>r.latency_ms).map(r=>r.latency_ms);
+  const avgLat=lats.length?(lats.reduce((a,b)=>a+b,0)/lats.length).toFixed(0):'&mdash;';
+  const bw=arr.find(r=>r.type==='bandwidth');
+  document.getElementById('summary').innerHTML=`
+    <div class="sc"><div class="lbl">Online</div><div class="val" style="color:var(--accent2)">${ok}/${total}</div><div class="sub">targets OK</div></div>
+    <div class="sc clickable" onclick="showTab('warnings',document.querySelector('[data-tab=warnings]'))">
+      <div class="lbl">Failures</div><div class="val" style="color:${fails.length?'var(--danger)':'var(--dim)'}">${fails.length}</div>
+      <div class="sub">${fails.length?'&#9660; tap for details':'all clear'}</div></div>
+    <div class="sc"><div class="lbl">Avg Latency</div><div class="val">${avgLat}</div><div class="sub">milliseconds</div></div>
     <div class="sc"><div class="lbl">Download</div>
-      <div class="val">${bw?.speed_mbps ?? '&#8212;'}</div><div class="sub">Mbps</div></div>
+      <div class="val">${bw?.speed_mbps??'&mdash;'}</div>
+      <div class="sub">Mbps${bw?.progress_pct!=null?' &middot; '+bw.progress_pct+'% sampled':''}</div></div>
   `;
-
-  const byType = {ping:[],http:[],api:[],traceroute:[],bandwidth:[]};
-  for (const [name, history] of Object.entries(data)) {
-    const last = history[history.length-1];
-    if (last && byType[last.type]) byType[last.type].push({name,last,history});
+  const byType={ping:[],http:[],api:[],traceroute:[],bandwidth:[]};
+  for(const[name,history] of Object.entries(data)){
+    const last=history[history.length-1];
+    if(last&&byType[last.type]) byType[last.type].push({name,last,history});
   }
+  const typeLabels={ping:'&#11044; Connectivity / Ping',http:'&#11044; HTTP Endpoints',
+    api:'&#11044; API Tests',traceroute:'&#11044; Traceroute',bandwidth:'&#11044; Bandwidth'};
+  let html='';
+  const pendingCharts=[];
 
-  const labels = {
-    ping:'&#11044; Connectivity / Ping',
-    http:'&#11044; HTTP Endpoints',
-    api:'&#11044; API Tests',
-    traceroute:'&#11044; Traceroute',
-    bandwidth:'&#11044; Bandwidth'
-  };
-  let html = '';
+  for(const[type,items] of Object.entries(byType)){
+    if(!items.length) continue;
+    html+=`<div class="section"><div class="sec-hdr">
+      <h2 class="type-${type}">${typeLabels[type]}</h2>
+      <span class="cnt">${items.length}</span></div>
+      <div class="test-grid${type==='traceroute'?' tr-grid':''}">`;
 
-  for (const [type, items] of Object.entries(byType)) {
-    if (!items.length) continue;
-    html += `<div class="section"><div class="sec-hdr">
-      <h2 class="type-${type}">${labels[type]}</h2>
-      <span class="cnt">${items.length}</span></div><div class="test-grid${type==='traceroute'?' traceroute-grid':''}">`;
+    for(const{name,last,history} of items){
+      const cls=sc(last.status);
+      const cid='ch_'+name.replace(/\W/g,'_');
+      let metrics='',extra='',chartCfg=null;
 
-    for (const {name, last, history} of items) {
-      const cls = sc(last.status);
-      let metrics = '', extra = '';
-
-      if (type === 'ping') {
-        metrics = `
-          <div class="metric"><div class="ml">Packet Loss</div><div class="mv">${last.packet_loss_pct??'&#8212;'}%</div></div>
-          <div class="metric"><div class="ml">RTT Avg</div><div class="mv">${last.rtt_avg_ms??'&#8212;'} ms</div></div>`;
-        extra = sparkline(history, 'rtt_avg_ms');
-      } else if (type === 'http') {
-        metrics = `
-          <div class="metric"><div class="ml">Code</div><div class="mv">${last.http_code??'&#8212;'}</div></div>
-          <div class="metric"><div class="ml">Latency</div><div class="mv">${last.latency_ms??'&#8212;'} ms</div></div>`;
-        extra = sparkline(history, 'latency_ms');
-      } else if (type === 'api') {
-        const bm = last.body_match === true ? '&#10003;' : last.body_match === false ? '&#10007;' : '&#8212;';
-        metrics = `
+      if(type==='ping'){
+        const rw=last.rtt_avg_ms&&last.rtt_avg_ms>150;
+        const lw=last.packet_loss_pct>0;
+        metrics=`
+          <div class="metric"><div class="ml">Loss</div><div class="mv ${lw?'warn-val':''}">${last.packet_loss_pct??'&mdash;'}%</div></div>
+          <div class="metric"><div class="ml">RTT Avg</div><div class="mv ${rw?'warn-val':''}">${last.rtt_avg_ms??'&mdash;'} ms</div></div>`;
+        const vals=history.map(h=>h.rtt_avg_ms).filter(v=>v!=null);
+        const tl=history.filter(h=>h.rtt_avg_ms!=null).map(h=>new Date(h.timestamp).toLocaleTimeString());
+        extra=`<div class="chart-wrap"><canvas id="${cid}"></canvas></div>`;
+        chartCfg={id:cid,labels:tl,datasets:[{label:'RTT ms',data:vals,color:'rgba(0,212,255,.8)',fill:'rgba(0,212,255,.05)'}],y:'ms'};
+      } else if(type==='http'){
+        const lw=last.latency_ms&&last.latency_ms>500;
+        metrics=`
+          <div class="metric"><div class="ml">Code</div><div class="mv">${last.http_code??'&mdash;'}</div></div>
+          <div class="metric"><div class="ml">Latency</div><div class="mv ${lw?'warn-val':''}">${last.latency_ms??'&mdash;'} ms</div></div>`;
+        const vals=history.map(h=>h.latency_ms).filter(v=>v!=null);
+        const tl=history.filter(h=>h.latency_ms!=null).map(h=>new Date(h.timestamp).toLocaleTimeString());
+        extra=`<div class="chart-wrap"><canvas id="${cid}"></canvas></div>`;
+        chartCfg={id:cid,labels:tl,datasets:[{label:'ms',data:vals,color:'rgba(0,212,255,.8)',fill:'rgba(0,212,255,.05)'}],y:'ms'};
+      } else if(type==='api'){
+        const lw=last.latency_ms&&last.latency_ms>1000;
+        const bm=last.body_match===true?'&#10003;':last.body_match===false?'&#10007;':'&mdash;';
+        metrics=`
           <div class="metric"><div class="ml">Method</div><div class="mv">${last.method??'GET'}</div></div>
-          <div class="metric"><div class="ml">Code</div><div class="mv">${last.http_code??'&#8212;'}</div></div>
-          <div class="metric"><div class="ml">Latency</div><div class="mv">${last.latency_ms??'&#8212;'} ms</div></div>
+          <div class="metric"><div class="ml">Code</div><div class="mv">${last.http_code??'&mdash;'}</div></div>
+          <div class="metric"><div class="ml">Latency</div><div class="mv ${lw?'warn-val':''}">${last.latency_ms??'&mdash;'} ms</div></div>
           <div class="metric"><div class="ml">Body</div><div class="mv">${bm}</div></div>`;
-        extra = sparkline(history, 'latency_ms');
-      } else if (type === 'traceroute') {
-        const hops = last.hops || [];
-        const maxRtt = Math.max(...hops.map(h => h.rtt_avg_ms||0), 1);
-        metrics = `<div class="metric"><div class="ml">Hops</div><div class="mv">${last.hop_count??'&#8212;'}</div></div>`;
-        if (hops.length) {
-          extra = `<div class="hops-wrap"><table class="hops-table">
-            <colgroup><col/><col/><col/><col/></colgroup>
-            <tr><th>#</th><th>IP</th><th>RTT</th><th></th></tr>` +
-            hops.slice(0,15).map(h => `<tr>
-              <td>${h.hop}</td>
-              <td title="${h.ip}">${h.ip}</td>
-              <td>${h.rtt_avg_ms != null ? h.rtt_avg_ms+'ms' : '*'}</td>
-              <td><div class="hop-bar" style="width:${h.rtt_avg_ms!=null?Math.max(2,Math.min(100,(h.rtt_avg_ms/maxRtt*100))).toFixed(0):2}%"></div></td>
-            </tr>`).join('') +
-            (hops.length > 15 ? `<tr><td colspan="4" style="color:var(--dim);font-size:.65rem">&#8230; ${hops.length-15} more hops</td></tr>` : '') +
+        const vals=history.map(h=>h.latency_ms).filter(v=>v!=null);
+        const tl=history.filter(h=>h.latency_ms!=null).map(h=>new Date(h.timestamp).toLocaleTimeString());
+        extra=`<div class="chart-wrap"><canvas id="${cid}"></canvas></div>`;
+        chartCfg={id:cid,labels:tl,datasets:[{label:'ms',data:vals,color:'rgba(179,107,255,.8)',fill:'rgba(179,107,255,.05)'}],y:'ms'};
+      } else if(type==='traceroute'){
+        const hops=last.hops||[];
+        const maxRtt=Math.max(...hops.map(h=>h.rtt_avg_ms||0),1);
+        metrics=`<div class="metric"><div class="ml">Hops</div><div class="mv">${last.hop_count??'&mdash;'}</div></div>`;
+        if(hops.length){
+          extra=`<div class="hops-wrap"><table class="hops-table">
+            <colgroup><col style="width:26px"/><col style="width:38%"/><col style="width:65px"/><col/></colgroup>
+            <tr><th>#</th><th>IP</th><th>RTT</th><th></th></tr>`+
+            hops.slice(0,15).map(h=>`<tr>
+              <td>${h.hop}</td><td title="${h.ip}">${h.ip}</td>
+              <td>${h.rtt_avg_ms!=null?h.rtt_avg_ms+'ms':'*'}</td>
+              <td><div class="hop-bar" style="width:${h.rtt_avg_ms!=null?Math.max(2,Math.min(100,h.rtt_avg_ms/maxRtt*100)).toFixed(0):2}%"></div></td>
+            </tr>`).join('')+
+            (hops.length>15?`<tr><td colspan="4" style="color:var(--dim);font-size:.6rem">&hellip; ${hops.length-15} more</td></tr>`:'')+
             '</table></div>';
         }
       } else {
-        metrics = `
-          <div class="metric"><div class="ml">Speed</div><div class="mv">${last.speed_mbps??'&#8212;'} Mbps</div></div>
-          <div class="metric"><div class="ml">Duration</div><div class="mv">${last.duration_s??'&#8212;'}s</div></div>`;
-        extra = sparkline(history, 'speed_mbps');
+        const sw=last.speed_mbps&&last.speed_mbps<10;
+        const prog=last.progress_pct??100;
+        metrics=`
+          <div class="metric"><div class="ml">Speed</div><div class="mv ${sw?'warn-val':''}">${last.speed_mbps??'&mdash;'} Mbps</div></div>
+          <div class="metric"><div class="ml">Duration</div><div class="mv">${last.duration_s??'&mdash;'}s</div></div>
+          <div class="metric"><div class="ml">Sampled</div><div class="mv">${prog}%</div></div>`;
+        const vals=history.map(h=>h.speed_mbps).filter(v=>v!=null);
+        const tl=history.filter(h=>h.speed_mbps!=null).map(h=>new Date(h.timestamp).toLocaleTimeString());
+        extra=`<div class="bw-prog-wrap">
+          <div class="bw-prog-lbl">Download sample: ${prog}%</div>
+          <div class="bw-prog-bar"><div class="bw-prog-fill" style="width:${prog}%"></div></div>
+        </div><div class="chart-wrap" style="margin-top:.5rem"><canvas id="${cid}"></canvas></div>`;
+        chartCfg={id:cid,labels:tl,datasets:[{label:'Mbps',data:vals,color:'rgba(255,204,0,.8)',fill:'rgba(255,204,0,.05)'}],y:'Mbps'};
       }
 
-      html += `<div class="tc ${cls}">
+      const ub = type!=='traceroute' ? uptimeBar(last.uptime_pct) : '';
+      const fd = failDropdown(name,history);
+      const err = last.error?`<div style="font-family:'Share Tech Mono';font-size:.58rem;color:#ff6b35;margin-top:.38rem;word-break:break-all">${last.error}</div>`:'';
+
+      html+=`<div class="tc ${cls}">
         <div class="tc-hdr">
           <div><div class="tc-name">${name}</div><div class="tc-tgt">${last.target??''}</div></div>
           <span class="badge ${cls}">${last.status}</span>
         </div>
         <div class="metrics">${metrics}</div>
-        ${extra ? `<div class="${type==='traceroute'?'':'sparkline'}">${extra}</div>` : ''}
-        ${last.error ? `<div style="font-family:'Share Tech Mono';font-size:.62rem;color:#ff6b35;margin-top:.5rem;word-break:break-all">${last.error}</div>` : ''}
+        ${ub}${extra}${fd}${err}
       </div>`;
+      if(chartCfg) pendingCharts.push(chartCfg);
     }
-    html += '</div></div>';
+    html+='</div></div>';
   }
-  document.getElementById('sections').innerHTML = html || '<div class="empty">No results yet.</div>';
+  document.getElementById('sections').innerHTML=html||'<div class="empty">No results yet.</div>';
+  requestAnimationFrame(()=>{ for(const c of pendingCharts) makeChart(c.id,c.labels,c.datasets,c.y); });
 }
 
-function renderTargetManager(cfg) {
-  allConfig = cfg;
-  const renderList = (type, items, labelFn) => {
-    const el = document.getElementById('list-' + type);
-    if (!el) return;
-    if (!items || !items.length) {
-      el.innerHTML = '<div style="font-family:\'Share Tech Mono\';font-size:.7rem;color:var(--dim);padding:.3rem 0">No targets configured.</div>';
-      return;
+function renderWarnings(){
+  const list=document.getElementById('warn-list');
+  let filtered=allWarnings;
+  if(warnFilter==='unacked') filtered=allWarnings.filter(w=>!w.acknowledged);
+  else if(warnFilter!=='all') filtered=allWarnings.filter(w=>w.type===warnFilter);
+  if(!filtered.length){
+    list.innerHTML=`<div class="no-warns">${warnFilter==='unacked'?'&#10003; All caught up!':'No warnings yet.'}</div>`;
+    return;
+  }
+  const icons={down:'&#128308;',up:'&#128994;',latency:'&#9203;',loss:'&#128246;',speed:'&#8681;'};
+  list.innerHTML=filtered.map((w)=>`
+    <div class="warn-item type-${w.type} ${w.acknowledged?'acked':''}">
+      <span class="wi-icon">${icons[w.type]||'&#9888;'}</span>
+      <div class="wi-body">
+        <div class="wi-msg">${w.message}</div>
+        <div class="wi-meta">${new Date(w.timestamp).toLocaleString()} &nbsp;&middot;&nbsp; ${w.name}</div>
+      </div>
+      <button class="wi-ack" onclick="ackW(${allWarnings.indexOf(w)})">${w.acknowledged?'Read':'Mark read'}</button>
+    </div>`).join('');
+}
+
+function filterW(f,el){
+  warnFilter=f;
+  document.querySelectorAll('.wf-btn').forEach(b=>b.classList.remove('active'));
+  el.classList.add('active');
+  renderWarnings();
+}
+
+let _lastToasted=null;
+async function fetchData(){
+  try{renderDashboard(await(await fetch('/data')).json());}catch(e){console.error(e);}
+}
+async function fetchWarnings(){
+  try{
+    allWarnings=await(await fetch('/warnings')).json();
+    const unacked=allWarnings.filter(w=>!w.acknowledged).length;
+    const badge=document.getElementById('warn-badge');
+    badge.textContent=unacked;
+    badge.style.display=unacked?'flex':'none';
+    if(unacked>0){
+      const newest=allWarnings.find(w=>!w.acknowledged);
+      if(newest&&JSON.stringify(newest)!==_lastToasted){
+        _lastToasted=JSON.stringify(newest);
+        const typeMap={down:'danger',up:'ok',latency:'warn',loss:'warn',speed:'warn'};
+        toast(newest.message,typeMap[newest.type]||'warn');
+      }
     }
-    el.innerHTML = items.map((t, i) => `
-      <div class="target-item">
-        <div><div class="ti-name">${t.name}</div><div class="ti-val">${labelFn(t)}</div></div>
-        <button class="btn-del" onclick="removeTarget('${type}',${i})" title="Remove">&#10005;</button>
-      </div>`).join('');
+    if(document.getElementById('page-warnings').classList.contains('active')) renderWarnings();
+  }catch(e){}
+}
+async function fetchConfig(){
+  try{renderTargetManager(await(await fetch('/config')).json());}catch(e){}
+}
+async function runTests(){
+  const btn=document.getElementById('run-btn');
+  btn.textContent='Running...';btn.disabled=true;
+  try{
+    await fetch('/run',{method:'POST'});
+    toast('Tests complete','info');
+    await Promise.all([fetchData(),fetchWarnings()]);
+  }catch{toast('Run failed','danger');}
+  finally{btn.innerHTML='&#9654; RUN NOW';btn.disabled=false;}
+}
+async function ackW(idx){
+  await fetch('/warnings/ack',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({index:idx})});
+  await fetchWarnings();
+}
+async function ackAllW(){
+  await fetch('/warnings/ack-all',{method:'POST'});
+  await fetchWarnings();
+  toast('All warnings marked as read','ok');
+}
+
+function renderTargetManager(cfg){
+  allConfig=cfg;
+  const rl=(type,items,lf)=>{
+    const el=document.getElementById('list-'+type);
+    if(!el) return;
+    if(!items||!items.length){el.innerHTML='<div style="font-family:\'Share Tech Mono\';font-size:.66rem;color:var(--dim);padding:.25rem 0">No targets.</div>';return;}
+    el.innerHTML=items.map((t,i)=>`<div class="ti">
+      <div><div class="ti-name">${t.name}</div><div class="ti-val">${lf(t)}</div></div>
+      <button class="btn-del" onclick="removeTarget('${type}',${i})">&#10005;</button></div>`).join('');
   };
-  renderList('ping',       cfg.ping||[],       t => t.host);
-  renderList('http',       cfg.http||[],       t => t.url);
-  renderList('api',        cfg.api||[],        t => `[${t.method||'GET'}] ${t.url}`);
-  renderList('traceroute', cfg.traceroute||[], t => t.host);
-  const bwEl = document.getElementById('bw-url');
-  if (bwEl) bwEl.value = cfg.bandwidth_url || '';
+  rl('ping',cfg.ping||[],t=>`${t.host} · every ${t.interval||5}min · warn >${t.warn_rtt_ms||'?'}ms`);
+  rl('http',cfg.http||[],t=>`${t.url} · every ${t.interval||5}min`);
+  rl('api', cfg.api||[], t=>`[${t.method||'GET'}] ${t.url}`);
+  rl('traceroute',cfg.traceroute||[],t=>`${t.host} · every ${t.interval||30}min`);
+  const bwEl=document.getElementById('bw-url');if(bwEl)bwEl.value=cfg.bandwidth_url||'';
+  const biEl=document.getElementById('bw-interval');if(biEl)biEl.value=cfg.bandwidth_interval||30;
+  const wsEl=document.getElementById('bw-warn-speed');if(wsEl)wsEl.value=cfg.warn_speed_mbps||10;
 }
 
-function addTarget(type) {
-  const cfg = JSON.parse(JSON.stringify(allConfig));
-  let target;
-  if (type === 'ping') {
-    const name = document.getElementById('ping-name').value.trim();
-    const host = document.getElementById('ping-host').value.trim();
-    if (!name || !host) return toast('Name and host required', false);
-    target = {name, host};
-    document.getElementById('ping-name').value = '';
-    document.getElementById('ping-host').value = '';
-  } else if (type === 'http') {
-    const name = document.getElementById('http-name').value.trim();
-    const url  = document.getElementById('http-url').value.trim();
-    if (!name || !url) return toast('Name and URL required', false);
-    target = {name, url};
-    document.getElementById('http-name').value = '';
-    document.getElementById('http-url').value = '';
-  } else if (type === 'api') {
-    const name    = document.getElementById('api-name').value.trim();
-    const url     = document.getElementById('api-url').value.trim();
-    const method  = document.getElementById('api-method').value;
-    const expSt   = document.getElementById('api-status').value.trim();
-    const expBd   = document.getElementById('api-body-check').value.trim();
-    const hdrsRaw = document.getElementById('api-headers').value.trim();
-    const bodyRaw = document.getElementById('api-body').value.trim();
-    if (!name || !url) return toast('Name and URL required', false);
-    let headers = {};
-    if (hdrsRaw) { try { headers = JSON.parse(hdrsRaw); } catch { return toast('Invalid JSON in headers', false); } }
-    target = {name, url, method, headers, body: bodyRaw,
-      expected_status: expSt ? parseInt(expSt) : null, expected_body: expBd};
-    ['api-name','api-url','api-status','api-body-check','api-headers','api-body']
-      .forEach(id => document.getElementById(id).value = '');
-  } else if (type === 'traceroute') {
-    const name = document.getElementById('tr-name').value.trim();
-    const host = document.getElementById('tr-host').value.trim();
-    if (!name || !host) return toast('Name and host required', false);
-    target = {name, host};
-    document.getElementById('tr-name').value = '';
-    document.getElementById('tr-host').value = '';
+function addTarget(type){
+  const cfg=JSON.parse(JSON.stringify(allConfig));
+  let t;
+  if(type==='ping'){
+    const name=document.getElementById('ping-name').value.trim();
+    const host=document.getElementById('ping-host').value.trim();
+    if(!name||!host) return toast('Name and host required','danger');
+    t={name,host,interval:parseInt(document.getElementById('ping-interval').value)||5,
+       warn_rtt_ms:parseInt(document.getElementById('ping-warn-rtt').value)||null,
+       warn_loss_pct:parseInt(document.getElementById('ping-warn-loss').value)||null};
+    ['ping-name','ping-host'].forEach(id=>document.getElementById(id).value='');
+  }else if(type==='http'){
+    const name=document.getElementById('http-name').value.trim();
+    const url=document.getElementById('http-url').value.trim();
+    if(!name||!url) return toast('Name and URL required','danger');
+    t={name,url,interval:parseInt(document.getElementById('http-interval').value)||5,
+       warn_latency_ms:parseInt(document.getElementById('http-warn-lat').value)||null};
+    ['http-name','http-url'].forEach(id=>document.getElementById(id).value='');
+  }else if(type==='api'){
+    const name=document.getElementById('api-name').value.trim();
+    const url=document.getElementById('api-url').value.trim();
+    if(!name||!url) return toast('Name and URL required','danger');
+    let headers={};
+    const hr=document.getElementById('api-headers').value.trim();
+    if(hr){try{headers=JSON.parse(hr);}catch{return toast('Invalid JSON headers','danger');}}
+    t={name,url,method:document.getElementById('api-method').value,headers,
+       body:document.getElementById('api-body').value.trim(),
+       expected_status:parseInt(document.getElementById('api-status').value)||null,
+       expected_body:document.getElementById('api-body-check').value.trim(),
+       interval:parseInt(document.getElementById('api-interval').value)||10,
+       warn_latency_ms:parseInt(document.getElementById('api-warn-lat').value)||null};
+    ['api-name','api-url','api-status','api-body-check','api-headers','api-body'].forEach(id=>document.getElementById(id).value='');
+  }else if(type==='traceroute'){
+    const name=document.getElementById('tr-name').value.trim();
+    const host=document.getElementById('tr-host').value.trim();
+    if(!name||!host) return toast('Name and host required','danger');
+    t={name,host,interval:parseInt(document.getElementById('tr-interval').value)||30};
+    ['tr-name','tr-host'].forEach(id=>document.getElementById(id).value='');
   }
-  cfg[type] = cfg[type] || [];
-  cfg[type].push(target);
-  saveConfigToServer(cfg, type);
+  cfg[type]=cfg[type]||[];cfg[type].push(t);
+  saveConfigRemote(cfg,type);
+}
+function removeTarget(type,idx){
+  const cfg=JSON.parse(JSON.stringify(allConfig));
+  cfg[type].splice(idx,1);saveConfigRemote(cfg,type);
+}
+function saveBwSettings(){
+  const cfg=JSON.parse(JSON.stringify(allConfig));
+  cfg.bandwidth_url=document.getElementById('bw-url').value.trim()||'https://speed.cloudflare.com/__down?bytes=5000000';
+  cfg.bandwidth_interval=parseInt(document.getElementById('bw-interval').value)||30;
+  cfg.warn_speed_mbps=parseFloat(document.getElementById('bw-warn-speed').value)||null;
+  saveConfigRemote(cfg,'bw');
+}
+async function saveConfigRemote(cfg,noticeId){
+  try{
+    const r=await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(cfg)});
+    if(!r.ok) throw new Error();
+    allConfig=cfg;renderTargetManager(cfg);
+    const n=document.getElementById('notice-'+noticeId);
+    if(n){n.classList.add('show');setTimeout(()=>n.classList.remove('show'),2500);}
+    toast('Saved','ok');
+  }catch{toast('Failed to save','danger');}
 }
 
-function removeTarget(type, idx) {
-  const cfg = JSON.parse(JSON.stringify(allConfig));
-  cfg[type].splice(idx, 1);
-  saveConfigToServer(cfg, type);
-}
-
-function saveBwUrl() {
-  const url = document.getElementById('bw-url').value.trim();
-  if (!url) return toast('URL required', false);
-  const cfg = JSON.parse(JSON.stringify(allConfig));
-  cfg.bandwidth_url = url;
-  saveConfigToServer(cfg, 'bw');
-}
-
-async function saveConfigToServer(cfg, noticeId) {
-  try {
-    const r = await fetch('/config', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg)});
-    if (!r.ok) throw new Error();
-    allConfig = cfg;
-    renderTargetManager(cfg);
-    showNotice(noticeId);
-    toast('Target saved');
-  } catch { toast('Failed to save', false); }
-}
-
-async function runTests() {
-  const btn = document.getElementById('run-btn');
-  btn.textContent = 'Running...';
-  btn.disabled = true;
-  try {
-    await fetch('/run', {method:'POST'});
-    toast('Tests complete');
-    await Promise.all([fetchData(), fetchConfig()]);
-  } catch { toast('Run failed', false); }
-  finally { btn.innerHTML = '&#9654; RUN NOW'; btn.disabled = false; }
-}
-
-async function fetchData() {
-  try { renderDashboard(await (await fetch('/data')).json()); }
-  catch(e) { console.error(e); }
-}
-
-async function fetchConfig() {
-  try { renderTargetManager(await (await fetch('/config')).json()); }
-  catch(e) { console.error(e); }
-}
-
-fetchData();
-fetchConfig();
-setInterval(fetchData, 15000);
+fetchData();fetchWarnings();fetchConfig();
+setInterval(fetchData,15000);setInterval(fetchWarnings,8000);
 </script>
 </body>
 </html>"""
 
-
 # ─── HTTP HANDLER ─────────────────────────────────────────────────────────────
-
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *a): pass
-
-    def send_json(self, data, code=200):
-        body = json.dumps(data).encode()
+    def log_message(self,*a): pass
+    def send_json(self,data,code=200):
+        body=json.dumps(data).encode()
         self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", len(body))
-        self.end_headers()
-        self.wfile.write(body)
-
+        self.send_header("Content-Type","application/json")
+        self.send_header("Content-Length",len(body))
+        self.end_headers();self.wfile.write(body)
     def do_GET(self):
-        if self.path == "/":
-            body = HTML_DASHBOARD.encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.send_header("Content-Length", len(body))
-            self.end_headers()
-            self.wfile.write(body)
-        elif self.path == "/data":
-            body = b"{}"
+        if self.path=="/":
+            body=HTML.encode()
+            self.send_response(200);self.send_header("Content-Type","text/html")
+            self.send_header("Content-Length",len(body));self.end_headers();self.wfile.write(body)
+        elif self.path=="/data":
+            body=b"{}"
             if os.path.exists(RESULTS_FILE):
-                with open(RESULTS_FILE) as f:
-                    body = f.read().encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", len(body))
-            self.end_headers()
-            self.wfile.write(body)
-        elif self.path == "/config":
+                with open(RESULTS_FILE) as f: body=f.read().encode()
+            self.send_response(200);self.send_header("Content-Type","application/json")
+            self.send_header("Content-Length",len(body));self.end_headers();self.wfile.write(body)
+        elif self.path=="/config":
             self.send_json(load_config())
-        elif self.path == "/download-csv":
+        elif self.path=="/warnings":
+            with _warn_lock: data=list(_warnings)
+            self.send_json(data)
+        elif self.path=="/download-csv":
             if os.path.exists(CSV_FILE):
-                with open(CSV_FILE, "rb") as f:
-                    body = f.read()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/csv")
-                self.send_header("Content-Disposition", f'attachment; filename="{CSV_FILE}"')
-                self.send_header("Content-Length", len(body))
-                self.end_headers()
-                self.wfile.write(body)
+                with open(CSV_FILE,"rb") as f: body=f.read()
+                self.send_response(200);self.send_header("Content-Type","text/csv")
+                self.send_header("Content-Disposition",f'attachment; filename="{CSV_FILE}"')
+                self.send_header("Content-Length",len(body));self.end_headers();self.wfile.write(body)
             else:
-                self.send_response(404); self.end_headers()
-                self.wfile.write(b"No CSV data yet.")
+                self.send_response(404);self.end_headers();self.wfile.write(b"No CSV yet.")
         else:
-            self.send_response(404); self.end_headers()
-
+            self.send_response(404);self.end_headers()
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body   = self.rfile.read(length) if length else b""
-        if self.path == "/run":
-            run_all_tests()
-            self.send_json({"status": "ok"})
-        elif self.path == "/config":
-            try:
-                cfg = json.loads(body)
-                save_config(cfg)
-                self.send_json({"status": "ok"})
-            except Exception as e:
-                self.send_json({"error": str(e)}, 400)
+        length=int(self.headers.get("Content-Length",0))
+        body=self.rfile.read(length) if length else b""
+        if self.path=="/run":
+            run_all_tests();self.send_json({"status":"ok"})
+        elif self.path=="/config":
+            try: save_config(json.loads(body));self.send_json({"status":"ok"})
+            except Exception as e: self.send_json({"error":str(e)},400)
+        elif self.path=="/warnings/ack":
+            try: ack_warning(json.loads(body).get("index",0));self.send_json({"status":"ok"})
+            except Exception as e: self.send_json({"error":str(e)},400)
+        elif self.path=="/warnings/ack-all":
+            ack_all();self.send_json({"status":"ok"})
         else:
-            self.send_response(404); self.end_headers()
-
-
-# ─── SCHEDULER ───────────────────────────────────────────────────────────────
-
-def start_scheduler():
-    print(f"  Scheduler: tests every {SCHEDULE_INTERVAL_MINUTES} minutes")
-    while True:
-        time.sleep(SCHEDULE_INTERVAL_MINUTES * 60)
-        run_all_tests()
-
+            self.send_response(404);self.end_headers()
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    print("=" * 58)
-    print("  NETMONITOR v2 - Network Test Automation")
-    print("=" * 58)
+if __name__=="__main__":
+    print("="*55)
+    print("  NETMONITOR v3")
+    print("="*55)
+    load_warnings()
     run_all_tests()
-    threading.Thread(target=start_scheduler, daemon=True).start()
-    server = HTTPServer(("0.0.0.0", WEB_PORT), Handler)
-    print(f"\n  Dashboard  ->  http://localhost:{WEB_PORT}")
-    print(f"  CSV log    ->  {CSV_FILE}")
-    print(f"  Config     ->  {CONFIG_FILE}")
-    print(f"  Press Ctrl+C to stop\n")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n  Stopped.")
+    threading.Thread(target=start_scheduler,daemon=True).start()
+    server=HTTPServer(("0.0.0.0",WEB_PORT),Handler)
+    print(f"\n  Dashboard -> http://localhost:{WEB_PORT}")
+    print(f"  Ctrl+C to stop\n")
+    try: server.serve_forever()
+    except KeyboardInterrupt: print("\n  Stopped.")

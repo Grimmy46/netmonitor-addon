@@ -20,6 +20,7 @@ CONFIG_FILE   = "targets.json"
 CSV_FILE      = "network_results.csv"
 RESULTS_FILE  = "latest_results.json"
 WARNINGS_FILE = "warnings.json"
+DEVICES_FILE  = "devices.json"
 WEB_PORT      = 8088
 
 BW_URLS = [
@@ -426,6 +427,33 @@ def save_json(results):
     with open(RESULTS_FILE,"w") as f:
         json.dump(history,f)
 
+# ─── DEVICES ──────────────────────────────────────────────────────────────────
+def load_devices():
+    if os.path.exists(DEVICES_FILE):
+        try:
+            with open(DEVICES_FILE) as f: return json.load(f)
+        except: pass
+    return {"switches":[],"aps":[]}
+
+def save_devices(data):
+    with open(DEVICES_FILE,"w") as f:
+        json.dump(data,f,indent=2)
+
+def ping_device(ip):
+    try:
+        r = subprocess.run(["ping","-c","1","-W","1",ip],capture_output=True,timeout=3)
+        return r.returncode == 0
+    except: return False
+
+def ping_all_devices():
+    devs = load_devices()
+    for section in ["switches","aps"]:
+        for d in devs.get(section,[]):
+            if d.get("ip","").strip():
+                d["online"] = ping_device(d["ip"])
+                d["last_checked"] = datetime.now().isoformat()
+    save_devices(devs)
+
 # ─── SCHEDULER ────────────────────────────────────────────────────────────────
 def start_scheduler():
     last_run = {}
@@ -465,7 +493,47 @@ HTML = r"""<!DOCTYPE html>
 <style>
 :root{--bg:#050a0f;--panel:#0a1520;--panel2:#0d1e30;--border:#0d2d4a;
   --accent:#00d4ff;--accent2:#00ff9d;--warn:#ffcc00;--danger:#ff2d55;
-  --text:#c8e6f5;--dim:#4a7a99;--api:#b36bff;--trace:#ff9d3b;}
+  --text:#c8e6f5;--dim:#4a7a99;--api:#b36bff;--trace:#ff9d3b;--ap:#b36bff;}
+/* ── DEVICES TAB ── */
+.dev-toolbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:.6rem;}
+.dev-filters{display:flex;gap:.4rem;flex-wrap:wrap;}
+.df-btn{font-family:'Share Tech Mono';font-size:.65rem;padding:.25rem .7rem;border-radius:4px;
+  border:1px solid var(--border);color:var(--dim);background:var(--panel2);cursor:pointer;transition:all .15s;}
+.df-btn.active{border-color:var(--accent);color:var(--accent);background:rgba(0,212,255,.07);}
+.dev-stats{display:flex;gap:.8rem;margin-bottom:1rem;flex-wrap:wrap;}
+.dev-stat{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:.6rem 1rem;font-size:.7rem;}
+.dev-stat span{font-weight:800;font-size:1.1rem;display:block;}
+.dev-stat span.online-num{color:var(--accent2);}
+.dev-stat span.offline-num{color:var(--danger);}
+.dev-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:.9rem 1rem;
+  position:relative;transition:border-color .2s;}
+.dev-card.online{border-left:3px solid var(--accent2);}
+.dev-card.offline{border-left:3px solid var(--danger);}
+.dev-card.unknown{border-left:3px solid var(--dim);}
+.dev-card-hdr{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:.5rem;}
+.dev-name{font-weight:700;font-size:.82rem;color:var(--text);line-height:1.3;}
+.dev-badge{font-family:'Share Tech Mono';font-size:.58rem;padding:.18rem .5rem;border-radius:4px;white-space:nowrap;}
+.dev-badge.online{background:rgba(0,255,157,.1);color:var(--accent2);border:1px solid var(--accent2);}
+.dev-badge.offline{background:rgba(255,45,85,.1);color:var(--danger);border:1px solid var(--danger);}
+.dev-badge.unknown{background:rgba(74,122,153,.1);color:var(--dim);border:1px solid var(--dim);}
+.dev-meta{display:grid;grid-template-columns:auto 1fr;gap:.2rem .6rem;font-size:.68rem;}
+.dev-meta .lbl{color:var(--dim);font-family:'Share Tech Mono';}
+.dev-meta .val{color:var(--text);}
+.dev-notes{font-size:.65rem;color:var(--dim);margin-top:.4rem;font-style:italic;}
+.dev-actions{display:flex;gap:.4rem;margin-top:.6rem;}
+.dev-act{font-size:.6rem;padding:.18rem .5rem;border-radius:4px;cursor:pointer;border:1px solid var(--border);
+  background:transparent;color:var(--dim);transition:all .15s;}
+.dev-act:hover{color:var(--text);border-color:var(--text);}
+.dev-act.del:hover{color:var(--danger);border-color:var(--danger);}
+.dev-tag{display:inline-block;font-size:.58rem;padding:.1rem .35rem;border-radius:3px;margin:.1rem .1rem 0 0;
+  background:rgba(0,212,255,.06);border:1px solid rgba(0,212,255,.2);color:var(--dim);}
+.dev-tag.tb{background:rgba(0,212,255,.1);color:var(--accent);border-color:var(--accent);}
+.dev-tag.kiosk{background:rgba(179,107,255,.1);color:var(--ap);border-color:var(--ap);}
+.dev-tag.sb{background:rgba(255,157,59,.1);color:var(--trace);border-color:var(--trace);}
+.dev-tag.office{background:rgba(0,255,157,.1);color:var(--accent2);border-color:var(--accent2);}
+.dev-tag.food{background:rgba(255,204,0,.1);color:var(--warn);border-color:var(--warn);}
+.dev-tag.zzz{background:rgba(74,122,153,.1);color:var(--dim);border-color:var(--dim);}
+.dev-tag.yyy{background:rgba(74,122,153,.1);color:var(--dim);border-color:var(--dim);}
 *{box-sizing:border-box;margin:0;padding:0;}
 body{background:var(--bg);color:var(--text);font-family:'Exo 2',sans-serif;min-height:100vh;
   background-image:linear-gradient(rgba(0,212,255,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(0,212,255,.025) 1px,transparent 1px);
@@ -641,6 +709,7 @@ main{padding:1.2rem 1.5rem;max-width:1600px;margin:0 auto;}
 </header>
 <div class="tabs">
   <div class="tab active"   data-tab="dashboard" onclick="showTab('dashboard',this)">Dashboard</div>
+  <div class="tab"          data-tab="devices"   onclick="showTab('devices',this)">&#128246; Network Devices</div>
   <div class="tab"          data-tab="targets"   onclick="showTab('targets',this)">&#9881; Targets</div>
   <div class="tab tab-warn" data-tab="warnings"  onclick="showTab('warnings',this)">&#9888; Warnings</div>
 </div>
@@ -649,6 +718,74 @@ main{padding:1.2rem 1.5rem;max-width:1600px;margin:0 auto;}
     <div class="last-upd" id="last-updated">Loading...</div>
     <div class="summary-grid" id="summary"></div>
     <div id="sections"></div>
+  </div>
+  <div class="page" id="page-devices">
+    <div class="dev-toolbar">
+      <div class="dev-filters">
+        <button class="df-btn active" onclick="filterDev('all',this)">All Devices</button>
+        <button class="df-btn" onclick="filterDev('switch',this)">&#128268; Switches</button>
+        <button class="df-btn" onclick="filterDev('ap',this)">&#128246; Access Points</button>
+        <button class="df-btn" onclick="filterDev('online',this)">&#128994; Online</button>
+        <button class="df-btn" onclick="filterDev('offline',this)">&#128308; Offline</button>
+      </div>
+      <div style="display:flex;gap:.5rem;align-items:center;">
+        <input id="dev-search" placeholder="&#128269; Search devices..." style="font-family:'Exo 2';font-size:.75rem;padding:.35rem .7rem;background:var(--panel2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:200px;" oninput="renderDevices()">
+        <button class="btn btn-blue" onclick="pingAllDevices()">&#9654; Ping All</button>
+        <button class="btn" style="border:1px solid #00a651!important;color:#00a651;background:rgba(0,166,81,.07);" onclick="showMerakiImport()">&#8659; Import Meraki</button>
+        <button class="btn btn-green" onclick="showAddDevice()">+ Add Device</button>
+      </div>
+    </div>
+    <div class="dev-stats" id="dev-stats"></div>
+    <div id="dev-add-form" style="display:none;" class="mgr-card" style="margin-bottom:1rem;">
+      <h3 style="color:var(--accent2);font-size:.8rem;letter-spacing:.1em;margin-bottom:.8rem;">&#43; ADD DEVICE</h3>
+      <div class="row">
+        <div class="form-group"><label>Type</label>
+          <select id="new-dev-type"><option value="switches">Switch</option><option value="aps">Access Point</option></select>
+        </div>
+        <div class="form-group"><label>Name</label><input id="new-dev-name" placeholder="TB 01 Switch"></div>
+        <div class="form-group"><label>IP Address</label><input id="new-dev-ip" placeholder="10.44.6.50"></div>
+      </div>
+      <div class="row">
+        <div class="form-group"><label>Model</label><input id="new-dev-model" placeholder="MS125-24P"></div>
+        <div class="form-group"><label>Location</label><input id="new-dev-location" placeholder="Ticket Box 01"></div>
+        <div class="form-group"><label>Notes</label><input id="new-dev-notes" placeholder="VLAN 60"></div>
+      </div>
+      <div style="display:flex;gap:.5rem;">
+        <button class="btn btn-green" onclick="addDevice()">+ Add Device</button>
+        <button class="btn btn-blue" onclick="document.getElementById('dev-add-form').style.display='none'">Cancel</button>
+      </div>
+    </div>
+    <div id="meraki-import-form" style="display:none;" class="mgr-card">
+      <h3 style="color:#00a651;font-size:.8rem;letter-spacing:.1em;margin-bottom:.8rem;">&#8659; IMPORT FROM MERAKI</h3>
+      <p style="font-size:.75rem;color:var(--dim);margin-bottom:.8rem;">Enter your Meraki API key and Org ID to auto-import all switches and APs.</p>
+      <div class="row">
+        <div class="form-group"><label>API Key</label><input id="meraki-key" type="password" placeholder="Your Meraki API key"></div>
+        <div class="form-group"><label>Organisation ID</label><input id="meraki-org" placeholder="762234236932456611" value="762234236932456611"></div>
+      </div>
+      <div style="display:flex;gap:.5rem;align-items:center;">
+        <button class="btn" style="border:1px solid #00a651!important;color:#00a651;background:rgba(0,166,81,.1);" onclick="importMeraki()">&#8659; Import Now</button>
+        <button class="btn btn-blue" onclick="document.getElementById('meraki-import-form').style.display='none'">Cancel</button>
+        <span id="meraki-status" style="font-size:.75rem;color:var(--dim);"></span>
+      </div>
+    </div>
+    <div class="section">
+      <div class="sec-hdr">
+        <span style="color:var(--accent);">&#128268;</span>
+        <h2 style="color:var(--accent);">Switches</h2>
+        <span class="cnt" id="sw-count">0</span>
+        <span class="cnt" id="sw-online" style="color:var(--accent2);border-color:var(--accent2);">0 online</span>
+      </div>
+      <div class="test-grid" id="sw-grid"></div>
+    </div>
+    <div class="section">
+      <div class="sec-hdr">
+        <span style="color:var(--ap);">&#128246;</span>
+        <h2 style="color:var(--ap);">Access Points</h2>
+        <span class="cnt" id="ap-count">0</span>
+        <span class="cnt" id="ap-online" style="color:var(--accent2);border-color:var(--accent2);">0 online</span>
+      </div>
+      <div class="test-grid" id="ap-grid"></div>
+    </div>
   </div>
   <div class="page" id="page-warnings">
     <div class="warn-toolbar">
@@ -1125,6 +1262,190 @@ async function saveConfigRemote(cfg,noticeId){
   }catch{toast('Failed to save','danger');}
 }
 
+// ── DEVICES ──────────────────────────────────────────────────────────────────
+let allDevices = {switches:[],aps:[]};
+let devFilter = 'all';
+
+async function fetchDevices(){
+  try{
+    const r = await fetch('/devices');
+    if(r.ok) allDevices = await r.json();
+    renderDevices();
+  }catch(e){}
+}
+
+function getDevTag(name){
+  name = name.toUpperCase();
+  if(name.includes('[ZZZ]')) return 'zzz';
+  if(name.includes('[YYY]')) return 'yyy';
+  if(name.includes('[TB]') || name.match(/\[TB\s*\d/)) return 'tb';
+  if(name.includes('KIOSK')) return 'kiosk';
+  if(name.includes('[SB]') || name.endsWith('][SB]')) return 'sb';
+  if(name.includes('OFFICE') || name.includes('BEAST') || name.includes('DANIEL') || name.includes('DAWID')) return 'office';
+  if(name.includes('FOOD') || name.includes('ENZO') || name.includes('SWEET') || name.includes('COOKIE') || name.includes('MUSTARD') || name.includes('FRIED')) return 'food';
+  return '';
+}
+
+function getTagLabel(name){
+  const t = getDevTag(name);
+  const map = {tb:'TB',kiosk:'KIOSK',sb:'SB',office:'OFFICE',food:'FOOD',zzz:'DECOM',yyy:'SPARE','':`HLSR`};
+  return map[t] || 'HLSR';
+}
+
+function filterDev(f,btn){
+  devFilter = f;
+  document.querySelectorAll('.df-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  renderDevices();
+}
+
+function renderDevices(){
+  const search = (document.getElementById('dev-search')?.value||'').toLowerCase();
+  for(const section of ['switches','aps']){
+    const isSw = section==='switches';
+    const grid = document.getElementById(isSw?'sw-grid':'ap-grid');
+    const countEl = document.getElementById(isSw?'sw-count':'ap-count');
+    const onlineEl = document.getElementById(isSw?'sw-online':'ap-online');
+    const items = allDevices[section]||[];
+    let filtered = items.filter(d=>{
+      const name = (d.name||'').toLowerCase();
+      const ip = (d.ip||'').toLowerCase();
+      const loc = (d.location||'').toLowerCase();
+      const matchSearch = !search || name.includes(search)||ip.includes(search)||loc.includes(search);
+      let matchFilter = true;
+      if(devFilter==='online') matchFilter = d.online===true;
+      else if(devFilter==='offline') matchFilter = d.online===false;
+      else if(devFilter==='switch') matchFilter = isSw;
+      else if(devFilter==='ap') matchFilter = !isSw;
+      return matchSearch && matchFilter;
+    });
+    const onlineCount = filtered.filter(d=>d.online===true).length;
+    if(countEl) countEl.textContent = filtered.length;
+    if(onlineEl) onlineEl.textContent = `${onlineCount} online`;
+    grid.innerHTML = filtered.map((d,i)=>{
+      const status = d.online===true?'online':d.online===false?'offline':'unknown';
+      const tag = getDevTag(d.name||'');
+      const tagLabel = getTagLabel(d.name||'');
+      const realIdx = items.indexOf(d);
+      return `<div class="dev-card ${status}">
+        <div class="dev-card-hdr">
+          <div class="dev-name">${d.name||'Unnamed Device'}</div>
+          <div class="dev-badge ${status}">${status==='online'?'&#9646; ONLINE':status==='offline'?'&#9646; OFFLINE':'&#9646; UNKNOWN'}</div>
+        </div>
+        ${tag?`<div style="margin-bottom:.4rem;"><span class="dev-tag ${tag}">${tagLabel}</span></div>`:''}
+        <div class="dev-meta">
+          <span class="lbl">IP</span><span class="val">${d.ip||'—'}</span>
+          <span class="lbl">MODEL</span><span class="val">${d.model||'—'}</span>
+          ${d.location?`<span class="lbl">LOC</span><span class="val">${d.location}</span>`:''}
+          ${d.last_checked?`<span class="lbl">CHECKED</span><span class="val" style="font-size:.6rem;">${new Date(d.last_checked).toLocaleTimeString()}</span>`:''}
+        </div>
+        ${d.notes?`<div class="dev-notes">${d.notes}</div>`:''}
+        <div class="dev-actions">
+          <button class="dev-act" onclick="pingOne('${section}',${realIdx})">&#9654; Ping</button>
+          <button class="dev-act del" onclick="removeDevice('${section}',${realIdx})">&#10005; Remove</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+  // Stats bar
+  const allSw = allDevices.switches||[];
+  const allAp = allDevices.aps||[];
+  const swOn = allSw.filter(d=>d.online===true).length;
+  const apOn = allAp.filter(d=>d.online===true).length;
+  const swOff = allSw.filter(d=>d.online===false).length;
+  const apOff = allAp.filter(d=>d.online===false).length;
+  document.getElementById('dev-stats').innerHTML = `
+    <div class="dev-stat"><span class="online-num">${swOn}</span>Switches Online</div>
+    <div class="dev-stat"><span class="offline-num">${swOff}</span>Switches Offline</div>
+    <div class="dev-stat"><span class="online-num">${apOn}</span>APs Online</div>
+    <div class="dev-stat"><span class="offline-num">${apOff}</span>APs Offline</div>
+    <div class="dev-stat"><span style="color:var(--accent);">${allSw.length+allAp.length}</span>Total Devices</div>`;
+}
+
+function showAddDevice(){
+  const f = document.getElementById('dev-add-form');
+  f.style.display = f.style.display==='none'?'block':'none';
+}
+function showMerakiImport(){
+  const f = document.getElementById('meraki-import-form');
+  f.style.display = f.style.display==='none'?'block':'none';
+}
+
+async function addDevice(){
+  const type = document.getElementById('new-dev-type').value;
+  const d = {
+    name: document.getElementById('new-dev-name').value.trim(),
+    ip: document.getElementById('new-dev-ip').value.trim(),
+    model: document.getElementById('new-dev-model').value.trim(),
+    location: document.getElementById('new-dev-location').value.trim(),
+    notes: document.getElementById('new-dev-notes').value.trim(),
+    online: null
+  };
+  if(!d.name||!d.ip){toast('Name and IP required','danger');return;}
+  allDevices[type] = allDevices[type]||[];
+  allDevices[type].push(d);
+  await saveDevices();
+  ['new-dev-name','new-dev-ip','new-dev-model','new-dev-location','new-dev-notes'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('dev-add-form').style.display='none';
+  toast('Device added','ok');
+}
+
+async function removeDevice(section,idx){
+  allDevices[section].splice(idx,1);
+  await saveDevices();
+  toast('Removed','ok');
+}
+
+async function saveDevices(){
+  try{
+    await fetch('/devices',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(allDevices)});
+    renderDevices();
+  }catch{toast('Save failed','danger');}
+}
+
+async function pingOne(section,idx){
+  const d = allDevices[section][idx];
+  if(!d) return;
+  toast(`Pinging ${d.ip}...`,'ok');
+  try{
+    const r = await fetch('/ping-device',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip:d.ip})});
+    const data = await r.json();
+    allDevices[section][idx].online = data.online;
+    allDevices[section][idx].last_checked = new Date().toISOString();
+    await saveDevices();
+    toast(`${d.name}: ${data.online?'ONLINE':'OFFLINE'}`,(data.online?'ok':'danger'));
+  }catch{toast('Ping failed','danger');}
+}
+
+async function pingAllDevices(){
+  toast('Pinging all devices...','ok');
+  try{
+    await fetch('/ping-all',{method:'POST'});
+    setTimeout(()=>{fetchDevices();toast('Ping complete','ok');},5000);
+  }catch{toast('Failed','danger');}
+}
+
+async function importMeraki(){
+  const key = document.getElementById('meraki-key').value.trim();
+  const org = document.getElementById('meraki-org').value.trim();
+  if(!key||!org){toast('API key and Org ID required','danger');return;}
+  document.getElementById('meraki-status').textContent = 'Importing...';
+  try{
+    const r = await fetch('/meraki-import',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({api_key:key,org_id:org})});
+    const data = await r.json();
+    if(data.error){toast(data.error,'danger');document.getElementById('meraki-status').textContent=data.error;return;}
+    document.getElementById('meraki-status').textContent = `Imported ${data.switches} switches, ${data.aps} APs`;
+    document.getElementById('meraki-import-form').style.display='none';
+    fetchDevices();
+    toast(`Imported ${data.switches} switches + ${data.aps} APs`,'ok');
+  }catch(e){toast('Import failed','danger');document.getElementById('meraki-status').textContent='Failed';}
+}
+
+fetchDevices();
+setInterval(fetchDevices,30000);
+
 fetchData();fetchWarnings();fetchConfig();
 setInterval(fetchData,15000);setInterval(fetchWarnings,8000);
 </script>
@@ -1153,6 +1474,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length",len(body));self.end_headers();self.wfile.write(body)
         elif self.path=="/config":
             self.send_json(load_config())
+        elif self.path=="/devices":
+            self.send_json(load_devices())
         elif self.path=="/warnings":
             with _warn_lock: data=list(_warnings)
             self.send_json(data)
@@ -1179,13 +1502,56 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e: self.send_json({"error":str(e)},400)
         elif self.path=="/warnings/ack-all":
             ack_all();self.send_json({"status":"ok"})
+        elif self.path=="/devices":
+            try: save_devices(json.loads(body));self.send_json({"status":"ok"})
+            except Exception as e: self.send_json({"error":str(e)},400)
+        elif self.path=="/ping-device":
+            try:
+                ip = json.loads(body).get("ip","")
+                online = ping_device(ip)
+                self.send_json({"online":online})
+            except Exception as e: self.send_json({"error":str(e)},400)
+        elif self.path=="/ping-all":
+            threading.Thread(target=ping_all_devices,daemon=True).start()
+            self.send_json({"status":"started"})
+        elif self.path=="/meraki-import":
+            try:
+                payload = json.loads(body)
+                api_key = payload.get("api_key","")
+                org_id = payload.get("org_id","")
+                req = urllib.request.Request(
+                    f"https://api.meraki.com/api/v1/organizations/{org_id}/devices",
+                    headers={"X-Cisco-Meraki-API-Key":api_key,"Content-Type":"application/json"}
+                )
+                with urllib.request.urlopen(req,timeout=15) as resp:
+                    devices = json.loads(resp.read())
+                existing = load_devices()
+                existing_sw_ips = {d.get("ip") for d in existing.get("switches",[])}
+                existing_ap_ips = {d.get("ip") for d in existing.get("aps",[])}
+                sw_added = 0; ap_added = 0
+                for dev in devices:
+                    ip = dev.get("lanIp","")
+                    name = dev.get("name","") or dev.get("serial","")
+                    model = dev.get("model","")
+                    notes = dev.get("notes","")
+                    ptype = dev.get("productType","")
+                    entry = {"name":name,"ip":ip,"model":model,"location":"","notes":notes,"online":None}
+                    if ptype=="switch" and ip and ip not in existing_sw_ips:
+                        existing.setdefault("switches",[]).append(entry)
+                        existing_sw_ips.add(ip); sw_added+=1
+                    elif ptype=="wireless" and ip and ip not in existing_ap_ips:
+                        existing.setdefault("aps",[]).append(entry)
+                        existing_ap_ips.add(ip); ap_added+=1
+                save_devices(existing)
+                self.send_json({"switches":sw_added,"aps":ap_added})
+            except Exception as e: self.send_json({"error":str(e)},400)
         else:
             self.send_response(404);self.end_headers()
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 if __name__=="__main__":
     print("="*55)
-    print("  NETMONITOR v3")
+    print("  NETMONITOR v4")
     print("="*55)
     load_warnings()
     run_all_tests()

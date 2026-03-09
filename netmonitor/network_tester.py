@@ -93,6 +93,33 @@ def load_config():
 def save_config(cfg):
     with open(CONFIG_FILE,"w") as f:
         json.dump(cfg,f,indent=2)
+    # Purge removed targets from results history so ghost cards disappear
+    _purge_stale_results(cfg)
+
+def _purge_stale_results(cfg):
+    """Remove any result keys not in the current config."""
+    if not os.path.exists(RESULTS_FILE):
+        return
+    try:
+        with open(RESULTS_FILE) as f:
+            history = json.load(f)
+    except Exception:
+        return
+    # Build set of valid names from current config
+    valid = set()
+    for t in cfg.get("ping",[]): valid.add(t["name"])
+    for t in cfg.get("http",[]): valid.add(t["name"])
+    for t in cfg.get("api",[]): valid.add(t["name"])
+    for t in cfg.get("traceroute",[]): valid.add(t["name"])
+    valid.add("Download Speed")
+    # Remove any keys not in valid set
+    stale = [k for k in history if k not in valid]
+    for k in stale:
+        del history[k]
+    if stale:
+        with open(RESULTS_FILE,"w") as f:
+            json.dump(history,f)
+        print(f"  Purged stale results: {stale}")
 
 # ─── WARNINGS ─────────────────────────────────────────────────────────────────
 _warnings = []

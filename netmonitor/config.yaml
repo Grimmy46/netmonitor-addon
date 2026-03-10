@@ -1,6 +1,6 @@
 name: "NetMonitor"
 description: "Automated network diagnostics — ping, HTTP, API, traceroute & bandwidth tests with a live web dashboard."
-version: "5.6.2"
+version: "5.7.2"
 slug: "netmonitor"
 init: false
 arch:

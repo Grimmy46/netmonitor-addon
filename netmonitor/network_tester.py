@@ -1011,12 +1011,18 @@ main{padding:1.2rem 1.5rem;max-width:1600px;margin:0 auto;}
         <div class="map-menu-item" id="map-connect-btn" onclick="toggleConnectMode()">&#9135; Connect Nodes</div>
         <div class="map-menu-item" id="map-bg-toggle-btn" onclick="toggleMapBackground()">&#11036; Blank Canvas</div>
         <div class="map-menu-item" onclick="document.getElementById('map-upload-input').click()">&#8659; Upload Map Image</div>
+        <div class="map-menu-item" onclick="clearMapImage()" style="color:var(--danger);">&#10005; Clear Map Image</div>
         <input type="file" id="map-upload-input" accept="image/*" style="display:none" onchange="uploadMapImage(this)">
       </div>
     </div>
     <!-- Ping mapped nodes button -->
     <button class="btn btn-blue" id="map-ping-btn" onclick="pingMappedNodes()" title="Ping all nodes on map">
       &#9654; Ping Map
+    </button>
+    <button class="btn" id="map-meraki-sync-btn" onclick="merakiSyncNames()"
+      title="Sync device names from Meraki"
+      style="border:1px solid #00a651;color:#00a651;background:rgba(0,166,81,.07);font-size:.68rem;">
+      &#8635; Meraki Sync
     </button>
     <span style="font-family:'Share Tech Mono';font-size:.6rem;color:var(--dim);" id="map-edit-hint">View mode</span>
     <!-- Live update indicator -->
@@ -1130,7 +1136,7 @@ main{padding:1.2rem 1.5rem;max-width:1600px;margin:0 auto;}
       <span style="color:#c084fc;font-size:.6rem;display:flex;align-items:center;gap:.3rem;">&#9632; Kiosk</span>
       <span style="color:#00ff9d;font-size:.6rem;display:flex;align-items:center;gap:.3rem;">&#9632; Access Point</span>
       <span style="color:#4ade80;font-size:.6rem;display:flex;align-items:center;gap:.3rem;">&#9632; Office</span>
-      <span style="color:#fb923c;font-size:.6rem;display:flex;align-items:center;gap:.3rem;">&#9632; Show Box</span>
+      <span style="color:#fb923c;font-size:.6rem;display:flex;align-items:center;gap:.3rem;">&#9632; Switch Box</span>
       <span style="color:#ff2d55;font-size:.6rem;display:flex;align-items:center;gap:.3rem;">&#9632; Offline</span>
     </div>
   </div>
@@ -1860,7 +1866,14 @@ function showTab(name, el){
   const cls = ZOOM_CLASSES[z-1];
   if(cls) document.body.classList.add(cls);
   if(name==='warnings') renderWarnings();
-  if(name==='map'){ renderMapSidebar(); renderMapNodes(); }
+  if(name==='map'){
+    // Full refresh every time map tab is selected
+    fetchDevices().then(()=>{
+      renderMapSidebar(); renderMapNodes(); renderMapLines();
+    });
+    // Also reload map positions in case another session changed them
+    fetchMapPositions();
+  }
 }
 
 // ── PROGRESS POLLING ─────────────────────────────────────────────────────────
@@ -2487,7 +2500,7 @@ const NODE_ICONS = {
     <rect x="9" y="14" width="4" height="5" rx=".5" stroke="currentColor" stroke-width="1"/>
     <line x1="11" y1="2" x2="11" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
   </svg>`,
-  // Show box — crate with lid
+  // Switch box — crate with lid
   sb: `<svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg">
     <rect x="3" y="7" width="16" height="12" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
     <polyline points="3,7 11,2 19,7" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" fill="none"/>
@@ -2683,6 +2696,56 @@ function initMapDrop(){
   });
 }
 
+async function merakiSyncNames(){
+  // Try to get creds from the import form first
+  const keyEl = document.getElementById('meraki-key');
+  const orgEl = document.getElementById('meraki-org');
+  let apiKey = (keyEl&&keyEl.value.trim()) || (localStorage&&localStorage.getItem('meraki_api_key')) || '';
+  let orgId  = (orgEl&&orgEl.value.trim()) || (localStorage&&localStorage.getItem('meraki_org_id'))  || '';
+  if(!apiKey){
+    const key = prompt('Enter Meraki API Key:'); if(!key) return;
+    apiKey = key;
+    try{ localStorage.setItem('meraki_api_key', key); }catch{}
+  }
+  if(!orgId){
+    const org = prompt('Enter Meraki Org ID:'); if(!org) return;
+    orgId = org;
+    try{ localStorage.setItem('meraki_org_id', org); }catch{}
+  }
+  return merakiSyncNamesWithCreds(apiKey, orgId);
+}
+
+async function merakiSyncNamesWithCreds(apiKey, orgId){
+  const btn = document.getElementById('map-meraki-sync-btn');
+  if(btn){ btn.disabled=true; btn.textContent='⟳ Syncing...'; }
+  try{
+    const r = await fetch('/meraki-sync-names',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({api_key:apiKey,org_id:orgId})});
+    const data = await r.json();
+    if(data.error){ toast('Meraki sync failed: '+data.error,'danger'); return; }
+    toast(`Meraki sync: ${data.updated} name${data.updated!==1?'s':''} updated`,'ok');
+    // Refresh devices and re-render map immediately
+    await fetchDevices();
+    renderMapNodes(); renderMapSidebar();
+  }catch(e){ toast('Meraki sync error','danger'); }
+  finally{
+    if(btn){ btn.disabled=false; btn.textContent='⇄ Meraki Sync'; }
+  }
+}
+
+async function clearMapImage(){
+  try{
+    await fetch('/map-image/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const bg=document.getElementById('map-bg');
+    const world=document.getElementById('map-world');
+    bg.src=''; bg.style.display='none';
+    world.classList.add('blank');
+    mapBgMode='blank';
+    toast('Map image cleared','ok');
+  }catch{ toast('Clear failed','danger'); }
+}
+
 async function uploadMapImage(input){
   const file=input.files[0]; if(!file) return;
   const reader=new FileReader();
@@ -2805,6 +2868,11 @@ class Handler(BaseHTTPRequestHandler):
                 save_saved_maps(json.loads(body))
                 self.send_json({"status":"ok"})
             except Exception as e: self.send_json({"error":str(e)},400)
+        elif self.path=="/map-image/clear":
+            try:
+                if os.path.exists(MAP_IMAGE): os.remove(MAP_IMAGE)
+                self.send_json({"status":"ok"})
+            except Exception as e: self.send_json({"error":str(e)},400)
         elif self.path=="/map-image":
             try:
                 payload = json.loads(body)
@@ -2812,6 +2880,30 @@ class Handler(BaseHTTPRequestHandler):
                 img_data = base64.b64decode(payload.get("image",""))
                 with open(MAP_IMAGE,"wb") as f: f.write(img_data)
                 self.send_json({"status":"ok"})
+            except Exception as e: self.send_json({"error":str(e)},400)
+        elif self.path=="/meraki-sync-names":
+            try:
+                payload  = json.loads(body)
+                api_key  = payload.get("api_key","")
+                org_id   = payload.get("org_id","")
+                req = urllib.request.Request(
+                    f"https://api.meraki.com/api/v1/organizations/{org_id}/devices",
+                    headers={"X-Cisco-Meraki-API-Key":api_key,"Content-Type":"application/json"}
+                )
+                with urllib.request.urlopen(req,timeout=15) as resp:
+                    meraki_devs = json.loads(resp.read())
+                # Build IP→name lookup
+                ip_to_name = {d.get("lanIp",""):d.get("name","") for d in meraki_devs if d.get("lanIp")}
+                existing = load_devices()
+                updated = 0
+                for section in ("switches","aps","other"):
+                    for dev in existing.get(section,[]):
+                        ip = dev.get("ip","")
+                        if ip in ip_to_name and ip_to_name[ip] and ip_to_name[ip]!=dev.get("name",""):
+                            dev["name"] = ip_to_name[ip]
+                            updated += 1
+                save_devices(existing)
+                self.send_json({"updated":updated})
             except Exception as e: self.send_json({"error":str(e)},400)
         elif self.path=="/meraki-import":
             try:
@@ -2852,6 +2944,10 @@ if __name__=="__main__":
     print("="*55)
     print("  NETMONITOR v5.3 - Site Map Edition")
     print("="*55)
+    # Clear uploaded map image on startup — image must be re-uploaded each session
+    if os.path.exists(MAP_IMAGE):
+        os.remove(MAP_IMAGE)
+        print("  Map image cleared (session reset)")
     load_warnings()
     run_all_tests()
     threading.Thread(target=start_scheduler,daemon=True).start()

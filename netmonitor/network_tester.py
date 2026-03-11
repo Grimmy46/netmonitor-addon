@@ -903,7 +903,9 @@ main{padding:1.2rem 1.5rem;max-width:1600px;margin:0 auto;}
 .map-sidebar{width:230px;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;}
 .map-sidebar-hdr{padding:.7rem .8rem .4rem;border-bottom:1px solid var(--border);}
 .map-sidebar-filters{display:flex;gap:.3rem;padding:.4rem .8rem;border-bottom:1px solid var(--border);flex-wrap:wrap;}
-#map-sidebar-list{flex:1;overflow-y:auto;padding:.4rem;}
+#map-sidebar-list{flex:1;overflow-y:auto;padding:.4rem;min-height:0;}
+#msb-devices-panel{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;}
+#msb-maps-panel{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;}
 .map-dev-item{padding:.4rem .5rem;border-radius:6px;border:1px solid var(--border);margin-bottom:.3rem;
   cursor:grab;transition:all .15s;display:flex;align-items:center;gap:.5rem;background:var(--panel2);}
 .map-dev-item:hover{border-color:var(--accent);background:rgba(0,212,255,.07);}
@@ -1225,14 +1227,14 @@ main{padding:1.2rem 1.5rem;max-width:1600px;margin:0 auto;}
         </div>
 
         <!-- MAPS panel -->
-        <div id="msb-maps-panel" style="display:none;flex:1;overflow:hidden;display:none;flex-direction:column;">
+        <div id="msb-maps-panel" style="display:none;">
           <div style="padding:.6rem .8rem;border-bottom:1px solid var(--border);display:flex;gap:.4rem;">
             <input id="map-name-input" placeholder="Map name..." maxlength="40"
               style="flex:1;font-size:.65rem;padding:.25rem .5rem;background:var(--panel2);
               border:1px solid var(--border);border-radius:4px;color:var(--text);">
             <button class="btn btn-green" style="font-size:.6rem;padding:.2rem .5rem;" onclick="saveCurrentMap()">Save</button>
           </div>
-          <div id="map-saved-list" style="flex:1;overflow-y:auto;padding:.4rem;"></div>
+          <div id="map-saved-list" style="flex:1;overflow-y:auto;padding:.4rem;min-height:0;"></div>
         </div>
       </div>
       <!-- Collapsed sidebar tab -->

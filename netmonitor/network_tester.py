@@ -621,7 +621,7 @@ HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>NetMonitor v5.6</title>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;500;600;800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
@@ -1033,10 +1033,12 @@ main{padding:1.2rem 1.5rem;max-width:1600px;margin:0 auto;}
   .warn-table th:nth-child(3),.warn-table td:nth-child(3){display:none;}
 }
 
-@media(max-width:480px){
-  .sc{min-width:calc(50% - .2rem);}
-  .map-sidebar{width:90vw;}
-  #map-legend .leg-item span{font-size:.55rem;}
+@media(max-width:768px){
+  .mob-sidebar-close{display:block!important;}
+  /* Sidebar is hidden by default on mobile, shown when panel arrow tapped */
+  .map-sidebar{display:none;}
+  .map-sidebar.mob-open{display:flex!important;flex-direction:column;}
+  #map-sidebar-tab{display:flex!important;}
 }
 
 /* Landscape phone */
@@ -1183,6 +1185,10 @@ main{padding:1.2rem 1.5rem;max-width:1600px;margin:0 auto;}
         </div>
       </div>
       <!-- Device/Maps sidebar -->
+      <!-- Tap-outside overlay for mobile sidebar -->
+      <div id="map-sidebar-overlay" onclick="closeMobSidebar()"
+        style="display:none;position:absolute;inset:0;z-index:99;background:rgba(0,0,0,.4);"></div>
+
       <div class="map-sidebar" id="map-sidebar">
         <!-- Tab switcher -->
         <div style="display:flex;border-bottom:1px solid var(--border);">
@@ -1195,6 +1201,11 @@ main{padding:1.2rem 1.5rem;max-width:1600px;margin:0 auto;}
           <button onclick="toggleMapSidebar()" id="map-sidebar-collapse" title="Collapse"
             style="background:none;border:none;border-left:1px solid var(--border);color:var(--dim);
             cursor:pointer;font-size:.75rem;padding:0 .5rem;">&#9654;</button>
+          <!-- Mobile-only close button -->
+          <button onclick="closeMobSidebar()" title="Close"
+            style="display:none;background:none;border:none;border-left:1px solid var(--border);
+            color:var(--danger);cursor:pointer;font-size:1rem;padding:0 .6rem;"
+            class="mob-sidebar-close">&#10005;</button>
         </div>
 
         <!-- DEVICES panel -->
@@ -1227,7 +1238,7 @@ main{padding:1.2rem 1.5rem;max-width:1600px;margin:0 auto;}
       <!-- Collapsed sidebar tab -->
       <div id="map-sidebar-tab" style="display:none;width:24px;background:var(--panel);border-left:1px solid var(--border);
         cursor:pointer;align-items:center;justify-content:center;flex-direction:column;gap:.4rem;"
-        onclick="toggleMapSidebar()" title="Expand sidebar">
+        onclick="window.innerWidth<=768?openMobSidebar():toggleMapSidebar()" title="Expand sidebar">
         <span style="font-size:.7rem;color:var(--accent);">&#9664;</span>
         <span style="writing-mode:vertical-rl;font-size:.6rem;color:var(--dim);letter-spacing:.1em;">PANEL</span>
       </div>
@@ -1974,6 +1985,25 @@ function initZoom(){
 
 // ── SHOW TAB ─────────────────────────────────────────────────────────────────
 // ── MOBILE NAV ──
+function closeMobSidebar(){
+  document.getElementById('map-sidebar').classList.remove('mob-open');
+  const ov = document.getElementById('map-sidebar-overlay');
+  if(ov) ov.style.display='none';
+}
+
+// Override toggleMapSidebar on mobile to use mob-open class
+const _origToggle = typeof toggleMapSidebar !== 'undefined' ? toggleMapSidebar : null;
+function openMobSidebar(){
+  const sb = document.getElementById('map-sidebar');
+  const ov = document.getElementById('map-sidebar-overlay');
+  if(window.innerWidth <= 768){
+    sb.classList.add('mob-open');
+    if(ov) ov.style.display='block';
+  } else {
+    toggleMapSidebar();
+  }
+}
+
 function openMobNav(){
   document.getElementById('mob-nav').classList.add('open');
 }
@@ -2002,14 +2032,14 @@ function applyMapTypeVisibility(){
     const isOffline = node.classList.contains('offline');
     // Check offline filter
     if(hiddenTypes.has('offline') && isOffline){
-      node.style.opacity='0.05'; node.style.pointerEvents='none'; return;
+      node.style.opacity='0.10'; node.style.pointerEvents='none'; return;
     }
     // Check type filter
     let hidden = false;
     for(const t of hiddenTypes){
       if(t!=='offline' && node.classList.contains('ntype-'+t)){ hidden=true; break; }
     }
-    node.style.opacity = hidden ? '0.05' : '';
+    node.style.opacity = hidden ? '0.10' : '';
     node.style.pointerEvents = hidden ? 'none' : '';
   });
 }
@@ -2349,9 +2379,76 @@ let mapScale = 1.0;
 function setMapZoom(val){
   mapScale = parseInt(val)/100;
   document.getElementById('map-zoom-lbl').textContent = val+'%';
+  document.getElementById('map-zoom-slider').value = val;
   document.getElementById('map-world').style.transform = `scale(${mapScale})`;
   document.getElementById('map-world').style.transformOrigin = 'top left';
 }
+
+// ── PINCH ZOOM (mobile) ──
+(function initPinchZoom(){
+  let lastDist = null;
+  let lastScale = 1;
+  let pinching = false;
+  // Scroll position before pinch starts
+  let scrollX = 0, scrollY = 0;
+  // Midpoint of pinch in viewport coords
+  let midX = 0, midY = 0;
+
+  function getTouchDist(t){
+    const dx = t[0].clientX - t[1].clientX;
+    const dy = t[0].clientY - t[1].clientY;
+    return Math.sqrt(dx*dx + dy*dy);
+  }
+  function getTouchMid(t){
+    return {
+      x: (t[0].clientX + t[1].clientX) / 2,
+      y: (t[0].clientY + t[1].clientY) / 2
+    };
+  }
+
+  document.addEventListener('touchstart', e=>{
+    if(!document.getElementById('page-map').classList.contains('active')) return;
+    if(e.touches.length === 2){
+      pinching = true;
+      lastDist = getTouchDist(e.touches);
+      lastScale = mapScale;
+      const vp = document.getElementById('map-viewport');
+      scrollX = vp.scrollLeft;
+      scrollY = vp.scrollTop;
+      const m = getTouchMid(e.touches);
+      // Convert midpoint to world coordinates
+      midX = (scrollX + m.x) / lastScale;
+      midY = (scrollY + m.y) / lastScale;
+      e.preventDefault();
+    }
+  }, {passive:false});
+
+  document.addEventListener('touchmove', e=>{
+    if(!pinching || e.touches.length !== 2) return;
+    e.preventDefault();
+    const dist = getTouchDist(e.touches);
+    const ratio = dist / lastDist;
+    let newScale = Math.min(2.0, Math.max(0.10, lastScale * ratio));
+    const newVal = Math.round(newScale * 100);
+
+    // Apply zoom
+    mapScale = newScale;
+    document.getElementById('map-zoom-lbl').textContent = newVal + '%';
+    document.getElementById('map-zoom-slider').value = newVal;
+    document.getElementById('map-world').style.transform = `scale(${newScale})`;
+    document.getElementById('map-world').style.transformOrigin = 'top left';
+
+    // Scroll to keep pinch midpoint stable
+    const vp = document.getElementById('map-viewport');
+    const m = getTouchMid(e.touches);
+    vp.scrollLeft = midX * newScale - m.x;
+    vp.scrollTop  = midY * newScale - m.y;
+  }, {passive:false});
+
+  document.addEventListener('touchend', e=>{
+    if(e.touches.length < 2) pinching = false;
+  });
+})();
 
 // ── STORAGE ──
 async function fetchMapPositions(){

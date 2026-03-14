@@ -1,6 +1,6 @@
 name: NetMonitor
 description: Automated network diagnostics and site map tool
-version: "5.9.5"
+version: "5.9.6"
 slug: netmonitor
 init: false
 arch:

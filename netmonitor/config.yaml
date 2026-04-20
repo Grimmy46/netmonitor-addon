@@ -1,0 +1,32 @@
+name: NetMonitor
+description: Automated network diagnostics and site map tool
+version: "5.9.17"
+slug: netmonitor
+init: false
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+
+# Direct port access (local network)
+ports:
+  8088/tcp: 8088
+ports_description:
+  8088/tcp: "NetMonitor Web UI"
+
+# Ingress — routes through Nabu Casa tunnel
+ingress: true
+ingress_port: 8088
+ingress_entry: /
+
+panel_icon: mdi:network
+panel_title: NetMonitor
+
+# Required for HA push notifications via Supervisor API
+hassio_api: true
+hassio_role: default
+
+map:
+  - config:rw

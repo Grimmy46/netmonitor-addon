@@ -22,8 +22,10 @@ class Settings(BaseSettings):
     # CORS (comma-separated)
     cors_origins: str = "http://localhost:5173"
 
-    # UniFi Site Manager API
-    unifi_api_base: str = "https://api.ui.com/v1"
+    # UniFi Site Manager API (root; version prefixes are added per-endpoint)
+    unifi_api_base: str = "https://api.ui.com"
+    # How often the background poller re-syncs the fleet, in seconds.
+    unifi_sync_interval: int = 300
 
     @property
     def database_url(self) -> str:

@@ -27,3 +27,6 @@ pgdata/
 .DS_Store
 .idea/
 .vscode/
+
+# TS build cache
+*.tsbuildinfo

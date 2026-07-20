@@ -4,10 +4,11 @@ from app.schemas.integrations import (
     UnifiKeyStatus,
     UnifiSyncResult,
 )
-from app.schemas.network import DeviceOut, SiteOut
+from app.schemas.network import DeviceOut, MetricPoint, SiteOut
 
 __all__ = [
     "DeviceOut",
+    "MetricPoint",
     "SiteOut",
     "UnifiKeyIn",
     "UnifiKeyStatus",

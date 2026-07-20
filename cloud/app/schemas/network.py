@@ -1,5 +1,6 @@
 """Schemas for sites and devices served to the dashboard."""
 import uuid
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
@@ -24,3 +25,19 @@ class SiteOut(BaseModel):
     isp_name: str | None = None
     status: str = "unknown"
     device_count: int = 0
+    online_device_count: int = 0
+
+    # Latest WAN/ISP health (from the most recent isp_metric row).
+    latency_ms: float | None = None
+    packet_loss_pct: float | None = None
+    uptime_pct: float | None = None
+    download_mbps: float | None = None
+    upload_mbps: float | None = None
+
+
+class MetricPoint(BaseModel):
+    ts: datetime
+    latency_ms: float | None = None
+    packet_loss_pct: float | None = None
+    download_mbps: float | None = None
+    upload_mbps: float | None = None

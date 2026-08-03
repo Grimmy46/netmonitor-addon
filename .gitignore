@@ -30,3 +30,10 @@ pgdata/
 
 # TS build cache
 *.tsbuildinfo
+
+# UniFi diagnostic dumps (contain live device data — never commit)
+_diag_*.json
+# Local transfer / scratch artifacts
+_incoming/
+_to_delete/
+*.tar.gz

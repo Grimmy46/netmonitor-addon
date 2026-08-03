@@ -40,19 +40,32 @@ async def list_sites(db: AsyncSession = Depends(get_db)) -> list[SiteOut]:
     out: list[SiteOut] = []
     for site, n_total, n_online in rows:
         m = latest.get(site.id)
+        # UniFi's own per-site counts are authoritative (they cover every
+        # adopted device, not just the ones the /devices sync attached).
+        # Fall back to the joined device rows if counts weren't captured.
+        total = site.device_total or n_total
+        online = (
+            (site.device_total - site.device_offline)
+            if site.device_total
+            else n_online
+        )
         out.append(
             SiteOut(
                 id=site.id,
                 name=site.name,
                 isp_name=site.isp_name,
                 status=site.status,
-                device_count=n_total,
-                online_device_count=n_online,
+                device_count=total,
+                online_device_count=online,
                 latency_ms=m.latency_ms if m else None,
                 packet_loss_pct=m.packet_loss_pct if m else None,
-                uptime_pct=m.uptime_pct if m else None,
+                # Prefer the live metric uptime; fall back to the site's
+                # reported WAN uptime from the last sync.
+                uptime_pct=(m.uptime_pct if m and m.uptime_pct is not None else site.wan_uptime_pct),
                 download_mbps=m.download_mbps if m else None,
                 upload_mbps=m.upload_mbps if m else None,
+                map_x=site.map_x,
+                map_y=site.map_y,
             )
         )
     return out

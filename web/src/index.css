@@ -155,6 +155,55 @@ table.devices th, table.devices td { text-align: left; padding: 7px 8px; border-
 table.devices th { color: var(--ink-muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
 table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-secondary); }
 
+/* Tabs (Fleet / Map) */
+.map-tabs { display: flex; gap: 4px; }
+.map-tabs .tab {
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--ink-secondary);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.map-tabs .tab:hover { border-color: var(--baseline); }
+.map-tabs .tab.active { background: var(--accent); color: #fff; border-color: transparent; }
+
+/* Site map canvas + draggable nodes */
+.map-hint { color: var(--ink-muted); font-size: 12px; margin: 0 0 12px; }
+.map-canvas {
+  position: relative;
+  height: 72vh;
+  min-height: 420px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background-color: var(--surface-1);
+  background-image: radial-gradient(var(--grid) 1px, transparent 1px);
+  background-size: 22px 22px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.map-node {
+  position: absolute;
+  width: 190px;
+  padding: 8px 10px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--ink-muted);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+.map-node:active { cursor: grabbing; }
+.map-node.online { border-left-color: var(--good); }
+.map-node.degraded { border-left-color: var(--warning); }
+.map-node.offline { border-left-color: var(--critical); }
+.map-node.unknown { border-left-color: var(--ink-muted); }
+.map-node .mn-name { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.map-node .mn-sub { font-size: 11px; color: var(--ink-muted); margin-top: 4px; display: flex; gap: 8px; align-items: center; }
+
 .empty { color: var(--ink-muted); text-align: center; padding: 48px 0; }
 .banner { padding: 12px 16px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-1); margin-bottom: 16px; font-size: 14px; }
 .banner.err { border-color: var(--critical); color: var(--critical); }

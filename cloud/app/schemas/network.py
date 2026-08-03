@@ -34,6 +34,10 @@ class SiteOut(BaseModel):
     download_mbps: float | None = None
     upload_mbps: float | None = None
 
+    # Saved position on the fleet site map (pixels; null = not yet placed).
+    map_x: float | None = None
+    map_y: float | None = None
+
 
 class MetricPoint(BaseModel):
     ts: datetime

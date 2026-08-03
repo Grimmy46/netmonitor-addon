@@ -11,8 +11,8 @@ from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.core.db import SessionLocal
-from app.models import UnifiCredential
-from app.services.sync import sync_unifi
+from app.models import UnifiConsole, UnifiCredential
+from app.services.sync import sync_all_consoles, sync_unifi
 from app.services.unifi import UnifiError
 
 logger = logging.getLogger("netmonitor.poller")
@@ -20,14 +20,28 @@ logger = logging.getLogger("netmonitor.poller")
 
 async def _tick() -> None:
     async with SessionLocal() as db:
+        # 1) Site Manager credential (account-wide), if one is configured.
         has_key = (await db.execute(select(UnifiCredential))).scalars().first()
-        if has_key is None:
-            return
-        result = await sync_unifi(db)
-        logger.info(
-            "UniFi sync: %s sites, %s devices, %s metrics",
-            result["sites"], result["devices"], result["metrics"],
-        )
+        if has_key is not None:
+            try:
+                result = await sync_unifi(db)
+                logger.info(
+                    "Site Manager sync: %s sites, %s devices, %s metrics",
+                    result["sites"], result["devices"], result["metrics"],
+                )
+            except Exception as exc:  # noqa: BLE001 — SM failure must not block consoles
+                await db.rollback()
+                logger.warning("Site Manager sync failed: %s", exc)
+
+        # 2) Every connected console (Network Integration API).
+        has_console = (await db.execute(select(UnifiConsole))).scalars().first()
+        if has_console is not None:
+            result = await sync_all_consoles(db)
+            logger.info(
+                "Console sync: %s consoles, %s sites, %s devices (%s errors)",
+                result["consoles"], result["sites"], result["devices"],
+                len(result["errors"]),
+            )
 
 
 async def run_unifi_poller() -> None:

@@ -4,6 +4,7 @@ from app.models.agent import Agent
 from app.models.device import Device
 from app.models.isp_metric import IspMetric
 from app.models.site import Site
+from app.models.unifi_console import UnifiConsole
 from app.models.unifi_credential import UnifiCredential
 from app.models.user import User
 
@@ -13,6 +14,7 @@ __all__ = [
     "Device",
     "IspMetric",
     "Site",
+    "UnifiConsole",
     "UnifiCredential",
     "User",
 ]

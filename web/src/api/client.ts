@@ -12,6 +12,8 @@ export interface Site {
   uptime_pct: number | null;
   download_mbps: number | null;
   upload_mbps: number | null;
+  map_x: number | null;
+  map_y: number | null;
 }
 
 export interface Device {
@@ -37,6 +39,24 @@ export interface UnifiStatus {
   label: string | null;
   key_hint: string | null;
   last_synced_at: string | null;
+}
+
+export interface UnifiConsole {
+  id: string;
+  label: string;
+  base_url: string;
+  key_hint: string | null;
+  verify_tls: boolean;
+  last_synced_at: string | null;
+  last_error: string | null;
+  site_count: number;
+}
+
+export interface ConsoleSyncResult {
+  consoles: number;
+  sites: number;
+  devices: number;
+  errors: { console: string; error: string }[];
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -76,4 +96,28 @@ export const api = {
       "/integrations/unifi/sync",
       { method: "POST" },
     ),
+
+  // UniFi console connections (Network Integration API — reaches every site on
+  // a console, including ones the Site Manager account doesn't own).
+  consoles: () => req<UnifiConsole[]>("/integrations/unifi/consoles"),
+  addConsole: (baseUrl: string, apiKey: string, label: string, verifyTls: boolean) =>
+    req<UnifiConsole>("/integrations/unifi/consoles", {
+      method: "POST",
+      body: JSON.stringify({
+        base_url: baseUrl,
+        api_key: apiKey,
+        label,
+        verify_tls: verifyTls,
+      }),
+    }),
+  deleteConsole: (id: string) =>
+    req<void>(`/integrations/unifi/consoles/${id}`, { method: "DELETE" }),
+  syncConsoles: () =>
+    req<ConsoleSyncResult>("/integrations/unifi/consoles/sync", { method: "POST" }),
+
+  saveMapPositions: (positions: { site_id: string; x: number; y: number }[]) =>
+    req<void>("/map/positions", {
+      method: "PUT",
+      body: JSON.stringify({ positions }),
+    }),
 };

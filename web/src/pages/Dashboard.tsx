@@ -4,6 +4,13 @@ import { SettingsModal } from "../components/SettingsModal";
 import { SiteCard } from "../components/SiteCard";
 import { SiteMap } from "../components/SiteMap";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { SitePage } from "./SitePage";
+
+// Minimal hash router: "#/site/<id>" → that site's page; anything else → fleet.
+function siteIdFromHash(): string | null {
+  const m = window.location.hash.match(/^#\/site\/([^/]+)/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
 
 export function Dashboard() {
   const [sites, setSites] = useState<Site[]>([]);
@@ -14,6 +21,13 @@ export function Dashboard() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [view, setView] = useState<"fleet" | "map">("fleet");
+  const [siteRoute, setSiteRoute] = useState<string | null>(siteIdFromHash());
+
+  useEffect(() => {
+    const onHash = () => setSiteRoute(siteIdFromHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -70,7 +84,7 @@ export function Dashboard() {
       <header className="app-header">
         <h1>NetMonitor</h1>
         <span className="sub">2.0{version && ` · cloud v${version}`}</span>
-        {configured ? (
+        {configured && !siteRoute ? (
           <nav className="map-tabs" style={{ marginLeft: 12 }}>
             <button className={`tab ${view === "fleet" ? "active" : ""}`} onClick={() => setView("fleet")}>Fleet</button>
             <button className={`tab ${view === "map" ? "active" : ""}`} onClick={() => setView("map")}>Map</button>
@@ -81,6 +95,11 @@ export function Dashboard() {
         <button className="btn" onClick={() => setSettingsOpen(true)}>⚙ Settings</button>
       </header>
 
+      {siteRoute ? (
+        <div className="container">
+          <SitePage siteId={siteRoute} onBack={() => { window.location.hash = ""; }} />
+        </div>
+      ) : (
       <div className="container">
         <div className="toolbar">
           <div>
@@ -126,6 +145,7 @@ export function Dashboard() {
           </div>
         )}
       </div>
+      )}
 
       {settingsOpen ? (
         <SettingsModal

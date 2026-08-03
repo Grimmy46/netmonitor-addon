@@ -81,6 +81,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => req<{ status: string; version: string }>("/health"),
   sites: () => req<Site[]>("/sites"),
+  site: (siteId: string) => req<Site>(`/sites/${siteId}`),
   devices: (siteId: string) => req<Device[]>(`/sites/${siteId}/devices`),
   metrics: (siteId: string) => req<MetricPoint[]>(`/sites/${siteId}/metrics`),
 

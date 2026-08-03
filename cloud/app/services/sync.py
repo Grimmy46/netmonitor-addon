@@ -24,13 +24,27 @@ async def get_or_create_account(db: AsyncSession) -> Account:
 
 
 def _device_type(model: str | None, product_line: str | None) -> str | None:
+    """Classify by model. The Site Manager API gives terse codes (USW-…, U6-…)
+    while the console Network API gives friendly names ("AC Mesh", "USW Pro
+    Max 24 PoE", "U7 Pro Outdoor"), so match both prefixes AND keywords."""
     m = (model or "").upper()
-    if m.startswith(("USW", "US-")):
+    if not m:
+        return product_line or None
+    # Switches first (USW / US- codes, or "SWITCH" in a friendly name).
+    if m.startswith(("USW", "US-")) or "SWITCH" in m:
         return "switch"
-    if m.startswith(("U6", "U7", "UAP", "UWB", "UAP-")):
-        return "ap"
-    if m.startswith(("UXG", "UDM", "UCG", "UGW", "USG", "UDR")):
+    # Gateways / routers / NVRs.
+    if m.startswith(("UXG", "UDM", "UCG", "UGW", "USG", "UDR", "UNVR")) or "GATEWAY" in m:
         return "gateway"
+    # Access points: U6/U7/UAP codes, or "AP"/"MESH"/"ACCESS" in a friendly name.
+    if (
+        m.startswith(("U6", "U7", "UAP", "UWB"))
+        or "MESH" in m
+        or "ACCESS POINT" in m
+        or m.endswith(" AP")
+        or " AP " in m
+    ):
+        return "ap"
     return product_line or None
 
 

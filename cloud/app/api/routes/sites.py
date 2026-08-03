@@ -24,6 +24,31 @@ async def _latest_metrics_by_site(db: AsyncSession) -> dict:
     return latest
 
 
+def _build_site_out(site: Site, n_total: int, n_online: int, m) -> SiteOut:
+    # UniFi's own per-site counts are authoritative (they cover every adopted
+    # device, not just the ones the sync attached). Fall back to joined rows.
+    total = site.device_total or n_total
+    online = (
+        (site.device_total - site.device_offline) if site.device_total else n_online
+    )
+    return SiteOut(
+        id=site.id,
+        name=site.name,
+        isp_name=site.isp_name,
+        status=site.status,
+        device_count=total,
+        online_device_count=online,
+        latency_ms=m.latency_ms if m else None,
+        packet_loss_pct=m.packet_loss_pct if m else None,
+        # Prefer the live metric uptime; fall back to the site's reported WAN uptime.
+        uptime_pct=(m.uptime_pct if m and m.uptime_pct is not None else site.wan_uptime_pct),
+        download_mbps=m.download_mbps if m else None,
+        upload_mbps=m.upload_mbps if m else None,
+        map_x=site.map_x,
+        map_y=site.map_y,
+    )
+
+
 @router.get("", response_model=list[SiteOut])
 async def list_sites(db: AsyncSession = Depends(get_db)) -> list[SiteOut]:
     total = func.count(Device.id)
@@ -36,39 +61,23 @@ async def list_sites(db: AsyncSession = Depends(get_db)) -> list[SiteOut]:
     )
     rows = (await db.execute(stmt)).all()
     latest = await _latest_metrics_by_site(db)
+    return [_build_site_out(site, n_total, n_online, latest.get(site.id)) for site, n_total, n_online in rows]
 
-    out: list[SiteOut] = []
-    for site, n_total, n_online in rows:
-        m = latest.get(site.id)
-        # UniFi's own per-site counts are authoritative (they cover every
-        # adopted device, not just the ones the /devices sync attached).
-        # Fall back to the joined device rows if counts weren't captured.
-        total = site.device_total or n_total
-        online = (
-            (site.device_total - site.device_offline)
-            if site.device_total
-            else n_online
+
+@router.get("/{site_id}", response_model=SiteOut)
+async def get_site(site_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> SiteOut:
+    site = await db.get(Site, site_id)
+    if site is None:
+        raise HTTPException(status_code=404, detail="Site not found")
+    total = func.count(Device.id)
+    online = func.count(Device.id).filter(Device.is_online.is_(True))
+    row = (
+        await db.execute(
+            select(total, online).where(Device.site_id == site_id)
         )
-        out.append(
-            SiteOut(
-                id=site.id,
-                name=site.name,
-                isp_name=site.isp_name,
-                status=site.status,
-                device_count=total,
-                online_device_count=online,
-                latency_ms=m.latency_ms if m else None,
-                packet_loss_pct=m.packet_loss_pct if m else None,
-                # Prefer the live metric uptime; fall back to the site's
-                # reported WAN uptime from the last sync.
-                uptime_pct=(m.uptime_pct if m and m.uptime_pct is not None else site.wan_uptime_pct),
-                download_mbps=m.download_mbps if m else None,
-                upload_mbps=m.upload_mbps if m else None,
-                map_x=site.map_x,
-                map_y=site.map_y,
-            )
-        )
-    return out
+    ).one()
+    latest = await _latest_metrics_by_site(db)
+    return _build_site_out(site, row[0], row[1], latest.get(site.id))
 
 
 @router.get("/{site_id}/devices", response_model=list[DeviceOut])

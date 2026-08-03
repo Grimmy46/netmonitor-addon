@@ -1,7 +1,4 @@
-import { useEffect, useState } from "react";
-import { api, type Device, type MetricPoint, type Site } from "../api/client";
-import { DeviceTable } from "./DeviceTable";
-import { LatencyChart } from "./LatencyChart";
+import type { Site } from "../api/client";
 import { StatTile } from "./StatTile";
 import { StatusPill } from "./StatusPill";
 
@@ -10,20 +7,14 @@ function fmt(n: number | null, digits = 0): number | null {
   return Number(n.toFixed(digits));
 }
 
+/**
+ * Compact fleet card. Clicking (or Cmd/middle-clicking) opens the site's own
+ * page at #/site/<id> — a real URL, so it can be opened in a new tab.
+ */
 export function SiteCard({ site }: { site: Site }) {
-  const [open, setOpen] = useState(false);
-  const [devices, setDevices] = useState<Device[] | null>(null);
-  const [metrics, setMetrics] = useState<MetricPoint[] | null>(null);
-
-  useEffect(() => {
-    if (open && devices === null) {
-      api.devices(site.id).then(setDevices).catch(() => setDevices([]));
-      api.metrics(site.id).then(setMetrics).catch(() => setMetrics([]));
-    }
-  }, [open, devices, site.id]);
-
+  const offline = Math.max(0, site.device_count - site.online_device_count);
   return (
-    <div className={`card${open ? "" : " clickable"}`} onClick={open ? undefined : () => setOpen(true)}>
+    <a className="card card-link" href={`#/site/${site.id}`}>
       <div className="card-head">
         <div>
           <div className="name">{site.name}</div>
@@ -40,27 +31,9 @@ export function SiteCard({ site }: { site: Site }) {
       </div>
       <div className="tiles" style={{ marginTop: 10 }}>
         <StatTile label="Devices" value={`${site.online_device_count}/${site.device_count}`} />
-        <StatTile label="Down" value={fmt(site.download_mbps, 1)} unit="Mbps" />
-        <StatTile label="Up" value={fmt(site.upload_mbps, 1)} unit="Mbps" />
+        <StatTile label="Down" value={offline > 0 ? offline : "0"} />
+        <StatTile label="Up" value={fmt(site.download_mbps, 1)} unit="Mbps" />
       </div>
-
-      {open ? (
-        <div className="detail">
-          <div style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 6 }}>
-            WAN latency
-          </div>
-          <LatencyChart data={metrics ?? []} />
-          <div style={{ fontSize: 12, color: "var(--ink-muted)", margin: "14px 0 6px" }}>
-            Devices {devices ? `(${devices.length})` : ""}
-          </div>
-          {devices === null ? <p className="hint">Loading…</p> : <DeviceTable devices={devices} />}
-          <div style={{ marginTop: 12, textAlign: "right" }}>
-            <button className="btn" onClick={(e) => { e.stopPropagation(); setOpen(false); }}>
-              Collapse
-            </button>
-          </div>
-        </div>
-      ) : null}
-    </div>
+    </a>
   );
 }

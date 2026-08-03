@@ -1,10 +1,20 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Site, type UnifiStatus } from "../api/client";
+import { DormantView } from "../components/DormantView";
 import { SettingsModal } from "../components/SettingsModal";
 import { SiteCard } from "../components/SiteCard";
 import { SiteMap } from "../components/SiteMap";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { SitePage } from "./SitePage";
+
+type FleetFilter = "all" | "online" | "attention" | "offline";
+
+const FLEET_FILTERS: { key: FleetFilter; label: string; match: (s: Site) => boolean }[] = [
+  { key: "all", label: "All", match: () => true },
+  { key: "online", label: "Online", match: (s) => s.status === "online" },
+  { key: "attention", label: "Needs attention", match: (s) => s.status === "degraded" || s.status === "offline" },
+  { key: "offline", label: "Offline", match: (s) => s.status === "offline" },
+];
 
 // Minimal hash router: "#/site/<id>" → that site's page; anything else → fleet.
 function siteIdFromHash(): string | null {
@@ -20,7 +30,8 @@ export function Dashboard() {
   const [error, setError] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  const [view, setView] = useState<"fleet" | "map">("fleet");
+  const [view, setView] = useState<"fleet" | "map" | "dormant">("fleet");
+  const [fleetFilter, setFleetFilter] = useState<FleetFilter>("all");
   const [siteRoute, setSiteRoute] = useState<string | null>(siteIdFromHash());
 
   useEffect(() => {
@@ -78,6 +89,16 @@ export function Dashboard() {
 
   const online = sites.filter((s) => s.status === "online").length;
   const issues = sites.filter((s) => s.status === "degraded" || s.status === "offline").length;
+  const counts = useMemo(
+    () => ({
+      all: sites.length,
+      online,
+      attention: issues,
+      offline: sites.filter((s) => s.status === "offline").length,
+    }),
+    [sites, online, issues],
+  );
+  const shownSites = sites.filter(FLEET_FILTERS.find((f) => f.key === fleetFilter)!.match);
 
   return (
     <>
@@ -88,6 +109,7 @@ export function Dashboard() {
           <nav className="map-tabs" style={{ marginLeft: 12 }}>
             <button className={`tab ${view === "fleet" ? "active" : ""}`} onClick={() => setView("fleet")}>Fleet</button>
             <button className={`tab ${view === "map" ? "active" : ""}`} onClick={() => setView("map")}>Map</button>
+            <button className={`tab ${view === "dormant" ? "active" : ""}`} onClick={() => setView("dormant")}>Dormant</button>
           </nav>
         ) : null}
         <div className="spacer" />
@@ -137,12 +159,31 @@ export function Dashboard() {
           </div>
         ) : view === "map" ? (
           <SiteMap sites={sites} />
+        ) : view === "dormant" ? (
+          <DormantView />
         ) : (
-          <div className="grid">
-            {sites.map((s) => (
-              <SiteCard key={s.id} site={s} />
-            ))}
-          </div>
+          <>
+            <div className="filter-chips" style={{ marginBottom: 16 }}>
+              {FLEET_FILTERS.map((f) => (
+                <button
+                  key={f.key}
+                  className={`chip ${fleetFilter === f.key ? "active" : ""}`}
+                  onClick={() => setFleetFilter(f.key)}
+                >
+                  {f.label} ({counts[f.key]})
+                </button>
+              ))}
+            </div>
+            {shownSites.length === 0 ? (
+              <p className="hint">No sites match this filter.</p>
+            ) : (
+              <div className="grid">
+                {shownSites.map((s) => (
+                  <SiteCard key={s.id} site={s} />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
       )}

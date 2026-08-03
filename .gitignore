@@ -37,3 +37,4 @@ _diag_*.json
 _incoming/
 _to_delete/
 *.tar.gz
+_stage*/

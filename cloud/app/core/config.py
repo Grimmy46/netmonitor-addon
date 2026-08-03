@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     unifi_api_base: str = "https://api.ui.com"
     # How often the background poller re-syncs the fleet, in seconds.
     unifi_sync_interval: int = 300
+    # A device offline longer than this many days is classified "dormant" and
+    # moved out of the active view into the Dormant tab.
+    dormant_after_days: int = 4
 
     @property
     def database_url(self) -> str:

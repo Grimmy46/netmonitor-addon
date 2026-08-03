@@ -12,6 +12,7 @@ export interface Site {
   uptime_pct: number | null;
   download_mbps: number | null;
   upload_mbps: number | null;
+  dormant_device_count: number;
   map_x: number | null;
   map_y: number | null;
 }
@@ -24,7 +25,26 @@ export interface Device {
   ip: string | null;
   mac: string | null;
   is_online: boolean | null;
+  offline_since: string | null;
+  last_online_at: string | null;
+  down_seconds: number | null;
+  dormant: boolean;
 }
+
+export interface DormantDevice {
+  id: string;
+  name: string;
+  model: string | null;
+  device_type: string | null;
+  ip: string | null;
+  mac: string | null;
+  site_id: string;
+  site_name: string;
+  offline_since: string | null;
+  down_seconds: number | null;
+}
+
+export type DeviceStatusFilter = "active" | "dormant" | "offline" | "online" | "all";
 
 export interface MetricPoint {
   ts: string;
@@ -82,7 +102,9 @@ export const api = {
   health: () => req<{ status: string; version: string }>("/health"),
   sites: () => req<Site[]>("/sites"),
   site: (siteId: string) => req<Site>(`/sites/${siteId}`),
-  devices: (siteId: string) => req<Device[]>(`/sites/${siteId}/devices`),
+  devices: (siteId: string, status: DeviceStatusFilter = "active") =>
+    req<Device[]>(`/sites/${siteId}/devices?status=${status}`),
+  dormantDevices: () => req<DormantDevice[]>("/sites/dormant-devices"),
   metrics: (siteId: string) => req<MetricPoint[]>(`/sites/${siteId}/metrics`),
 
   unifiStatus: () => req<UnifiStatus>("/integrations/unifi/status"),

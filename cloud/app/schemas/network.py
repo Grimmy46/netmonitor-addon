@@ -16,6 +16,26 @@ class DeviceOut(BaseModel):
     mac: str | None = None
     is_online: bool | None = None
 
+    # State history + server-side classification.
+    offline_since: datetime | None = None
+    last_online_at: datetime | None = None
+    down_seconds: int | None = None  # how long it's been offline
+    dormant: bool = False  # offline longer than the dormant threshold
+
+
+class DormantDeviceOut(BaseModel):
+    """A dormant device shown in the fleet-wide Dormant tab (carries its site)."""
+    id: uuid.UUID
+    name: str
+    model: str | None = None
+    device_type: str | None = None
+    ip: str | None = None
+    mac: str | None = None
+    site_id: uuid.UUID
+    site_name: str
+    offline_since: datetime | None = None
+    down_seconds: int | None = None
+
 
 class SiteOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -26,6 +46,8 @@ class SiteOut(BaseModel):
     status: str = "unknown"
     device_count: int = 0
     online_device_count: int = 0
+    # Devices offline longer than the dormant threshold (packed-up / decommissioned).
+    dormant_device_count: int = 0
 
     # Latest WAN/ISP health (from the most recent isp_metric row).
     latency_ms: float | None = None

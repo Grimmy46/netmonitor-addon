@@ -78,7 +78,9 @@ export function SitePage({ siteId, onBack }: { siteId: string; onBack: () => voi
 
   const total = site?.device_count ?? 0;
   const online = site?.online_device_count ?? 0;
-  const offline = Math.max(0, total - online);
+  const dormant = site?.dormant_device_count ?? 0;
+  // "Offline" here means actionable — dormant gear is shown separately.
+  const offline = Math.max(0, total - online - dormant);
 
   return (
     <div className="site-page">
@@ -109,6 +111,12 @@ export function SitePage({ siteId, onBack }: { siteId: string; onBack: () => voi
             <div className="hstat-val">{offline}</div>
             <div className="hstat-lbl">Offline</div>
           </div>
+          {dormant > 0 ? (
+            <div className="hstat">
+              <div className="hstat-val">{dormant}</div>
+              <div className="hstat-lbl">Dormant</div>
+            </div>
+          ) : null}
           <div className="hstat">
             <div className="hstat-val">
               {fmt(site?.latency_ms) ?? "—"}

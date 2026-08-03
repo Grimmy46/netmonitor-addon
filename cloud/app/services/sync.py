@@ -171,7 +171,8 @@ async def sync_unifi(db: AsyncSession) -> dict:
         dev.ip = rd.get("ip") or dev.ip  # current lease, refreshed each sync
         dev.device_type = _device_type(rd.get("model"), rd.get("productLine")) or dev.device_type
         status = rd.get("status") or rd.get("state")
-        dev.is_online = (str(status).lower() == "online") if status is not None else dev.is_online
+        is_online = (str(status).lower() == "online") if status is not None else None
+        _apply_online_state(dev, is_online, datetime.now(tz=timezone.utc))
         db.add(dev)
         device_count += 1
 
@@ -197,6 +198,22 @@ def _online_from_state(state) -> bool | None:
     return s == "ONLINE"
 
 
+def _apply_online_state(dev: Device, is_online: bool | None, now: datetime) -> None:
+    """Update a device's live status AND its offline/online history.
+
+    Transitioning online clears `offline_since` and stamps `last_online_at`;
+    the first time we see it offline we stamp `offline_since` (and keep it until
+    it recovers). `None` (unknown) leaves everything untouched."""
+    if is_online is True:
+        dev.is_online = True
+        dev.last_online_at = now
+        dev.offline_since = None
+    elif is_online is False:
+        dev.is_online = False
+        if dev.offline_since is None:
+            dev.offline_since = now
+
+
 async def sync_unifi_console(db: AsyncSession, console: UnifiConsole) -> dict:
     """Pull every site + its devices from ONE console's Network Integration API,
     and upsert them. Device up/down comes straight from each device's `state`,
@@ -208,6 +225,7 @@ async def sync_unifi_console(db: AsyncSession, console: UnifiConsole) -> dict:
         verify_tls=console.verify_tls,
     )
     account = await get_or_create_account(db)
+    now = datetime.now(tz=timezone.utc)
 
     raw_sites = await client.list_sites()
 
@@ -260,9 +278,7 @@ async def sync_unifi_console(db: AsyncSession, console: UnifiConsole) -> dict:
             dev.mac = rd.get("macAddress") or rd.get("mac") or dev.mac
             dev.ip = rd.get("ipAddress") or rd.get("ip") or dev.ip
             dev.device_type = _device_type(rd.get("model"), None) or dev.device_type
-            is_online = _online_from_state(rd.get("state"))
-            if is_online is not None:
-                dev.is_online = is_online
+            _apply_online_state(dev, _online_from_state(rd.get("state")), now)
             if dev.is_online:
                 online += 1
             db.add(dev)

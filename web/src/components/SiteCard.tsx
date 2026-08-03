@@ -12,7 +12,11 @@ function fmt(n: number | null, digits = 0): number | null {
  * page at #/site/<id> — a real URL, so it can be opened in a new tab.
  */
 export function SiteCard({ site }: { site: Site }) {
-  const offline = Math.max(0, site.device_count - site.online_device_count);
+  // "Down" = offline and still actionable (dormant gear is excluded).
+  const activeDown = Math.max(
+    0,
+    site.device_count - site.online_device_count - site.dormant_device_count,
+  );
   return (
     <a className="card card-link" href={`#/site/${site.id}`}>
       <div className="card-head">
@@ -31,8 +35,11 @@ export function SiteCard({ site }: { site: Site }) {
       </div>
       <div className="tiles" style={{ marginTop: 10 }}>
         <StatTile label="Devices" value={`${site.online_device_count}/${site.device_count}`} />
-        <StatTile label="Down" value={offline > 0 ? offline : "0"} />
-        <StatTile label="Up" value={fmt(site.download_mbps, 1)} unit="Mbps" />
+        <StatTile label="Down" value={activeDown} />
+        <StatTile
+          label="Dormant"
+          value={site.dormant_device_count > 0 ? site.dormant_device_count : "0"}
+        />
       </div>
     </a>
   );

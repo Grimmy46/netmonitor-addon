@@ -4,8 +4,9 @@ Identity is the UniFi device id / MAC — NOT the IP — so DHCP lease changes n
 create duplicates or break history.
 """
 import uuid
+from datetime import datetime
 
-from sqlalchemy import ForeignKey
+from sqlalchemy import DateTime, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -24,5 +25,15 @@ class Device(Base, UUIDPk, Timestamps):
     device_type: Mapped[str | None] = mapped_column(default=None)  # switch | ap | gateway | other
     ip: Mapped[str | None] = mapped_column(default=None)  # current lease, refreshed each sync
     is_online: Mapped[bool | None] = mapped_column(default=None)
+
+    # State-change tracking (server-side, not from UniFi): when the device was
+    # first observed offline (cleared when it returns), and when it was last
+    # seen online. `offline_since` drives "down since …" and dormant detection.
+    offline_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    last_online_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
 
     site: Mapped["Site"] = relationship(back_populates="devices")  # noqa: F821

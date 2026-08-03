@@ -1,15 +1,26 @@
 """Read endpoints for sites, their devices, and WAN metric history."""
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.db import get_db
 from app.models import Device, IspMetric, Site
-from app.schemas import DeviceOut, MetricPoint, SiteOut
+from app.schemas import DeviceOut, DormantDeviceOut, MetricPoint, SiteOut
 
 router = APIRouter(prefix="/sites", tags=["sites"])
+
+
+def _now() -> datetime:
+    return datetime.now(tz=timezone.utc)
+
+
+def _dormant_cutoff() -> datetime:
+    """A device whose offline_since is at or before this is dormant."""
+    return _now() - timedelta(days=get_settings().dormant_after_days)
 
 
 async def _latest_metrics_by_site(db: AsyncSession) -> dict:
@@ -24,7 +35,7 @@ async def _latest_metrics_by_site(db: AsyncSession) -> dict:
     return latest
 
 
-def _build_site_out(site: Site, n_total: int, n_online: int, m) -> SiteOut:
+def _build_site_out(site: Site, n_total: int, n_online: int, n_dormant: int, m) -> SiteOut:
     # UniFi's own per-site counts are authoritative (they cover every adopted
     # device, not just the ones the sync attached). Fall back to joined rows.
     total = site.device_total or n_total
@@ -38,6 +49,7 @@ def _build_site_out(site: Site, n_total: int, n_online: int, m) -> SiteOut:
         status=site.status,
         device_count=total,
         online_device_count=online,
+        dormant_device_count=int(n_dormant or 0),
         latency_ms=m.latency_ms if m else None,
         packet_loss_pct=m.packet_loss_pct if m else None,
         # Prefer the live metric uptime; fall back to the site's reported WAN uptime.
@@ -49,19 +61,76 @@ def _build_site_out(site: Site, n_total: int, n_online: int, m) -> SiteOut:
     )
 
 
+def _device_out(dev: Device, now: datetime, cutoff: datetime) -> DeviceOut:
+    down_seconds = (
+        int((now - dev.offline_since).total_seconds()) if dev.offline_since else None
+    )
+    dormant = dev.offline_since is not None and dev.offline_since <= cutoff
+    return DeviceOut(
+        id=dev.id,
+        name=dev.name,
+        model=dev.model,
+        device_type=dev.device_type,
+        ip=dev.ip,
+        mac=dev.mac,
+        is_online=dev.is_online,
+        offline_since=dev.offline_since,
+        last_online_at=dev.last_online_at,
+        down_seconds=down_seconds,
+        dormant=dormant,
+    )
+
+
 @router.get("", response_model=list[SiteOut])
 async def list_sites(db: AsyncSession = Depends(get_db)) -> list[SiteOut]:
+    cutoff = _dormant_cutoff()
     total = func.count(Device.id)
     online = func.count(Device.id).filter(Device.is_online.is_(True))
+    dormant = func.count(Device.id).filter(
+        Device.offline_since.is_not(None), Device.offline_since <= cutoff
+    )
     stmt = (
-        select(Site, total, online)
+        select(Site, total, online, dormant)
         .outerjoin(Device, Device.site_id == Site.id)
         .group_by(Site.id)
         .order_by(Site.name)
     )
     rows = (await db.execute(stmt)).all()
     latest = await _latest_metrics_by_site(db)
-    return [_build_site_out(site, n_total, n_online, latest.get(site.id)) for site, n_total, n_online in rows]
+    return [
+        _build_site_out(site, n_total, n_online, n_dormant, latest.get(site.id))
+        for site, n_total, n_online, n_dormant in rows
+    ]
+
+
+@router.get("/dormant-devices", response_model=list[DormantDeviceOut])
+async def dormant_devices(db: AsyncSession = Depends(get_db)) -> list[DormantDeviceOut]:
+    """Fleet-wide list of dormant devices (offline past the threshold), each
+    carrying its site — this powers the Dormant tab. Longest-dead first."""
+    now = _now()
+    cutoff = _dormant_cutoff()
+    stmt = (
+        select(Device, Site.name)
+        .join(Site, Site.id == Device.site_id)
+        .where(Device.offline_since.is_not(None), Device.offline_since <= cutoff)
+        .order_by(Device.offline_since.asc())
+    )
+    rows = (await db.execute(stmt)).all()
+    return [
+        DormantDeviceOut(
+            id=d.id,
+            name=d.name,
+            model=d.model,
+            device_type=d.device_type,
+            ip=d.ip,
+            mac=d.mac,
+            site_id=d.site_id,
+            site_name=site_name,
+            offline_since=d.offline_since,
+            down_seconds=int((now - d.offline_since).total_seconds()) if d.offline_since else None,
+        )
+        for d, site_name in rows
+    ]
 
 
 @router.get("/{site_id}", response_model=SiteOut)
@@ -69,23 +138,45 @@ async def get_site(site_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> Si
     site = await db.get(Site, site_id)
     if site is None:
         raise HTTPException(status_code=404, detail="Site not found")
+    cutoff = _dormant_cutoff()
     total = func.count(Device.id)
     online = func.count(Device.id).filter(Device.is_online.is_(True))
+    dormant = func.count(Device.id).filter(
+        Device.offline_since.is_not(None), Device.offline_since <= cutoff
+    )
     row = (
         await db.execute(
-            select(total, online).where(Device.site_id == site_id)
+            select(total, online, dormant).where(Device.site_id == site_id)
         )
     ).one()
     latest = await _latest_metrics_by_site(db)
-    return _build_site_out(site, row[0], row[1], latest.get(site.id))
+    return _build_site_out(site, row[0], row[1], row[2], latest.get(site.id))
 
 
 @router.get("/{site_id}/devices", response_model=list[DeviceOut])
-async def list_site_devices(site_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> list[Device]:
+async def list_site_devices(
+    site_id: uuid.UUID,
+    status: str = Query("active", pattern="^(active|dormant|offline|online|all)$"),
+    db: AsyncSession = Depends(get_db),
+) -> list[DeviceOut]:
+    """Devices for a site. `status` filters server-side:
+    active (default, excludes dormant), dormant, offline (active offline only),
+    online, or all."""
     if await db.get(Site, site_id) is None:
         raise HTTPException(status_code=404, detail="Site not found")
+    now = _now()
+    cutoff = _dormant_cutoff()
     stmt = select(Device).where(Device.site_id == site_id).order_by(Device.name)
-    return list((await db.execute(stmt)).scalars())
+    outs = [_device_out(d, now, cutoff) for d in (await db.execute(stmt)).scalars()]
+    if status == "active":
+        outs = [o for o in outs if not o.dormant]
+    elif status == "dormant":
+        outs = [o for o in outs if o.dormant]
+    elif status == "offline":
+        outs = [o for o in outs if o.is_online is False and not o.dormant]
+    elif status == "online":
+        outs = [o for o in outs if o.is_online is True]
+    return outs
 
 
 @router.get("/{site_id}/metrics", response_model=list[MetricPoint])

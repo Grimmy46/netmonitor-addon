@@ -1,9 +1,12 @@
 """Site agents: registration (token issuance), the push-ingest endpoint the
-agents report to, and read views for the Kiosks tab."""
+agents report to, the self-update payload endpoints, and read views."""
+import re
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +25,31 @@ from app.schemas import (
 from app.services.sync import get_or_create_account
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+# The canonical agent payload the bootstrapper downloads and runs. Editing this
+# file + bumping PAYLOAD_VERSION rolls the whole fleet out on next check-in.
+PAYLOAD_PATH = Path(__file__).resolve().parents[2] / "agent_runtime" / "payload.py"
+_VER_RE = re.compile(r"""PAYLOAD_VERSION\s*=\s*["']([^"']+)["']""")
+
+
+def _payload_source() -> str:
+    return PAYLOAD_PATH.read_text(encoding="utf-8")
+
+
+def _payload_version() -> str:
+    m = _VER_RE.search(_payload_source())
+    return m.group(1) if m else "0"
+
+
+async def _agent_from_token(db: AsyncSession, token: str | None) -> Agent:
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing X-Agent-Token")
+    agent = (
+        await db.execute(select(Agent).where(Agent.token_hash == hash_token(token)))
+    ).scalars().first()
+    if agent is None:
+        raise HTTPException(status_code=401, detail="Invalid agent token")
+    return agent
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -136,15 +164,7 @@ async def agent_report(
     db: AsyncSession = Depends(get_db),
     x_agent_token: str | None = Header(default=None),
 ) -> AgentReportResult:
-    if not x_agent_token:
-        raise HTTPException(status_code=401, detail="Missing X-Agent-Token")
-    agent = (
-        await db.execute(
-            select(Agent).where(Agent.token_hash == hash_token(x_agent_token))
-        )
-    ).scalars().first()
-    if agent is None:
-        raise HTTPException(status_code=401, detail="Invalid agent token")
+    agent = await _agent_from_token(db, x_agent_token)
 
     now = datetime.now(tz=timezone.utc)
     agent.last_seen_at = now.isoformat()
@@ -176,3 +196,29 @@ async def agent_report(
     await db.commit()
     # Phase 3 will return pending commands here for the agent to execute.
     return AgentReportResult(ok=True, stored=stored, commands=[])
+
+
+# ── self-update: agents fetch the latest payload from here ───────────────────
+@router.get("/version")
+async def agent_payload_version(
+    db: AsyncSession = Depends(get_db),
+    x_agent_token: str | None = Header(default=None),
+) -> dict:
+    """Cheap version check — the agent polls this and only downloads a new
+    payload when the version differs from what it's running."""
+    await _agent_from_token(db, x_agent_token)
+    return {"version": _payload_version()}
+
+
+@router.get("/payload", response_class=PlainTextResponse)
+async def agent_payload(
+    db: AsyncSession = Depends(get_db),
+    x_agent_token: str | None = Header(default=None),
+) -> PlainTextResponse:
+    """The current agent payload source. The bootstrapper caches and runs it.
+    Version is also returned in the X-Payload-Version header."""
+    await _agent_from_token(db, x_agent_token)
+    return PlainTextResponse(
+        _payload_source(),
+        headers={"X-Payload-Version": _payload_version()},
+    )

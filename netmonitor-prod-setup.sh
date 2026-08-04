@@ -77,11 +77,13 @@ cat > /etc/caddy/Caddyfile <<CADDY
 $DOMAIN {
     encode zstd gzip
 
-    # Site agents push here with their own X-Agent-Token (verified at the app
-    # layer), so this single path is exempt from the dashboard basic-auth —
-    # agents can't do interactive basic-auth. Everything else stays protected.
-    @ingest path /agents/report
-    handle @ingest {
+    # Site agents hit these with their own X-Agent-Token (verified at the app
+    # layer): report (push samples), version + payload (self-update). They are
+    # exempt from the dashboard basic-auth since agents can't do interactive
+    # auth. Everything else — including the agent MANAGEMENT endpoints — stays
+    # behind basic-auth.
+    @agentapi path /agents/report /agents/payload /agents/version
+    handle @agentapi {
         reverse_proxy 127.0.0.1:8010
     }
 

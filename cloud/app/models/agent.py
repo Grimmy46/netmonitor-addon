@@ -20,7 +20,13 @@ class Agent(Base, UUIDPk, Timestamps):
 
     name: Mapped[str] = mapped_column(default="")
     # Hash of the agent's auth token (never store the token itself).
-    token_hash: Mapped[str] = mapped_column(default="")
+    token_hash: Mapped[str] = mapped_column(index=True, default="")
     version: Mapped[str | None] = mapped_column(default=None)
     last_seen_at: Mapped[str | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(default="pending")  # pending | online | offline
+
+    # Reported by the agent on each check-in (self-describing).
+    hostname: Mapped[str | None] = mapped_column(default=None)
+    os: Mapped[str | None] = mapped_column(default=None)
+    last_ip: Mapped[str | None] = mapped_column(default=None)
+    last_target: Mapped[str | None] = mapped_column(default=None)

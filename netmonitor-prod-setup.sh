@@ -76,17 +76,28 @@ echo "== Caddy: basic-auth, serve the SPA, proxy the API =="
 cat > /etc/caddy/Caddyfile <<CADDY
 $DOMAIN {
     encode zstd gzip
-    basic_auth {
-        admin $HASH
-    }
-    @api path /health* /sites* /integrations* /map* /docs* /openapi.json /redoc*
-    handle @api {
+
+    # Site agents push here with their own X-Agent-Token (verified at the app
+    # layer), so this single path is exempt from the dashboard basic-auth —
+    # agents can't do interactive basic-auth. Everything else stays protected.
+    @ingest path /agents/report
+    handle @ingest {
         reverse_proxy 127.0.0.1:8010
     }
+
     handle {
-        root * $APP/web/dist
-        try_files {path} /index.html
-        file_server
+        basic_auth {
+            admin $HASH
+        }
+        @api path /health* /sites* /integrations* /map* /agents* /docs* /openapi.json /redoc*
+        handle @api {
+            reverse_proxy 127.0.0.1:8010
+        }
+        handle {
+            root * $APP/web/dist
+            try_files {path} /index.html
+            file_server
+        }
     }
 }
 CADDY

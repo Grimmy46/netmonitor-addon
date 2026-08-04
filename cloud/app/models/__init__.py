@@ -3,6 +3,7 @@ from app.models.account import Account
 from app.models.agent import Agent
 from app.models.device import Device
 from app.models.isp_metric import IspMetric
+from app.models.ping_sample import PingSample
 from app.models.site import Site
 from app.models.unifi_console import UnifiConsole
 from app.models.unifi_credential import UnifiCredential
@@ -13,6 +14,7 @@ __all__ = [
     "Agent",
     "Device",
     "IspMetric",
+    "PingSample",
     "Site",
     "UnifiConsole",
     "UnifiCredential",

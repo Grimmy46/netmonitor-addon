@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     # A device offline longer than this many days is classified "dormant" and
     # moved out of the active view into the Dormant tab.
     dormant_after_days: int = 4
+    # An agent that hasn't checked in within this many seconds counts as offline.
+    agent_offline_after_seconds: int = 120
 
     @property
     def database_url(self) -> str:

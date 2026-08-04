@@ -46,6 +46,34 @@ export interface DormantDevice {
 
 export type DeviceStatusFilter = "active" | "dormant" | "offline" | "online" | "all";
 
+export interface Agent {
+  id: string;
+  name: string;
+  site_id: string | null;
+  site_name: string | null;
+  status: "online" | "offline" | "pending";
+  online: boolean;
+  version: string | null;
+  hostname: string | null;
+  os: string | null;
+  last_ip: string | null;
+  last_target: string | null;
+  last_seen_at: string | null;
+  latest_rtt_ms: number | null;
+}
+
+export interface AgentCreated {
+  id: string;
+  name: string;
+  token: string;
+}
+
+export interface PingPoint {
+  ts: string;
+  rtt_ms: number | null;
+  gateway_rtt_ms: number | null;
+}
+
 export interface MetricPoint {
   ts: string;
   latency_ms: number | null;
@@ -143,4 +171,14 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ positions }),
     }),
+
+  // Site agents (Kiosks tab).
+  agents: () => req<Agent[]>("/agents"),
+  createAgent: (name: string, siteId: string | null) =>
+    req<AgentCreated>("/agents", {
+      method: "POST",
+      body: JSON.stringify({ name, site_id: siteId }),
+    }),
+  deleteAgent: (id: string) => req<void>(`/agents/${id}`, { method: "DELETE" }),
+  agentPings: (id: string) => req<PingPoint[]>(`/agents/${id}/pings`),
 };

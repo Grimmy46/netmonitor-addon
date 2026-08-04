@@ -301,3 +301,17 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
 .chip.active { background: var(--accent); color: #fff; border-color: transparent; }
 
 .sub { color: var(--ink-muted); font-size: 13px; }
+
+/* Hero stat cards are buttons that filter the device list. */
+.hstat {
+  align-items: flex-start;
+  text-align: left;
+  font-family: inherit;
+  color: inherit;
+  width: 100%;
+  transition: border-color 0.12s, transform 0.12s, box-shadow 0.12s;
+}
+.hstat.clickable { cursor: pointer; }
+.hstat.clickable:hover { border-color: var(--baseline); transform: translateY(-1px); }
+.hstat.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.hstat.static { cursor: default; }

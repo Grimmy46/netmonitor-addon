@@ -9,19 +9,37 @@ function fmt(n: number | null | undefined, digits = 0): number | null {
   return Number(n.toFixed(digits));
 }
 
-type Filter = "all" | "offline" | "ap" | "switch" | "gateway";
+type Filter = "all" | "online" | "offline" | "dormant" | "ap" | "switch" | "gateway";
 
-const FILTERS: { key: Filter; label: string }[] = [
+const CHIPS: { key: Filter; label: string }[] = [
   { key: "all", label: "All" },
+  { key: "online", label: "Online" },
   { key: "offline", label: "Offline" },
   { key: "ap", label: "Access Points" },
   { key: "switch", label: "Switches" },
   { key: "gateway", label: "Gateways" },
 ];
 
+function matchesFilter(d: Device, filter: Filter): boolean {
+  switch (filter) {
+    case "online":
+      return d.is_online === true;
+    case "offline":
+      return d.is_online === false && !d.dormant;
+    case "dormant":
+      return d.dormant;
+    case "ap":
+    case "switch":
+    case "gateway":
+      return d.device_type === filter;
+    default:
+      return true;
+  }
+}
+
 /**
- * Dedicated per-site landing page: a summary banner (device counts + WAN
- * health) followed by the WAN latency trend and a searchable device list with
+ * Dedicated per-site landing page: a clickable summary banner (each stat filters
+ * the list below), the WAN latency trend, and a searchable device list with
  * offline devices sorted to the top so faults are the first thing you see.
  */
 export function SitePage({ siteId, onBack }: { siteId: string; onBack: () => void }) {
@@ -38,15 +56,16 @@ export function SitePage({ siteId, onBack }: { siteId: string; onBack: () => voi
     setDevices(null);
     setMetrics([]);
     setError("");
+    setFilter("all");
     api.site(siteId).then((s) => alive && setSite(s)).catch((e) =>
       alive && setError(String(e instanceof Error ? e.message : e)),
     );
-    api.devices(siteId).then((d) => alive && setDevices(d)).catch(() => alive && setDevices([]));
+    // Fetch every device (incl. dormant) so all the banner filters work client-side.
+    api.devices(siteId, "all").then((d) => alive && setDevices(d)).catch(() => alive && setDevices([]));
     api.metrics(siteId).then((m) => alive && setMetrics(m)).catch(() => alive && setMetrics([]));
-    // Live-ish refresh of counts + statuses while the page is open.
     const id = setInterval(() => {
       api.site(siteId).then((s) => alive && setSite(s)).catch(() => {});
-      api.devices(siteId).then((d) => alive && setDevices(d)).catch(() => {});
+      api.devices(siteId, "all").then((d) => alive && setDevices(d)).catch(() => {});
     }, 15000);
     return () => {
       alive = false;
@@ -54,15 +73,19 @@ export function SitePage({ siteId, onBack }: { siteId: string; onBack: () => voi
     };
   }, [siteId]);
 
-  const offlineCount = useMemo(
-    () => (devices ?? []).filter((d) => d.is_online === false).length,
-    [devices],
-  );
+  // Counts derived from the fetched devices so the banner and the list always agree.
+  const counts = useMemo(() => {
+    const ds = devices ?? [];
+    return {
+      total: ds.length,
+      online: ds.filter((d) => d.is_online === true).length,
+      offline: ds.filter((d) => d.is_online === false && !d.dormant).length,
+      dormant: ds.filter((d) => d.dormant).length,
+    };
+  }, [devices]);
 
   const shown = useMemo(() => {
-    let list = devices ?? [];
-    if (filter === "offline") list = list.filter((d) => d.is_online === false);
-    else if (filter !== "all") list = list.filter((d) => d.device_type === filter);
+    let list = (devices ?? []).filter((d) => matchesFilter(d, filter));
     const needle = q.trim().toLowerCase();
     if (needle) {
       list = list.filter((d) =>
@@ -76,11 +99,37 @@ export function SitePage({ siteId, onBack }: { siteId: string; onBack: () => voi
     return [...list].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
   }, [devices, filter, q]);
 
-  const total = site?.device_count ?? 0;
-  const online = site?.online_device_count ?? 0;
-  const dormant = site?.dormant_device_count ?? 0;
-  // "Offline" here means actionable — dormant gear is shown separately.
-  const offline = Math.max(0, total - online - dormant);
+  // A banner card: big number + label that also filters the list when clicked.
+  function StatCard({
+    value,
+    label,
+    to,
+    tone,
+    unit,
+  }: {
+    value: number | string | null;
+    label: string;
+    to?: Filter;
+    tone?: "good" | "bad";
+    unit?: string;
+  }) {
+    const clickable = to !== undefined;
+    const active = clickable && filter === to;
+    return (
+      <button
+        type="button"
+        className={`hstat${tone ? " " + tone : ""}${clickable ? " clickable" : " static"}${active ? " active" : ""}`}
+        onClick={clickable ? () => setFilter(to!) : undefined}
+        aria-pressed={active}
+      >
+        <div className="hstat-val">
+          {value ?? "—"}
+          {value != null && unit ? <span className="hstat-unit"> {unit}</span> : null}
+        </div>
+        <div className="hstat-lbl">{label}</div>
+      </button>
+    );
+  }
 
   return (
     <div className="site-page">
@@ -88,7 +137,7 @@ export function SitePage({ siteId, onBack }: { siteId: string; onBack: () => voi
 
       {error ? <div className="banner err">{error}</div> : null}
 
-      {/* ── Summary banner ─────────────────────────────────────────────── */}
+      {/* ── Summary banner (each stat filters the list) ─────────────────── */}
       <div className={`site-hero ${site?.status ?? "unknown"}`}>
         <div className="hero-head">
           <div>
@@ -99,38 +148,14 @@ export function SitePage({ siteId, onBack }: { siteId: string; onBack: () => voi
         </div>
 
         <div className="hero-stats">
-          <div className="hstat">
-            <div className="hstat-val">{total}</div>
-            <div className="hstat-lbl">Devices</div>
-          </div>
-          <div className="hstat good">
-            <div className="hstat-val">{online}</div>
-            <div className="hstat-lbl">Online</div>
-          </div>
-          <div className={`hstat${offline > 0 ? " bad" : ""}`}>
-            <div className="hstat-val">{offline}</div>
-            <div className="hstat-lbl">Offline</div>
-          </div>
-          {dormant > 0 ? (
-            <div className="hstat">
-              <div className="hstat-val">{dormant}</div>
-              <div className="hstat-lbl">Dormant</div>
-            </div>
+          <StatCard value={counts.total} label="Devices" to="all" />
+          <StatCard value={counts.online} label="Online" to="online" tone="good" />
+          <StatCard value={counts.offline} label="Offline" to="offline" tone={counts.offline > 0 ? "bad" : undefined} />
+          {counts.dormant > 0 ? (
+            <StatCard value={counts.dormant} label="Dormant" to="dormant" />
           ) : null}
-          <div className="hstat">
-            <div className="hstat-val">
-              {fmt(site?.latency_ms) ?? "—"}
-              {fmt(site?.latency_ms) != null ? <span className="hstat-unit"> ms</span> : null}
-            </div>
-            <div className="hstat-lbl">WAN latency</div>
-          </div>
-          <div className="hstat">
-            <div className="hstat-val">
-              {fmt(site?.uptime_pct, 1) ?? "—"}
-              {fmt(site?.uptime_pct, 1) != null ? <span className="hstat-unit"> %</span> : null}
-            </div>
-            <div className="hstat-lbl">Uptime</div>
-          </div>
+          <StatCard value={fmt(site?.latency_ms)} label="WAN latency" unit="ms" />
+          <StatCard value={fmt(site?.uptime_pct, 1)} label="Uptime" unit="%" />
         </div>
       </div>
 
@@ -144,8 +169,8 @@ export function SitePage({ siteId, onBack }: { siteId: string; onBack: () => voi
       <section className="panel">
         <div className="devices-toolbar">
           <div className="panel-title" style={{ margin: 0 }}>
-            Devices {devices ? `(${shown.length}${shown.length !== total ? ` of ${total}` : ""})` : ""}
-            {offlineCount > 0 ? <span className="down-badge">{offlineCount} down</span> : null}
+            Devices {devices ? `(${shown.length}${shown.length !== counts.total ? ` of ${counts.total}` : ""})` : ""}
+            {counts.offline > 0 ? <span className="down-badge">{counts.offline} down</span> : null}
           </div>
           <div className="spacer" />
           <input
@@ -157,16 +182,24 @@ export function SitePage({ siteId, onBack }: { siteId: string; onBack: () => voi
           />
         </div>
         <div className="filter-chips">
-          {FILTERS.map((f) => (
+          {CHIPS.map((f) => (
             <button
               key={f.key}
               className={`chip ${filter === f.key ? "active" : ""}`}
               onClick={() => setFilter(f.key)}
             >
               {f.label}
-              {f.key === "offline" && offlineCount > 0 ? ` (${offlineCount})` : ""}
+              {f.key === "offline" && counts.offline > 0 ? ` (${counts.offline})` : ""}
             </button>
           ))}
+          {counts.dormant > 0 ? (
+            <button
+              className={`chip ${filter === "dormant" ? "active" : ""}`}
+              onClick={() => setFilter("dormant")}
+            >
+              Dormant ({counts.dormant})
+            </button>
+          ) : null}
         </div>
         {devices === null ? (
           <p className="hint">Loading devices…</p>

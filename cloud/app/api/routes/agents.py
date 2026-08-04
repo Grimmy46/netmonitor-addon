@@ -1,6 +1,7 @@
 """Site agents: registration (token issuance), the push-ingest endpoint the
 agents report to, the self-update payload endpoints, and read views."""
 import re
+import secrets
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,18 +14,44 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.security import hash_token, make_agent_token
-from app.models import Agent, PingSample, Site
+from app.models import Account, Agent, PingSample, Site
 from app.schemas import (
     AgentCreate,
-    AgentCreated,
     AgentOut,
     AgentReport,
     AgentReportResult,
+    EnrollAddIn,
+    EnrollClaimIn,
+    EnrollmentPinOut,
+    EnrollResult,
+    EnrollStationOut,
+    EnrollStationsIn,
     PingPoint,
 )
 from app.services.sync import get_or_create_account
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+def _gen_pin() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+async def _get_pin(db: AsyncSession) -> tuple[Account, str]:
+    """Return (account, pin), generating a PIN on first use."""
+    account = await get_or_create_account(db)
+    if not account.enrollment_pin:
+        account.enrollment_pin = _gen_pin()
+        await db.commit()
+        await db.refresh(account)
+    return account, account.enrollment_pin
+
+
+async def _require_pin(db: AsyncSession, pin: str) -> Account:
+    account, real = await _get_pin(db)
+    if not pin or not secrets.compare_digest(pin.strip(), real):
+        raise HTTPException(status_code=401, detail="Wrong enrollment PIN.")
+    return account
 
 # The canonical agent payload the bootstrapper downloads and runs. Editing this
 # file + bumping PAYLOAD_VERSION rolls the whole fleet out on next check-in.
@@ -69,24 +96,68 @@ def _is_online(last_seen_at: str | None) -> bool:
     return (datetime.now(tz=timezone.utc) - ts).total_seconds() <= window
 
 
+def _agent_out(a: Agent, site_name: str | None, latest_rtt: float | None) -> AgentOut:
+    online = _is_online(a.last_seen_at)
+    return AgentOut(
+        id=a.id,
+        name=a.name,
+        site_id=a.site_id,
+        site_name=site_name,
+        status=("online" if online else ("offline" if a.last_seen_at else "pending")),
+        online=online,
+        claimed=bool(a.claimed_at),
+        machine_id=a.machine_id,
+        version=a.version,
+        hostname=a.hostname,
+        os=a.os,
+        last_ip=a.last_ip,
+        last_target=a.last_target,
+        last_seen_at=a.last_seen_at,
+        latest_rtt_ms=latest_rtt,
+    )
+
+
 # ── registration / management (dashboard side) ───────────────────────────────
-@router.post("", response_model=AgentCreated)
-async def create_agent(payload: AgentCreate, db: AsyncSession = Depends(get_db)) -> AgentCreated:
+@router.post("", response_model=AgentOut)
+async def create_agent(payload: AgentCreate, db: AsyncSession = Depends(get_db)) -> AgentOut:
+    """Create a *station* — a named slot a kiosk claims on first run. No token is
+    issued here; claiming (via the enrollment PIN) mints the token on the kiosk."""
     account = await get_or_create_account(db)
     if payload.site_id is not None and await db.get(Site, payload.site_id) is None:
         raise HTTPException(status_code=400, detail="Unknown site_id")
-    token = make_agent_token()
     agent = Agent(
         account_id=account.id,
         site_id=payload.site_id,
         name=payload.name,
-        token_hash=hash_token(token),
+        token_hash="",  # unclaimed until a kiosk enrolls
         status="pending",
     )
     db.add(agent)
     await db.commit()
     await db.refresh(agent)
-    return AgentCreated(id=agent.id, name=agent.name, token=token)
+    site_name = None
+    if agent.site_id:
+        s = await db.get(Site, agent.site_id)
+        site_name = s.name if s else None
+    return _agent_out(agent, site_name, None)
+
+
+@router.post("/{agent_id}/release", response_model=AgentOut)
+async def release_agent(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> AgentOut:
+    """Un-claim a station so a (different) kiosk can enroll as it again."""
+    agent = await db.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Station not found")
+    agent.claimed_at = None
+    agent.machine_id = None
+    agent.token_hash = ""
+    await db.commit()
+    await db.refresh(agent)
+    site_name = None
+    if agent.site_id:
+        s = await db.get(Site, agent.site_id)
+        site_name = s.name if s else None
+    return _agent_out(agent, site_name, None)
 
 
 @router.get("", response_model=list[AgentOut])
@@ -103,24 +174,7 @@ async def list_agents(db: AsyncSession = Depends(get_db)) -> list[AgentOut]:
                 .limit(1)
             )
         ).scalars().first()
-        online = _is_online(a.last_seen_at)
-        out.append(
-            AgentOut(
-                id=a.id,
-                name=a.name,
-                site_id=a.site_id,
-                site_name=sites.get(a.site_id) if a.site_id else None,
-                status=("online" if online else ("offline" if a.last_seen_at else "pending")),
-                online=online,
-                version=a.version,
-                hostname=a.hostname,
-                os=a.os,
-                last_ip=a.last_ip,
-                last_target=a.last_target,
-                last_seen_at=a.last_seen_at,
-                latest_rtt_ms=latest,
-            )
-        )
+        out.append(_agent_out(a, sites.get(a.site_id) if a.site_id else None, latest))
     return out
 
 
@@ -222,3 +276,66 @@ async def agent_payload(
         _payload_source(),
         headers={"X-Payload-Version": _payload_version()},
     )
+
+
+# ── enrollment PIN management (dashboard side — behind basic-auth) ────────────
+@router.get("/enrollment", response_model=EnrollmentPinOut)
+async def get_enrollment_pin(db: AsyncSession = Depends(get_db)) -> EnrollmentPinOut:
+    _, pin = await _get_pin(db)
+    return EnrollmentPinOut(pin=pin)
+
+
+@router.post("/enrollment/regenerate", response_model=EnrollmentPinOut)
+async def regenerate_enrollment_pin(db: AsyncSession = Depends(get_db)) -> EnrollmentPinOut:
+    account = await get_or_create_account(db)
+    account.enrollment_pin = _gen_pin()
+    await db.commit()
+    await db.refresh(account)
+    return EnrollmentPinOut(pin=account.enrollment_pin)
+
+
+# ── enrollment (kiosk first-run station picker — PIN-gated, no token yet) ─────
+async def _claim(agent: Agent, hostname: str | None, machine_id: str | None) -> str:
+    """Mint a fresh token for this station and bind it to the claiming machine."""
+    token = make_agent_token()
+    agent.token_hash = hash_token(token)
+    agent.claimed_at = datetime.now(tz=timezone.utc).isoformat()
+    agent.machine_id = machine_id
+    if hostname:
+        agent.hostname = hostname
+    return token
+
+
+@router.post("/enroll/stations", response_model=list[EnrollStationOut])
+async def enroll_stations(body: EnrollStationsIn, db: AsyncSession = Depends(get_db)) -> list[EnrollStationOut]:
+    await _require_pin(db, body.pin)
+    agents = (await db.execute(select(Agent).order_by(Agent.name))).scalars().all()
+    return [EnrollStationOut(id=a.id, name=a.name, claimed=bool(a.claimed_at)) for a in agents]
+
+
+@router.post("/enroll/claim", response_model=EnrollResult)
+async def enroll_claim(body: EnrollClaimIn, db: AsyncSession = Depends(get_db)) -> EnrollResult:
+    await _require_pin(db, body.pin)
+    agent = await db.get(Agent, body.station_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Station not found")
+    # A station already bound to a DIFFERENT machine must be released first.
+    if agent.claimed_at and agent.machine_id and body.machine_id and agent.machine_id != body.machine_id:
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{agent.name}' is already set up on another machine. "
+                   "Release it in the dashboard, or pick a different station.",
+        )
+    token = await _claim(agent, body.hostname, body.machine_id)
+    await db.commit()
+    return EnrollResult(token=token, name=agent.name)
+
+
+@router.post("/enroll/add", response_model=EnrollResult)
+async def enroll_add(body: EnrollAddIn, db: AsyncSession = Depends(get_db)) -> EnrollResult:
+    account = await _require_pin(db, body.pin)
+    agent = Agent(account_id=account.id, name=body.name, token_hash="", status="pending")
+    token = await _claim(agent, body.hostname, body.machine_id)
+    db.add(agent)
+    await db.commit()
+    return EnrollResult(token=token, name=agent.name)

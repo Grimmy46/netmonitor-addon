@@ -31,7 +31,8 @@ export function SettingsModal({
   const [aSite, setASite] = useState("");
   const [aBusy, setABusy] = useState(false);
   const [aError, setAError] = useState("");
-  const [newToken, setNewToken] = useState<{ name: string; token: string } | null>(null);
+  const [pin, setPin] = useState<string | null>(null);
+  const [pinShown, setPinShown] = useState(false);
 
   async function loadConsoles() {
     try {
@@ -51,14 +52,24 @@ export function SettingsModal({
     loadConsoles();
     loadAgents();
     api.sites().then(setSites).catch(() => {});
+    api.enrollmentPin().then((r) => setPin(r.pin)).catch(() => {});
   }, []);
+
+  async function regenPin() {
+    setABusy(true);
+    try {
+      setPin((await api.regenerateEnrollmentPin()).pin);
+      setPinShown(true);
+    } finally {
+      setABusy(false);
+    }
+  }
 
   async function addAgent() {
     setAError("");
     setABusy(true);
     try {
-      const created = await api.createAgent(aName.trim(), aSite || null);
-      setNewToken({ name: created.name, token: created.token });
+      await api.createAgent(aName.trim(), aSite || null);
       setAName("");
       setASite("");
       await loadAgents();
@@ -73,6 +84,16 @@ export function SettingsModal({
     setABusy(true);
     try {
       await api.deleteAgent(id);
+      await loadAgents();
+    } finally {
+      setABusy(false);
+    }
+  }
+
+  async function releaseAgent(id: string) {
+    setABusy(true);
+    try {
+      await api.releaseAgent(id);
       await loadAgents();
     } finally {
       setABusy(false);
@@ -138,38 +159,25 @@ export function SettingsModal({
         <h2>Settings</h2>
 
         {/* ── Agents (kiosks) ─────────────────────────────────────────────── */}
-        <h3 style={{ margin: "4px 0 6px", fontSize: 15 }}>Agents (kiosks)</h3>
+        <h3 style={{ margin: "4px 0 6px", fontSize: 15 }}>Kiosks &amp; stations</h3>
         <p style={{ marginTop: 0 }}>
-          Add an agent for each kiosk, then run the NetMonitor agent on it (Settings
-          gives you a token). Agents report ping now — CPU/RAM and remote control come next.
+          Add a station for each kiosk here. On a kiosk's first run the agent asks for
+          the <strong>enrollment PIN</strong> below, then you pick its station from a
+          list — every kiosk runs the identical files, no per-kiosk tokens.
         </p>
 
-        {newToken ? (
-          <div className="banner" style={{ marginBottom: 12, borderColor: "var(--accent)" }}>
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>
-              Token for “{newToken.name}” — copy it now, it won't be shown again:
-            </div>
-            <code
-              style={{
-                display: "block", padding: "8px 10px", background: "var(--page)",
-                borderRadius: 6, wordBreak: "break-all", fontSize: 13,
-              }}
-            >
-              {newToken.token}
-            </code>
-            <div style={{ marginTop: 8, textAlign: "right" }}>
-              <button
-                className="btn"
-                onClick={() => navigator.clipboard?.writeText(newToken.token).catch(() => {})}
-              >
-                Copy
-              </button>
-              <button className="btn" style={{ marginLeft: 6 }} onClick={() => setNewToken(null)}>
-                Done
-              </button>
-            </div>
-          </div>
-        ) : null}
+        {/* Enrollment PIN */}
+        <div className="banner" style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>
+          <span>Enrollment PIN:</span>
+          <strong style={{ fontVariantNumeric: "tabular-nums", letterSpacing: 2, fontSize: 16 }}>
+            {pin == null ? "…" : pinShown ? pin : "••••••"}
+          </strong>
+          <div className="spacer" style={{ flex: 1 }} />
+          <button className="btn" onClick={() => setPinShown((v) => !v)} disabled={pin == null}>
+            {pinShown ? "Hide" : "Show"}
+          </button>
+          <button className="btn" onClick={regenPin} disabled={aBusy}>Regenerate</button>
+        </div>
 
         {agents.length > 0 ? (
           <div style={{ marginBottom: 12 }}>
@@ -180,8 +188,15 @@ export function SettingsModal({
                     <span className="dot" />
                   </span>
                   <strong>{a.name}</strong>
-                  <span className="sub">{a.hostname ? `· ${a.hostname}` : "· not checked in"}</span>
+                  <span className="sub">
+                    {a.claimed ? (a.hostname ? `· ${a.hostname}` : "· claimed") : "· unclaimed"}
+                  </span>
                   <div className="spacer" style={{ flex: 1 }} />
+                  {a.claimed ? (
+                    <button className="btn" onClick={() => releaseAgent(a.id)} disabled={aBusy} title="Un-claim so another kiosk can enroll as this station">
+                      Release
+                    </button>
+                  ) : null}
                   <button className="btn" onClick={() => removeAgent(a.id)} disabled={aBusy}>
                     Remove
                   </button>
@@ -192,7 +207,7 @@ export function SettingsModal({
         ) : null}
 
         <div className="field">
-          <label htmlFor="aname">New agent name</label>
+          <label htmlFor="aname">New station name</label>
           <input
             id="aname"
             type="text"
@@ -227,7 +242,7 @@ export function SettingsModal({
             onClick={addAgent}
             disabled={aBusy || aName.trim().length < 1}
           >
-            {aBusy ? "Adding…" : "Add agent"}
+            {aBusy ? "Adding…" : "Add station"}
           </button>
         </div>
 

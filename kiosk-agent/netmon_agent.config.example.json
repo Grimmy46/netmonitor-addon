@@ -1,10 +1,11 @@
 {
   "server_url": "https://rcs-fleet-mon.duckdns.org",
-  "token": "PASTE_AGENT_TOKEN_FROM_DASHBOARD",
+  "token": "",
   "target": "rcs.funcardapp.com",
   "gateway": "auto",
   "interval": 1.0,
   "post_interval": 30.0,
   "timeout": 2.0,
-  "max_buffer": 5000
+  "max_buffer": 5000,
+  "version_check_interval": 600
 }

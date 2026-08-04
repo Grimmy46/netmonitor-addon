@@ -53,6 +53,8 @@ export interface Agent {
   site_name: string | null;
   status: "online" | "offline" | "pending";
   online: boolean;
+  claimed: boolean;
+  machine_id: string | null;
   version: string | null;
   hostname: string | null;
   os: string | null;
@@ -60,12 +62,6 @@ export interface Agent {
   last_target: string | null;
   last_seen_at: string | null;
   latest_rtt_ms: number | null;
-}
-
-export interface AgentCreated {
-  id: string;
-  name: string;
-  token: string;
 }
 
 export interface PingPoint {
@@ -172,13 +168,18 @@ export const api = {
       body: JSON.stringify({ positions }),
     }),
 
-  // Site agents (Kiosks tab).
+  // Site agents / stations (Kiosks tab + enrollment).
   agents: () => req<Agent[]>("/agents"),
   createAgent: (name: string, siteId: string | null) =>
-    req<AgentCreated>("/agents", {
+    req<Agent>("/agents", {
       method: "POST",
       body: JSON.stringify({ name, site_id: siteId }),
     }),
   deleteAgent: (id: string) => req<void>(`/agents/${id}`, { method: "DELETE" }),
+  releaseAgent: (id: string) => req<Agent>(`/agents/${id}/release`, { method: "POST" }),
   agentPings: (id: string) => req<PingPoint[]>(`/agents/${id}/pings`),
+
+  enrollmentPin: () => req<{ pin: string }>("/agents/enrollment"),
+  regenerateEnrollmentPin: () =>
+    req<{ pin: string }>("/agents/enrollment/regenerate", { method: "POST" }),
 };

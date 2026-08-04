@@ -10,13 +10,6 @@ class AgentCreate(BaseModel):
     site_id: uuid.UUID | None = None
 
 
-class AgentCreated(BaseModel):
-    """Returned once at creation — carries the plaintext token (shown one time)."""
-    id: uuid.UUID
-    name: str
-    token: str
-
-
 class AgentOut(BaseModel):
     id: uuid.UUID
     name: str
@@ -24,6 +17,8 @@ class AgentOut(BaseModel):
     site_name: str | None = None
     status: str = "pending"  # online | offline | pending
     online: bool = False
+    claimed: bool = False       # a kiosk has enrolled as this station
+    machine_id: str | None = None
     version: str | None = None
     hostname: str | None = None
     os: str | None = None
@@ -31,6 +26,40 @@ class AgentOut(BaseModel):
     last_target: str | None = None
     last_seen_at: str | None = None
     latest_rtt_ms: float | None = None
+
+
+# ── enrollment (kiosk first-run station picker, PIN-gated) ───────────────────
+class EnrollmentPinOut(BaseModel):
+    pin: str
+
+
+class EnrollStationsIn(BaseModel):
+    pin: str
+
+
+class EnrollStationOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    claimed: bool = False
+
+
+class EnrollClaimIn(BaseModel):
+    pin: str
+    station_id: uuid.UUID
+    hostname: str | None = None
+    machine_id: str | None = None
+
+
+class EnrollAddIn(BaseModel):
+    pin: str
+    name: str = Field(min_length=1)
+    hostname: str | None = None
+    machine_id: str | None = None
+
+
+class EnrollResult(BaseModel):
+    token: str
+    name: str
 
 
 # ── Agent → server report ────────────────────────────────────────────────────

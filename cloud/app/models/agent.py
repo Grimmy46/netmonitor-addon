@@ -30,3 +30,7 @@ class Agent(Base, UUIDPk, Timestamps):
     os: Mapped[str | None] = mapped_column(default=None)
     last_ip: Mapped[str | None] = mapped_column(default=None)
     last_target: Mapped[str | None] = mapped_column(default=None)
+
+    # Enrollment: which machine claimed this station (locks it), and when.
+    claimed_at: Mapped[str | None] = mapped_column(default=None)
+    machine_id: Mapped[str | None] = mapped_column(default=None)

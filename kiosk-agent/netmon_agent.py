@@ -24,6 +24,26 @@ import sys
 import time
 import urllib.request
 
+# PyInstaller only bundles modules it can SEE at build time. The payload is
+# fetched and exec'd at runtime, so ITS imports are invisible to the build — we
+# import them here so they're baked into the .exe. If a future payload needs a
+# new stdlib module, add it here (that's the only reason to ever rebuild the exe).
+import base64  # noqa: F401
+import ctypes  # noqa: F401
+import glob  # noqa: F401
+import hashlib  # noqa: F401
+import platform  # noqa: F401
+import shutil  # noqa: F401
+import socket  # noqa: F401
+import struct  # noqa: F401
+import subprocess  # noqa: F401
+import threading  # noqa: F401
+try:  # Windows-only extras for later phases (telemetry / control)
+    import ctypes.wintypes  # noqa: F401
+    import winreg  # noqa: F401
+except Exception:
+    pass
+
 if getattr(sys, "frozen", False):
     HERE = os.path.dirname(sys.executable)          # folder the .exe lives in
 else:
@@ -32,7 +52,7 @@ else:
 CONFIG_PATH = os.path.join(HERE, "netmon_agent.config.json")
 PAYLOAD_PATH = os.path.join(HERE, "agent_payload.py")
 _VER_RE = re.compile(r"""PAYLOAD_VERSION\s*=\s*["']([^"']+)["']""")
-BOOTSTRAP_VERSION = "1.0"
+BOOTSTRAP_VERSION = "1.1"
 
 
 def load_config():

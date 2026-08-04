@@ -1,0 +1,44 @@
+name: Build kiosk agent EXE
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [v2]
+    paths:
+      - 'kiosk-agent/**'
+      - 'cloud/app/agent_runtime/payload.py'
+      - '.github/workflows/build-agent.yml'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Refresh seed payload from the canonical copy
+        run: Copy-Item cloud/app/agent_runtime/payload.py kiosk-agent/agent_payload.py -Force
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Build NetMonAgent.exe
+        run: pyinstaller --onefile --name NetMonAgent --console kiosk-agent/netmon_agent.py
+
+      - name: Stage the install bundle
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item dist/NetMonAgent.exe out/
+          Copy-Item kiosk-agent/agent_payload.py out/
+          Copy-Item kiosk-agent/netmon_agent.config.example.json out/
+          Copy-Item kiosk-agent/README.md out/
+
+      - name: Upload the install bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetMonAgent-windows
+          path: out/**
+          retention-days: 90

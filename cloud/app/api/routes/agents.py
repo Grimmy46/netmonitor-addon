@@ -20,6 +20,8 @@ from app.schemas import (
     AgentOut,
     AgentReport,
     AgentReportResult,
+    BulkResult,
+    BulkStationsIn,
     EnrollAddIn,
     EnrollClaimIn,
     EnrollmentPinOut,
@@ -140,6 +142,26 @@ async def create_agent(payload: AgentCreate, db: AsyncSession = Depends(get_db))
         s = await db.get(Site, agent.site_id)
         site_name = s.name if s else None
     return _agent_out(agent, site_name, None)
+
+
+@router.post("/bulk", response_model=BulkResult)
+async def bulk_create_stations(body: BulkStationsIn, db: AsyncSession = Depends(get_db)) -> BulkResult:
+    """Create many stations at once (duplicates by name are skipped)."""
+    account = await get_or_create_account(db)
+    existing = {a.name for a in (await db.execute(select(Agent))).scalars()}
+    created = skipped = 0
+    for raw in body.names:
+        name = (raw or "").strip()
+        if not name:
+            continue
+        if name in existing:
+            skipped += 1
+            continue
+        db.add(Agent(account_id=account.id, name=name, token_hash="", status="pending"))
+        existing.add(name)
+        created += 1
+    await db.commit()
+    return BulkResult(created=created, skipped=skipped)
 
 
 @router.post("/{agent_id}/release", response_model=AgentOut)

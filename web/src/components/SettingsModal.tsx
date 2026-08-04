@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type Agent, type Site, type UnifiConsole, type UnifiStatus } from "../api/client";
+import { api, type Agent, type UnifiConsole, type UnifiStatus } from "../api/client";
 
 export function SettingsModal({
   status,
@@ -24,13 +24,9 @@ export function SettingsModal({
   const [cBusy, setCBusy] = useState(false);
   const [cError, setCError] = useState("");
 
-  // ── Agents ────────────────────────────────────────────────────────────────
+  // ── Agents / enrollment PIN ─────────────────────────────────────────────--
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [sites, setSites] = useState<Site[]>([]);
-  const [aName, setAName] = useState("");
-  const [aSite, setASite] = useState("");
   const [aBusy, setABusy] = useState(false);
-  const [aError, setAError] = useState("");
   const [pin, setPin] = useState<string | null>(null);
   const [pinShown, setPinShown] = useState(false);
 
@@ -41,17 +37,9 @@ export function SettingsModal({
       /* ignore — section just shows empty */
     }
   }
-  async function loadAgents() {
-    try {
-      setAgents(await api.agents());
-    } catch {
-      /* ignore */
-    }
-  }
   useEffect(() => {
     loadConsoles();
-    loadAgents();
-    api.sites().then(setSites).catch(() => {});
+    api.agents().then(setAgents).catch(() => {});
     api.enrollmentPin().then((r) => setPin(r.pin)).catch(() => {});
   }, []);
 
@@ -60,41 +48,6 @@ export function SettingsModal({
     try {
       setPin((await api.regenerateEnrollmentPin()).pin);
       setPinShown(true);
-    } finally {
-      setABusy(false);
-    }
-  }
-
-  async function addAgent() {
-    setAError("");
-    setABusy(true);
-    try {
-      await api.createAgent(aName.trim(), aSite || null);
-      setAName("");
-      setASite("");
-      await loadAgents();
-    } catch (e) {
-      setAError(String(e instanceof Error ? e.message : e));
-    } finally {
-      setABusy(false);
-    }
-  }
-
-  async function removeAgent(id: string) {
-    setABusy(true);
-    try {
-      await api.deleteAgent(id);
-      await loadAgents();
-    } finally {
-      setABusy(false);
-    }
-  }
-
-  async function releaseAgent(id: string) {
-    setABusy(true);
-    try {
-      await api.releaseAgent(id);
-      await loadAgents();
     } finally {
       setABusy(false);
     }
@@ -179,72 +132,10 @@ export function SettingsModal({
           <button className="btn" onClick={regenPin} disabled={aBusy}>Regenerate</button>
         </div>
 
-        {agents.length > 0 ? (
-          <div style={{ marginBottom: 12 }}>
-            {agents.map((a) => (
-              <div key={a.id} className="banner" style={{ marginBottom: 8 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span className={`pill ${a.online ? "online" : a.last_seen_at ? "offline" : "unknown"}`}>
-                    <span className="dot" />
-                  </span>
-                  <strong>{a.name}</strong>
-                  <span className="sub">
-                    {a.claimed ? (a.hostname ? `· ${a.hostname}` : "· claimed") : "· unclaimed"}
-                  </span>
-                  <div className="spacer" style={{ flex: 1 }} />
-                  {a.claimed ? (
-                    <button className="btn" onClick={() => releaseAgent(a.id)} disabled={aBusy} title="Un-claim so another kiosk can enroll as this station">
-                      Release
-                    </button>
-                  ) : null}
-                  <button className="btn" onClick={() => removeAgent(a.id)} disabled={aBusy}>
-                    Remove
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : null}
-
-        <div className="field">
-          <label htmlFor="aname">New station name</label>
-          <input
-            id="aname"
-            type="text"
-            autoComplete="off"
-            placeholder="e.g. Main Kiosk 3"
-            value={aName}
-            onChange={(e) => setAName(e.target.value)}
-          />
-        </div>
-        {sites.length > 0 ? (
-          <div className="field">
-            <label htmlFor="asite">Site (optional)</label>
-            <select
-              id="asite"
-              value={aSite}
-              onChange={(e) => setASite(e.target.value)}
-              style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--page)", color: "var(--ink-primary)", fontFamily: "inherit", fontSize: 14 }}
-            >
-              <option value="">— none —</option>
-              {sites.map((s) => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-          </div>
-        ) : null}
-
-        {aError ? <div className="banner err" style={{ marginBottom: 12 }}>{aError}</div> : null}
-
-        <div className="modal-actions" style={{ marginBottom: 20 }}>
-          <button
-            className="btn btn-primary"
-            onClick={addAgent}
-            disabled={aBusy || aName.trim().length < 1}
-          >
-            {aBusy ? "Adding…" : "Add station"}
-          </button>
-        </div>
+        <p className="sub" style={{ marginBottom: 20 }}>
+          {agents.length} station{agents.length === 1 ? "" : "s"} configured. Add, import,
+          or remove them under the <strong>Kiosks</strong> tab → <strong>Manage stations</strong>.
+        </p>
 
         <hr style={{ border: "none", borderTop: "1px solid var(--line)", margin: "8px 0 16px" }} />
 

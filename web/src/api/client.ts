@@ -177,6 +177,11 @@ export const api = {
     }),
   deleteAgent: (id: string) => req<void>(`/agents/${id}`, { method: "DELETE" }),
   releaseAgent: (id: string) => req<Agent>(`/agents/${id}/release`, { method: "POST" }),
+  bulkCreateStations: (names: string[]) =>
+    req<{ created: number; skipped: number }>("/agents/bulk", {
+      method: "POST",
+      body: JSON.stringify({ names }),
+    }),
   agentPings: (id: string) => req<PingPoint[]>(`/agents/${id}/pings`),
 
   enrollmentPin: () => req<{ pin: string }>("/agents/enrollment"),

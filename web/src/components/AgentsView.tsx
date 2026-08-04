@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type Agent, type MetricPoint, type PingPoint } from "../api/client";
 import { LatencyChart } from "./LatencyChart";
+import { StationsPanel } from "./StationsPanel";
 import { StatusPill } from "./StatusPill";
 
 function timeAgo(iso: string | null): string {
@@ -99,48 +100,59 @@ function AgentCard({ agent }: { agent: Agent }) {
 export function AgentsView() {
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [error, setError] = useState("");
+  const [manage, setManage] = useState(false);
+
+  const load = () =>
+    api.agents().then(setAgents).catch((e) => setError(String(e instanceof Error ? e.message : e)));
 
   useEffect(() => {
     let alive = true;
-    const load = () =>
-      api
-        .agents()
-        .then((a) => alive && setAgents(a))
-        .catch((e) => alive && setError(String(e instanceof Error ? e.message : e)));
-    load();
-    const id = setInterval(load, 15000);
+    const tick = () => api.agents().then((a) => alive && setAgents(a)).catch(() => {});
+    tick();
+    const id = setInterval(tick, 15000);
     return () => {
       alive = false;
       clearInterval(id);
     };
   }, []);
 
-  if (error) return <div className="banner err">{error}</div>;
-  if (agents === null) return <p className="hint">Loading…</p>;
+  // Only claimed/reporting kiosks show as monitoring cards; the rest are just
+  // slots in the master list (managed via the Stations panel).
+  const live = (agents ?? []).filter((a) => a.claimed || a.last_seen_at);
+  const online = live.filter((a) => a.online).length;
 
-  if (agents.length === 0) {
-    return (
-      <div className="empty">
-        <p>No kiosk agents yet.</p>
-        <p className="sub">
-          Add one in <strong>Settings → Agents</strong>, then run the agent on a kiosk.
-          It appears here within a minute.
-        </p>
-      </div>
-    );
-  }
+  const panel = manage ? (
+    <StationsPanel onClose={() => setManage(false)} onChanged={load} />
+  ) : null;
 
-  const online = agents.filter((a) => a.online).length;
   return (
     <>
-      <p className="sub" style={{ marginBottom: 12 }}>
-        {agents.length} agent{agents.length === 1 ? "" : "s"} · {online} online
-      </p>
-      <div className="grid">
-        {agents.map((a) => (
-          <AgentCard key={a.id} agent={a} />
-        ))}
+      <div className="devices-toolbar" style={{ marginBottom: 14 }}>
+        <div className="panel-title" style={{ margin: 0 }}>
+          {agents === null ? "Loading…" : `${live.length} kiosk${live.length === 1 ? "" : "s"} · ${online} online`}
+        </div>
+        <div className="spacer" />
+        <button className="btn" onClick={() => setManage(true)}>⚙ Manage stations</button>
       </div>
+
+      {error ? <div className="banner err">{error}</div> : null}
+
+      {agents !== null && live.length === 0 ? (
+        <div className="empty">
+          <p>No kiosks reporting yet.</p>
+          <p className="sub">
+            Add your stations under <strong>Manage stations</strong>, then run the agent
+            on a kiosk and pick its station. It appears here within a minute.
+          </p>
+        </div>
+      ) : (
+        <div className="grid">
+          {live.map((a) => (
+            <AgentCard key={a.id} agent={a} />
+          ))}
+        </div>
+      )}
+      {panel}
     </>
   );
 }

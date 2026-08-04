@@ -62,6 +62,15 @@ class EnrollResult(BaseModel):
     name: str
 
 
+class BulkStationsIn(BaseModel):
+    names: list[str]
+
+
+class BulkResult(BaseModel):
+    created: int
+    skipped: int
+
+
 # ── Agent → server report ────────────────────────────────────────────────────
 class PingSampleIn(BaseModel):
     ts: float | None = None       # epoch seconds (agent clock); server falls back to now

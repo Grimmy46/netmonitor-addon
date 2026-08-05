@@ -53,9 +53,60 @@ else:
 
 CONFIG_PATH = os.path.join(HERE, "netmon_agent.config.json")
 PAYLOAD_PATH = os.path.join(HERE, "agent_payload.py")
+LOG_PATH = os.path.join(HERE, "netmon_agent.log")
 _VER_RE = re.compile(r"""PAYLOAD_VERSION\s*=\s*["']([^"']+)["']""")
-BOOTSTRAP_VERSION = "2.0"
+BOOTSTRAP_VERSION = "2.2"
 ADD_NEW_LABEL = "➕ Add a new station…"
+
+
+def _redirect_logs():
+    """Windowless build has no console, so send prints to a rolling log file
+    next to the exe (kept small) — that's where you troubleshoot a kiosk."""
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > 512_000:
+            os.replace(LOG_PATH, LOG_PATH + ".old")
+        f = open(LOG_PATH, "a", buffering=1, encoding="utf-8")
+        sys.stdout = f
+        sys.stderr = f
+    except Exception:
+        pass
+
+
+def _hide_console():
+    """The build ships as a --console exe; hide its console window immediately so
+    it's invisible to customers on the kiosk. (A --windowed build avoids even the
+    brief flash, but publishing that workflow change needs a GitHub token with
+    'workflow' scope — this achieves the same end without it.)"""
+    if not getattr(sys, "frozen", False) or platform.system() != "Windows":
+        return
+    try:
+        import ctypes
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+    except Exception:
+        pass
+
+
+def ensure_autostart(cfg):
+    """Register the agent to launch at login (HKCU\\…\\Run) so it comes back on
+    every reboot — no manual Startup shortcut. Per-user, no admin needed."""
+    if not getattr(sys, "frozen", False) or platform.system() != "Windows":
+        return
+    if not cfg.get("autostart", True) or winreg is None:
+        return
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0, winreg.KEY_SET_VALUE,
+        )
+        winreg.SetValueEx(key, "NetMonAgent", 0, winreg.REG_SZ, f'"{sys.executable}"')
+        winreg.CloseKey(key)
+    except Exception as e:
+        print(f"[bootstrap] autostart registration skipped: {e}", flush=True)
 
 
 # ── config ───────────────────────────────────────────────────────────────────
@@ -298,8 +349,11 @@ def maybe_update(cfg):
 
 
 def run():
+    _hide_console()
+    _redirect_logs()
     print(f"[bootstrap v{BOOTSTRAP_VERSION}] starting", flush=True)
     cfg = load_config()
+    ensure_autostart(cfg)
     if not cfg.get("token"):
         print("[bootstrap] no token — starting enrollment", flush=True)
         token = enroll(cfg)

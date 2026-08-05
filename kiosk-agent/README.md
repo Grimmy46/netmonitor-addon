@@ -24,24 +24,30 @@ almost never.
 
 ## Set up one kiosk
 
-1. Dashboard → **Settings → Agents → Add agent**. Name it (e.g. `Main Kiosk 3`),
-   optionally pick its site, and **copy the token** (shown once).
-2. Copy `netmon_agent.config.example.json` → `netmon_agent.config.json` and paste
-   the token into `"token"`. Set `"target"` to what to ping (default
-   `rcs.funcardapp.com`).
-3. Put these **three files in one folder** on the kiosk and run the exe:
+1. Copy `netmon_agent.config.example.json` → `netmon_agent.config.json` (leave the
+   token empty — the kiosk claims its identity on first run).
+2. Put these **three files in one folder** on the kiosk:
    - `NetMonAgent.exe`
    - `netmon_agent.config.json`
    - `agent_payload.py` (the seed — auto-updates from the server)
+3. Run `NetMonAgent.exe`. On first run a **setup window** appears: type the
+   enrollment PIN (dashboard → Kiosks → Manage stations → Show), pick this kiosk's
+   station from the dropdown (or "➕ Add a new station"), and click **Save & start**.
 
 Within a minute the kiosk goes green in the dashboard with a live latency chart.
+Every kiosk uses the identical three files — the station is chosen at setup.
 
-**No Python on the kiosk?** That's the point of the `.exe` — it has Python baked
-in. On a machine that *does* have Python you can instead run
-`python netmon_agent.py` (with the same three-file layout).
+### Auto-start & background
+The agent runs **windowless** (no console — invisible to customers) and
+**registers itself to launch at login** on first run, so it comes back
+automatically after every reboot. No Startup shortcut needed. Set
+`"autostart": false` in the config to opt out.
 
-### Auto-start at login
-Drop a shortcut to `NetMonAgent.exe` in the Startup folder (Win+R → `shell:startup`).
+Because there's no console, the agent logs to **`netmon_agent.log`** next to the
+exe — open that to troubleshoot a kiosk.
+
+**No Python on the kiosk?** That's the point of the `.exe` — Python is baked in.
+On a machine that *does* have Python you can instead run `python netmon_agent.py`.
 
 ## Build the .exe (once)
 

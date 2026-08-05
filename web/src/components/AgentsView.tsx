@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type Agent, type MetricPoint, type PingPoint } from "../api/client";
+import { downloadKioskReport } from "../lib/kioskReport";
 import { LatencyChart } from "./LatencyChart";
 import { StationsPanel } from "./StationsPanel";
 import { StatusPill } from "./StatusPill";
@@ -101,6 +102,7 @@ export function AgentsView() {
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [error, setError] = useState("");
   const [manage, setManage] = useState(false);
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   const load = () =>
     api.agents().then(setAgents).catch((e) => setError(String(e instanceof Error ? e.message : e)));
@@ -121,6 +123,19 @@ export function AgentsView() {
   const live = (agents ?? []).filter((a) => a.claimed || a.last_seen_at);
   const online = live.filter((a) => a.online).length;
 
+  async function makePdf() {
+    if (!live.length || pdfBusy) return;
+    setPdfBusy(true);
+    setError("");
+    try {
+      await downloadKioskReport(live, 24);
+    } catch (e) {
+      setError(`PDF failed: ${String(e instanceof Error ? e.message : e)}`);
+    } finally {
+      setPdfBusy(false);
+    }
+  }
+
   const panel = manage ? (
     <StationsPanel onClose={() => setManage(false)} onChanged={load} />
   ) : null;
@@ -132,6 +147,14 @@ export function AgentsView() {
           {agents === null ? "Loading…" : `${live.length} kiosk${live.length === 1 ? "" : "s"} · ${online} online`}
         </div>
         <div className="spacer" />
+        <button
+          className="btn"
+          onClick={makePdf}
+          disabled={pdfBusy || live.length === 0}
+          title="Download a 24-hour ping report (one page per kiosk)"
+        >
+          {pdfBusy ? "Building PDF…" : "⤓ PDF report"}
+        </button>
         <button className="btn" onClick={() => setManage(true)}>⚙ Manage stations</button>
       </div>
 

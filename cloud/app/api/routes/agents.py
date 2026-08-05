@@ -3,12 +3,12 @@ agents report to, the self-update payload endpoints, and read views."""
 import re
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import desc, select
+from sqlalchemy import and_, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -230,6 +230,113 @@ async def agent_pings(
     )
     rows.reverse()  # chronological for charting
     return [PingPoint(ts=s.ts, rtt_ms=s.rtt_ms, gateway_rtt_ms=s.gateway_rtt_ms) for s in rows]
+
+
+@router.get("/{agent_id}/pings/summary")
+async def agent_ping_summary(
+    agent_id: uuid.UUID,
+    hours: int = Query(24, ge=1, le=168),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Aggregate a window of ping samples (default 24h) for the PDF report.
+
+    Buckets by minute (avg/max latency + loss per minute) so a full day charts
+    from ~1440 points instead of ~86k raw rows, plus whole-window summary stats.
+    Aggregation runs in SQL — never pulls the raw samples into the app.
+    """
+    agent = await db.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    now = datetime.now(tz=timezone.utc)
+    since = now - timedelta(hours=hours)
+    window = and_(PingSample.agent_id == agent_id, PingSample.ts >= since)
+
+    # Per-minute buckets for the chart.
+    bucket = func.date_trunc("minute", PingSample.ts).label("bucket")
+    brows = (
+        await db.execute(
+            select(
+                bucket,
+                func.count().label("n"),
+                func.count(PingSample.rtt_ms).label("ok"),
+                func.avg(PingSample.rtt_ms).label("avg_rtt"),
+                func.max(PingSample.rtt_ms).label("max_rtt"),
+            )
+            .where(window)
+            .group_by(bucket)
+            .order_by(bucket)
+        )
+    ).all()
+
+    buckets = []
+    for r in brows:
+        n = int(r.n or 0)
+        ok = int(r.ok or 0)
+        bts = r.bucket
+        buckets.append(
+            {
+                "ts": bts.isoformat() if hasattr(bts, "isoformat") else str(bts),
+                "avg_rtt_ms": round(float(r.avg_rtt), 2) if r.avg_rtt is not None else None,
+                "max_rtt_ms": round(float(r.max_rtt), 2) if r.max_rtt is not None else None,
+                "loss_pct": round((n - ok) / n * 100, 1) if n else 0.0,
+                "n": n,
+            }
+        )
+
+    # Whole-window summary stats.
+    s = (
+        await db.execute(
+            select(
+                func.count().label("n"),
+                func.count(PingSample.rtt_ms).label("ok"),
+                func.avg(PingSample.rtt_ms).label("avg_rtt"),
+                func.min(PingSample.rtt_ms).label("min_rtt"),
+                func.max(PingSample.rtt_ms).label("max_rtt"),
+                func.avg(PingSample.gateway_rtt_ms).label("avg_gw"),
+                func.min(PingSample.ts).label("first_ts"),
+                func.max(PingSample.ts).label("last_ts"),
+            ).where(window)
+        )
+    ).one()
+    n = int(s.n or 0)
+    ok = int(s.ok or 0)
+
+    # p95 (Postgres percentile_cont); degrade gracefully if the DB lacks it.
+    p95 = None
+    try:
+        p95 = (
+            await db.execute(
+                select(
+                    func.percentile_cont(0.95).within_group(PingSample.rtt_ms.asc())
+                ).where(and_(window, PingSample.rtt_ms.isnot(None)))
+            )
+        ).scalar()
+        p95 = round(float(p95), 2) if p95 is not None else None
+    except Exception:
+        p95 = None
+
+    def _f(v):
+        return round(float(v), 2) if v is not None else None
+
+    return {
+        "hours": hours,
+        "generated_at": now.isoformat(),
+        "target": agent.last_target,
+        "first_ts": s.first_ts.isoformat() if s.first_ts is not None else None,
+        "last_ts": s.last_ts.isoformat() if s.last_ts is not None else None,
+        "stats": {
+            "samples": n,
+            "loss_pct": round((n - ok) / n * 100, 2) if n else 0.0,
+            "uptime_pct": round(ok / n * 100, 2) if n else 0.0,
+            "avg_rtt_ms": _f(s.avg_rtt),
+            "min_rtt_ms": _f(s.min_rtt),
+            "max_rtt_ms": _f(s.max_rtt),
+            "p95_rtt_ms": p95,
+            "avg_gateway_rtt_ms": _f(s.avg_gw),
+        },
+        "buckets": buckets,
+    }
 
 
 # ── ingest (agent side) ──────────────────────────────────────────────────────

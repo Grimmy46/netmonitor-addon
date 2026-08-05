@@ -70,6 +70,33 @@ export interface PingPoint {
   gateway_rtt_ms: number | null;
 }
 
+export interface PingSummaryBucket {
+  ts: string;
+  avg_rtt_ms: number | null;
+  max_rtt_ms: number | null;
+  loss_pct: number;
+  n: number;
+}
+
+export interface PingSummary {
+  hours: number;
+  generated_at: string;
+  target: string | null;
+  first_ts: string | null;
+  last_ts: string | null;
+  stats: {
+    samples: number;
+    loss_pct: number;
+    uptime_pct: number;
+    avg_rtt_ms: number | null;
+    min_rtt_ms: number | null;
+    max_rtt_ms: number | null;
+    p95_rtt_ms: number | null;
+    avg_gateway_rtt_ms: number | null;
+  };
+  buckets: PingSummaryBucket[];
+}
+
 export interface MetricPoint {
   ts: string;
   latency_ms: number | null;
@@ -183,6 +210,8 @@ export const api = {
       body: JSON.stringify({ names }),
     }),
   agentPings: (id: string) => req<PingPoint[]>(`/agents/${id}/pings`),
+  agentPingSummary: (id: string, hours = 24) =>
+    req<PingSummary>(`/agents/${id}/pings/summary?hours=${hours}`),
 
   enrollmentPin: () => req<{ pin: string }>("/agents/enrollment"),
   regenerateEnrollmentPin: () =>

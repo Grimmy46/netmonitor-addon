@@ -22,6 +22,12 @@ class DeviceOut(BaseModel):
     down_seconds: int | None = None  # how long it's been offline
     dormant: bool = False  # offline longer than the dormant threshold
 
+    # Local reachability from an on-site agent's LAN ping (independent of UniFi).
+    # None = never probed. Powers the "unreachable" 5-state.
+    local_reachable: bool | None = None
+    local_rtt_ms: float | None = None
+    local_checked_at: datetime | None = None
+
 
 class DormantDeviceOut(BaseModel):
     """A dormant device shown in the fleet-wide Dormant tab (carries its site)."""

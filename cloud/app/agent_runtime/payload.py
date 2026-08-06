@@ -14,6 +14,7 @@ Rules for this file:
 `cfg`  = the kiosk's config file (server_url, token, target, gateway, intervals…).
 `ctx`  = {"server_url", "token", "running_version"} supplied by the bootstrapper.
 """
+import concurrent.futures
 import json
 import os
 import platform
@@ -23,7 +24,7 @@ import subprocess
 import time
 import urllib.request
 
-PAYLOAD_VERSION = "2026.08.04.1"
+PAYLOAD_VERSION = "2026.08.05.1"
 
 SYSTEM = platform.system()
 _TIME_RE = re.compile(r"time[=<]\s*([\d.,]+)\s*ms", re.IGNORECASE)
@@ -106,6 +107,56 @@ def _post(ctx, cfg, gw_ip, hostname, os_str, samples):
         resp.read()
 
 
+def _fetch_targets(ctx):
+    """GET the site's device list this agent should ping on the LAN."""
+    req = urllib.request.Request(
+        ctx["server_url"].rstrip("/") + "/agents/targets",
+        headers={"X-Agent-Token": ctx["token"]})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read().decode("utf-8", "ignore"))
+
+
+def _post_device_report(ctx, results):
+    data = json.dumps({"results": results}).encode("utf-8")
+    req = urllib.request.Request(
+        ctx["server_url"].rstrip("/") + "/agents/device-report",
+        data=data, method="POST",
+        headers={"Content-Type": "application/json", "X-Agent-Token": ctx["token"]})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        resp.read()
+
+
+def _probe_sweep(ctx, timeout_s):
+    """Fetch this site's devices, ping each on the LAN in parallel, report the
+    reachability back. Returns the server-suggested sweep interval (or None)."""
+    try:
+        info = _fetch_targets(ctx)
+    except Exception as e:
+        print(f"[netmon-payload] targets fetch failed: {e}", flush=True)
+        return None
+    targets = info.get("targets") or []
+    if not targets:
+        return info.get("interval")
+
+    def _probe(t):
+        rtt = ping_once(t.get("ip"), timeout_s)
+        return {"id": t["id"], "reachable": rtt is not None, "rtt_ms": rtt}
+
+    results = []
+    workers = min(24, max(4, len(targets)))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        for r in ex.map(_probe, targets):
+            results.append(r)
+    try:
+        _post_device_report(ctx, results)
+        up = sum(1 for r in results if r["reachable"])
+        print(f"[netmon-payload] LAN sweep: {up}/{len(results)} reachable "
+              f"(site {info.get('site_name') or '—'})", flush=True)
+    except Exception as e:
+        print(f"[netmon-payload] device-report failed: {e}", flush=True)
+    return info.get("interval")
+
+
 def _server_version(ctx):
     try:
         req = urllib.request.Request(
@@ -127,13 +178,18 @@ def main(cfg, ctx):
     to = min(4.0, max(1.0, float(cfg.get("timeout", 2.0))))
     max_buffer = int(cfg.get("max_buffer", 5000))
     ver_check_every = max(60.0, float(cfg.get("version_check_interval", 600.0)))
+    probe_lan = bool(cfg.get("probe_lan", True))
+    probe_every = max(30.0, float(cfg.get("probe_interval", 120.0)))
 
     print(f"[netmon-payload v{PAYLOAD_VERSION}] {hostname} target={cfg['target']} "
-          f"gateway={gw_ip or 'none'} -> {ctx['server_url']}", flush=True)
+          f"gateway={gw_ip or 'none'} lan_probe={'on' if probe_lan else 'off'} "
+          f"-> {ctx['server_url']}", flush=True)
 
     buffer = []
     last_post = time.time()
     last_ver_check = time.time()
+    # First LAN sweep ~15s after start so devices populate quickly.
+    last_probe = time.time() - probe_every + 15.0
     while True:
         t = time.time()
         rtt = ping_once(cfg["target"], to)
@@ -151,6 +207,14 @@ def main(cfg, ctx):
                 if len(buffer) > max_buffer:
                     buffer = buffer[-max_buffer:]
             last_post = time.time()
+
+        # Periodically sweep the local LAN: ping every device the site has in
+        # UniFi and report which actually answer (the "unreachable" signal).
+        if probe_lan and time.time() - last_probe >= probe_every:
+            last_probe = time.time()
+            suggested = _probe_sweep(ctx, to)
+            if suggested and float(suggested) >= 30:
+                probe_every = float(suggested)
 
         # Periodically ask the server if a newer payload exists; if so, hand back
         # to the bootstrapper to fetch + run it.

@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     dormant_after_days: int = 4
     # An agent that hasn't checked in within this many seconds counts as offline.
     agent_offline_after_seconds: int = 120
+    # Suggested seconds between an on-site agent's full LAN device-ping sweeps.
+    agent_probe_interval_seconds: int = 120
 
     @property
     def database_url(self) -> str:

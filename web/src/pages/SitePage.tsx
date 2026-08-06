@@ -94,9 +94,28 @@ export function SitePage({ siteId, onBack }: { siteId: string; onBack: () => voi
           .some((v) => String(v).toLowerCase().includes(needle)),
       );
     }
-    // Offline first (faults up top), then by name.
-    const rank = (d: Device) => (d.is_online === false ? 0 : d.is_online === true ? 2 : 1);
-    return [...list].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+    // Ordering: a fresh fault jumps to the very top so it's the first thing you
+    // see — a device that just went offline (down < 12h), or one that's up in
+    // UniFi but not answering a LAN ping ("unreachable"). Then all online
+    // devices; then anything offline 12h+ (or dormant) drops below the list.
+    const RECENT_DOWN = 12 * 3600; // seconds
+    const rank = (d: Device) => {
+      if (d.is_online === false) {
+        return !d.dormant && (d.down_seconds ?? 0) < RECENT_DOWN ? 0 : 3;
+      }
+      if (d.is_online === true) {
+        return d.local_reachable === false ? 0 : 1; // unreachable is a fault → top
+      }
+      return 2; // unknown, just below online
+    };
+    return [...list].sort((a, b) => {
+      const ra = rank(a);
+      const rb = rank(b);
+      if (ra !== rb) return ra - rb;
+      // Within "just went down", newest fault first; otherwise alphabetical.
+      if (ra === 0) return (a.down_seconds ?? 0) - (b.down_seconds ?? 0);
+      return a.name.localeCompare(b.name);
+    });
   }, [devices, filter, q]);
 
   // A banner card: big number + label that also filters the list when clicked.

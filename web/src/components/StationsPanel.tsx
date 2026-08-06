@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type Agent } from "../api/client";
+import { api, type Agent, type Site } from "../api/client";
 
 /** Parse pasted text (plain names, one per line, OR CSV) into station names. */
 function parseNames(text: string): string[] {
@@ -19,6 +19,7 @@ function parseNames(text: string): string[] {
  */
 export function StationsPanel({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
   const [stations, setStations] = useState<Agent[]>([]);
+  const [sites, setSites] = useState<Site[]>([]);
   const [pin, setPin] = useState<string | null>(null);
   const [pinShown, setPinShown] = useState(false);
   const [q, setQ] = useState("");
@@ -37,6 +38,7 @@ export function StationsPanel({ onClose, onChanged }: { onClose: () => void; onC
   useEffect(() => {
     load();
     api.enrollmentPin().then((r) => setPin(r.pin)).catch(() => {});
+    api.sites().then(setSites).catch(() => {});
   }, []);
 
   const shown = useMemo(() => {
@@ -91,6 +93,11 @@ export function StationsPanel({ onClose, onChanged }: { onClose: () => void; onC
         <p style={{ marginTop: 0 }}>
           The master list of kiosks. On a kiosk's first run the agent asks for the
           <strong> enrollment PIN</strong>, then picks its station from this list.
+        </p>
+        <p className="sub" style={{ marginTop: -6, marginBottom: 14, fontSize: 12 }}>
+          Set a station's <strong>Probe site</strong> to have that kiosk ping its
+          site's UniFi devices on the LAN — that's what powers local reachability
+          (the "up in UniFi but unreachable" signal) on the site page.
         </p>
 
         <div className="banner" style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>
@@ -169,6 +176,19 @@ export function StationsPanel({ onClose, onChanged }: { onClose: () => void; onC
                   {s.online ? "online" : s.claimed ? `claimed${s.hostname ? " · " + s.hostname : ""}` : "unclaimed"}
                 </span>
                 <div className="spacer" style={{ flex: 1 }} />
+                <select
+                  className="search"
+                  style={{ padding: "4px 6px", fontSize: 12, maxWidth: 160 }}
+                  value={s.site_id ?? ""}
+                  onChange={(e) => run(async () => { await api.setAgentSite(s.id, e.target.value || null); })}
+                  disabled={busy || sites.length === 0}
+                  title="Which UniFi site this kiosk pings on its LAN (for local device monitoring)"
+                >
+                  <option value="">Probe site…</option>
+                  {sites.map((si) => (
+                    <option key={si.id} value={si.id}>{si.name}</option>
+                  ))}
+                </select>
                 {s.claimed ? (
                   <button className="btn" onClick={() => run(async () => { await api.releaseAgent(s.id); })} disabled={busy} title="Un-claim so another kiosk can enroll as this station">
                     Release

@@ -78,6 +78,9 @@ def _device_out(dev: Device, now: datetime, cutoff: datetime) -> DeviceOut:
         last_online_at=dev.last_online_at,
         down_seconds=down_seconds,
         dormant=dormant,
+        local_reachable=dev.local_reachable,
+        local_rtt_ms=dev.local_rtt_ms,
+        local_checked_at=dev.local_checked_at,
     )
 
 

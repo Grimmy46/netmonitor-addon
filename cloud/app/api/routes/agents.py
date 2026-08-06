@@ -14,14 +14,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.security import hash_token, make_agent_token
-from app.models import Account, Agent, PingSample, Site
+from app.models import Account, Agent, Device, PingSample, Site
 from app.schemas import (
     AgentCreate,
     AgentOut,
     AgentReport,
     AgentReportResult,
+    AgentSiteIn,
     BulkResult,
     BulkStationsIn,
+    DeviceProbeReport,
+    DeviceProbeResult,
     EnrollAddIn,
     EnrollClaimIn,
     EnrollmentPinOut,
@@ -29,6 +32,8 @@ from app.schemas import (
     EnrollStationOut,
     EnrollStationsIn,
     PingPoint,
+    ProbeTarget,
+    ProbeTargetsOut,
 )
 from app.services.sync import get_or_create_account
 
@@ -179,6 +184,27 @@ async def release_agent(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db))
     if agent.site_id:
         s = await db.get(Site, agent.site_id)
         site_name = s.name if s else None
+    return _agent_out(agent, site_name, None)
+
+
+@router.post("/{agent_id}/site", response_model=AgentOut)
+async def set_agent_site(
+    agent_id: uuid.UUID, body: AgentSiteIn, db: AsyncSession = Depends(get_db)
+) -> AgentOut:
+    """Link a station to the UniFi site it should probe on its LAN (or null to
+    unlink). This is what tells the agent which devices to ping."""
+    agent = await db.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Station not found")
+    site_name = None
+    if body.site_id is not None:
+        site = await db.get(Site, body.site_id)
+        if site is None:
+            raise HTTPException(status_code=400, detail="Unknown site_id")
+        site_name = site.name
+    agent.site_id = body.site_id
+    await db.commit()
+    await db.refresh(agent)
     return _agent_out(agent, site_name, None)
 
 
@@ -379,6 +405,65 @@ async def agent_report(
     await db.commit()
     # Phase 3 will return pending commands here for the agent to execute.
     return AgentReportResult(ok=True, stored=stored, commands=[])
+
+
+# ── local LAN probing (agent pings the site's UniFi devices) ─────────────────
+@router.get("/targets", response_model=ProbeTargetsOut)
+async def agent_targets(
+    db: AsyncSession = Depends(get_db),
+    x_agent_token: str | None = Header(default=None),
+) -> ProbeTargetsOut:
+    """Devices the agent should ping on its local LAN — the UniFi devices of the
+    site this station is linked to that currently have an IP. Empty until the
+    station is linked to a site (dashboard → Manage stations → Probe site)."""
+    agent = await _agent_from_token(db, x_agent_token)
+    if agent.site_id is None:
+        return ProbeTargetsOut(site_id=None, site_name=None, targets=[])
+    site = await db.get(Site, agent.site_id)
+    rows = (
+        await db.execute(
+            select(Device).where(
+                Device.site_id == agent.site_id, Device.ip.is_not(None)
+            )
+        )
+    ).scalars()
+    targets = [
+        ProbeTarget(id=d.id, name=d.name, ip=d.ip, mac=d.mac)
+        for d in rows
+        if d.ip
+    ]
+    return ProbeTargetsOut(
+        site_id=agent.site_id,
+        site_name=site.name if site else None,
+        interval=get_settings().agent_probe_interval_seconds,
+        targets=targets,
+    )
+
+
+@router.post("/device-report", response_model=DeviceProbeResult)
+async def agent_device_report(
+    report: DeviceProbeReport,
+    db: AsyncSession = Depends(get_db),
+    x_agent_token: str | None = Header(default=None),
+) -> DeviceProbeResult:
+    """Ingest local reachability results from an on-site agent. Updates each
+    device's local_reachable/local_rtt_ms/local_checked_at (scoped to the agent's
+    linked site so an agent can only touch its own site's devices)."""
+    agent = await _agent_from_token(db, x_agent_token)
+    if agent.site_id is None:
+        return DeviceProbeResult(ok=True, updated=0)
+    now = datetime.now(tz=timezone.utc)
+    updated = 0
+    for r in report.results:
+        dev = await db.get(Device, r.id)
+        if dev is None or dev.site_id != agent.site_id:
+            continue
+        dev.local_reachable = r.reachable
+        dev.local_rtt_ms = r.rtt_ms if r.reachable else None
+        dev.local_checked_at = now
+        updated += 1
+    await db.commit()
+    return DeviceProbeResult(ok=True, updated=updated)
 
 
 # ── self-update: agents fetch the latest payload from here ───────────────────

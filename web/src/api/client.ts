@@ -29,6 +29,10 @@ export interface Device {
   last_online_at: string | null;
   down_seconds: number | null;
   dormant: boolean;
+  // Local LAN reachability from an on-site agent (null = never probed).
+  local_reachable: boolean | null;
+  local_rtt_ms: number | null;
+  local_checked_at: string | null;
 }
 
 export interface DormantDevice {
@@ -204,6 +208,11 @@ export const api = {
     }),
   deleteAgent: (id: string) => req<void>(`/agents/${id}`, { method: "DELETE" }),
   releaseAgent: (id: string) => req<Agent>(`/agents/${id}/release`, { method: "POST" }),
+  setAgentSite: (id: string, siteId: string | null) =>
+    req<Agent>(`/agents/${id}/site`, {
+      method: "POST",
+      body: JSON.stringify({ site_id: siteId }),
+    }),
   bulkCreateStations: (names: string[]) =>
     req<{ created: number; skipped: number }>("/agents/bulk", {
       method: "POST",

@@ -36,4 +36,14 @@ class Device(Base, UUIDPk, Timestamps):
         DateTime(timezone=True), default=None
     )
 
+    # Local reachability from an on-site agent actively pinging this device on the
+    # LAN (by its current IP). This is independent of UniFi's `is_online`: a device
+    # can be ONLINE in the controller yet not answer a LAN ping ("unreachable").
+    # None = no agent has probed it (no-data).
+    local_reachable: Mapped[bool | None] = mapped_column(default=None)
+    local_rtt_ms: Mapped[float | None] = mapped_column(default=None)
+    local_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+
     site: Mapped["Site"] = relationship(back_populates="devices")  # noqa: F821

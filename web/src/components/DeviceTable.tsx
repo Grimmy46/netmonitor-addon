@@ -1,4 +1,5 @@
 import type { Device } from "../api/client";
+import { deviceState } from "../lib/deviceState";
 import { humanizeDuration } from "../lib/duration";
 
 const TYPE_LABEL: Record<string, string> = {
@@ -24,22 +25,33 @@ export function DeviceTable({ devices }: { devices: Device[] }) {
       <tbody>
         {devices.map((d) => {
           const down = d.is_online === false ? humanizeDuration(d.down_seconds) : null;
+          const st = deviceState(d);
+          const recentlyDown =
+            d.is_online === false && !d.dormant && (d.down_seconds ?? 0) < 12 * 3600;
+          const highlight = recentlyDown || st.key === "unreachable";
+          const localMs =
+            d.local_reachable === true && d.local_rtt_ms != null
+              ? `${Math.round(d.local_rtt_ms)} ms`
+              : null;
           return (
-            <tr key={d.id}>
+            <tr
+              key={d.id}
+              style={
+                highlight
+                  ? { background: `color-mix(in srgb, ${st.color} 9%, transparent)` }
+                  : undefined
+              }
+            >
               <td>
                 <span
                   className="dot"
-                  title={d.is_online ? "Online" : d.is_online === false ? "Offline" : "Unknown"}
+                  title={st.label}
                   style={{
                     display: "inline-block",
                     width: 8,
                     height: 8,
                     borderRadius: "50%",
-                    background: d.is_online
-                      ? "var(--good)"
-                      : d.is_online === false
-                        ? "var(--critical)"
-                        : "var(--ink-muted)",
+                    background: st.color,
                   }}
                 />
               </td>
@@ -48,15 +60,18 @@ export function DeviceTable({ devices }: { devices: Device[] }) {
               <td className="mono">{d.model ?? "—"}</td>
               <td className="mono">{d.ip ?? "—"}</td>
               <td>
-                {d.is_online === true ? (
-                  <span style={{ color: "var(--good)" }}>Online</span>
-                ) : d.is_online === false ? (
-                  <span style={{ color: "var(--critical)" }}>
-                    Down{down ? ` ${down}` : ""}
+                <span style={{ color: st.color }}>
+                  {st.key === "offline" ? `Down${down ? ` ${down}` : ""}` : st.label}
+                </span>
+                {st.key === "unreachable" ? (
+                  <span className="sub" style={{ marginLeft: 6, fontSize: 12 }}>
+                    up in UniFi
                   </span>
-                ) : (
-                  <span style={{ color: "var(--ink-muted)" }}>—</span>
-                )}
+                ) : localMs ? (
+                  <span className="sub" style={{ marginLeft: 6, fontSize: 12, color: "var(--ink-muted)" }}>
+                    · LAN {localMs}
+                  </span>
+                ) : null}
               </td>
             </tr>
           );

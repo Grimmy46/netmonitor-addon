@@ -97,3 +97,39 @@ class PingPoint(BaseModel):
     ts: datetime
     rtt_ms: float | None = None
     gateway_rtt_ms: float | None = None
+
+
+# ── local LAN probing (agent pings the site's UniFi devices on the LAN) ───────
+class ProbeTarget(BaseModel):
+    """One device for the agent to ping locally."""
+    id: uuid.UUID
+    name: str
+    ip: str
+    mac: str | None = None
+
+
+class ProbeTargetsOut(BaseModel):
+    site_id: uuid.UUID | None = None
+    site_name: str | None = None
+    interval: int = 120  # suggested seconds between full sweeps
+    targets: list[ProbeTarget] = []
+
+
+class DeviceProbeIn(BaseModel):
+    id: uuid.UUID                 # the device id from /targets
+    reachable: bool               # did it answer a LAN ping?
+    rtt_ms: float | None = None   # round-trip ms if reachable
+
+
+class DeviceProbeReport(BaseModel):
+    results: list[DeviceProbeIn] = []
+
+
+class DeviceProbeResult(BaseModel):
+    ok: bool = True
+    updated: int = 0
+
+
+class AgentSiteIn(BaseModel):
+    """Link a station to the UniFi site it should probe (null to unlink)."""
+    site_id: uuid.UUID | None = None

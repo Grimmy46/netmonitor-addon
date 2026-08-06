@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Site, type UnifiStatus } from "../api/client";
+import { PulseLogo } from "../components/PulseLogo";
 import { AgentsView } from "../components/AgentsView";
 import { DormantView } from "../components/DormantView";
 import { SettingsModal } from "../components/SettingsModal";
@@ -104,6 +105,7 @@ export function Dashboard() {
   return (
     <>
       <header className="app-header">
+        <PulseLogo size={26} />
         <h1>NetMonitor</h1>
         <span className="sub">2.0{version && ` · cloud v${version}`}</span>
         {configured && !siteRoute ? (

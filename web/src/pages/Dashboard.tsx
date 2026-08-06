@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Site, type UnifiStatus } from "../api/client";
+import { PinPrompt, needsPinPrompt } from "../components/PinPrompt";
 import { PulseLogo } from "../components/PulseLogo";
 import { AgentsView } from "../components/AgentsView";
 import { DormantView } from "../components/DormantView";
@@ -31,6 +32,12 @@ export function Dashboard() {
   const [version, setVersion] = useState("");
   const [error, setError] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pinAsk, setPinAsk] = useState(false);
+
+  async function openSettings() {
+    if (await needsPinPrompt()) setPinAsk(true);
+    else setSettingsOpen(true);
+  }
   const [syncing, setSyncing] = useState(false);
   const [view, setView] = useState<"fleet" | "map" | "dormant" | "kiosks">("fleet");
   const [fleetFilter, setFleetFilter] = useState<FleetFilter>("all");
@@ -118,7 +125,7 @@ export function Dashboard() {
         ) : null}
         <div className="spacer" />
         <ThemeToggle />
-        <button className="btn" onClick={() => setSettingsOpen(true)}>⚙ Settings</button>
+        <button className="btn" onClick={openSettings}>⚙ Settings</button>
       </header>
 
       {siteRoute ? (
@@ -150,7 +157,7 @@ export function Dashboard() {
             <p style={{ fontSize: 16, color: "var(--ink-secondary)" }}>
               Connect a UniFi console (or Site Manager account) to see your fleet.
             </p>
-            <button className="btn btn-primary" onClick={() => setSettingsOpen(true)}>
+            <button className="btn btn-primary" onClick={openSettings}>
               Connect UniFi
             </button>
           </div>
@@ -194,6 +201,12 @@ export function Dashboard() {
       </div>
       )}
 
+      {pinAsk ? (
+        <PinPrompt
+          onUnlocked={() => { setPinAsk(false); setSettingsOpen(true); }}
+          onClose={() => setPinAsk(false)}
+        />
+      ) : null}
       {settingsOpen ? (
         <SettingsModal
           status={status}

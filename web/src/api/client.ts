@@ -141,9 +141,30 @@ export interface ConsoleSyncResult {
   errors: { console: string; error: string }[];
 }
 
+/** Admin PIN for this browser session — gates destructive/config actions.
+ * Kept in sessionStorage so a refresh doesn't re-prompt; cleared on tab close. */
+export const adminAuth = {
+  get pin(): string | null {
+    try {
+      return sessionStorage.getItem("nm_admin_pin");
+    } catch {
+      return null;
+    }
+  },
+  set(pin: string | null) {
+    try {
+      if (pin) sessionStorage.setItem("nm_admin_pin", pin);
+      else sessionStorage.removeItem("nm_admin_pin");
+    } catch {
+      /* ignore */
+    }
+  },
+};
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  const pin = adminAuth.pin;
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(pin ? { "X-Admin-Pin": pin } : {}) },
     ...init,
   });
   if (!res.ok) {
@@ -234,4 +255,17 @@ export const api = {
   enrollmentPin: () => req<{ pin: string }>("/agents/enrollment"),
   regenerateEnrollmentPin: () =>
     req<{ pin: string }>("/agents/enrollment/regenerate", { method: "POST" }),
+
+  // Dashboard admin PIN (second gate on top of basic-auth for mutations).
+  pinStatus: () => req<{ set: boolean }>("/integrations/pin/status"),
+  pinVerify: (pin: string) =>
+    req<{ set: boolean }>("/integrations/pin/verify", {
+      method: "POST",
+      body: JSON.stringify({ pin }),
+    }),
+  pinSet: (pin: string, current?: string) =>
+    req<{ set: boolean }>("/integrations/pin", {
+      method: "POST",
+      body: JSON.stringify({ pin, current: current ?? null }),
+    }),
 };

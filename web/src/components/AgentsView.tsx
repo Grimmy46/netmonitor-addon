@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, type Agent, type MetricPoint, type PingPoint, type SparkPoint } from "../api/client";
 import { downloadKioskReport } from "../lib/kioskReport";
+import { PinPrompt, needsPinPrompt } from "./PinPrompt";
 import { LatencyChart } from "./LatencyChart";
 import { Sparkline } from "./Sparkline";
 import { StationsPanel } from "./StationsPanel";
@@ -118,6 +119,12 @@ export function AgentsView() {
   const [sparks, setSparks] = useState<Record<string, SparkPoint[]>>({});
   const [error, setError] = useState("");
   const [manage, setManage] = useState(false);
+  const [pinAsk, setPinAsk] = useState(false);
+
+  async function openManage() {
+    if (await needsPinPrompt()) setPinAsk(true);
+    else setManage(true);
+  }
   const [pdfBusy, setPdfBusy] = useState(false);
   const [cols, setCols] = useState(1);
   const [openRows, setOpenRows] = useState<Set<number>>(new Set());
@@ -185,6 +192,8 @@ export function AgentsView() {
 
   const panel = manage ? (
     <StationsPanel onClose={() => setManage(false)} onChanged={load} />
+  ) : pinAsk ? (
+    <PinPrompt onUnlocked={() => { setPinAsk(false); setManage(true); }} onClose={() => setPinAsk(false)} />
   ) : null;
 
   return (
@@ -202,7 +211,7 @@ export function AgentsView() {
         >
           {pdfBusy ? "Building PDF…" : "⤓ PDF report"}
         </button>
-        <button className="btn" onClick={() => setManage(true)}>⚙ Manage stations</button>
+        <button className="btn" onClick={openManage}>⚙ Manage stations</button>
       </div>
 
       {error ? <div className="banner err">{error}</div> : null}

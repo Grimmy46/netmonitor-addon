@@ -35,6 +35,7 @@ from app.schemas import (
     ProbeTarget,
     ProbeTargetsOut,
 )
+from app.api.routes.adminpin import require_admin_pin
 from app.services.sync import get_or_create_account
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -165,7 +166,12 @@ def _agent_out(a: Agent, site_name: str | None, latest_rtt: float | None) -> Age
 
 # ── registration / management (dashboard side) ───────────────────────────────
 @router.post("", response_model=AgentOut)
-async def create_agent(payload: AgentCreate, db: AsyncSession = Depends(get_db)) -> AgentOut:
+async def create_agent(
+    payload: AgentCreate,
+    db: AsyncSession = Depends(get_db),
+    x_admin_pin: str | None = Header(default=None),
+) -> AgentOut:
+    await require_admin_pin(db, x_admin_pin)
     """Create a *station* — a named slot a kiosk claims on first run. No token is
     issued here; claiming (via the enrollment PIN) mints the token on the kiosk."""
     account = await get_or_create_account(db)
@@ -189,7 +195,12 @@ async def create_agent(payload: AgentCreate, db: AsyncSession = Depends(get_db))
 
 
 @router.post("/bulk", response_model=BulkResult)
-async def bulk_create_stations(body: BulkStationsIn, db: AsyncSession = Depends(get_db)) -> BulkResult:
+async def bulk_create_stations(
+    body: BulkStationsIn,
+    db: AsyncSession = Depends(get_db),
+    x_admin_pin: str | None = Header(default=None),
+) -> BulkResult:
+    await require_admin_pin(db, x_admin_pin)
     """Create many stations at once (duplicates by name are skipped)."""
     account = await get_or_create_account(db)
     existing = {a.name for a in (await db.execute(select(Agent))).scalars()}
@@ -209,7 +220,12 @@ async def bulk_create_stations(body: BulkStationsIn, db: AsyncSession = Depends(
 
 
 @router.post("/{agent_id}/release", response_model=AgentOut)
-async def release_agent(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> AgentOut:
+async def release_agent(
+    agent_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    x_admin_pin: str | None = Header(default=None),
+) -> AgentOut:
+    await require_admin_pin(db, x_admin_pin)
     """Un-claim a station so a (different) kiosk can enroll as it again."""
     agent = await db.get(Agent, agent_id)
     if agent is None:
@@ -228,8 +244,12 @@ async def release_agent(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db))
 
 @router.post("/{agent_id}/site", response_model=AgentOut)
 async def set_agent_site(
-    agent_id: uuid.UUID, body: AgentSiteIn, db: AsyncSession = Depends(get_db)
+    agent_id: uuid.UUID,
+    body: AgentSiteIn,
+    db: AsyncSession = Depends(get_db),
+    x_admin_pin: str | None = Header(default=None),
 ) -> AgentOut:
+    await require_admin_pin(db, x_admin_pin)
     """Link a station to the UniFi site it should probe on its LAN (or null to
     unlink). This is what tells the agent which devices to ping."""
     agent = await db.get(Agent, agent_id)
@@ -266,7 +286,12 @@ async def list_agents(db: AsyncSession = Depends(get_db)) -> list[AgentOut]:
 
 
 @router.delete("/{agent_id}", status_code=204)
-async def delete_agent(agent_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> None:
+async def delete_agent(
+    agent_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    x_admin_pin: str | None = Header(default=None),
+) -> None:
+    await require_admin_pin(db, x_admin_pin)
     agent = await db.get(Agent, agent_id)
     if agent is None:
         return
@@ -592,13 +617,21 @@ async def agent_payload(
 
 # ── enrollment PIN management (dashboard side — behind basic-auth) ────────────
 @router.get("/enrollment", response_model=EnrollmentPinOut)
-async def get_enrollment_pin(db: AsyncSession = Depends(get_db)) -> EnrollmentPinOut:
+async def get_enrollment_pin(
+    db: AsyncSession = Depends(get_db),
+    x_admin_pin: str | None = Header(default=None),
+) -> EnrollmentPinOut:
+    await require_admin_pin(db, x_admin_pin)
     _, pin = await _get_pin(db)
     return EnrollmentPinOut(pin=pin)
 
 
 @router.post("/enrollment/regenerate", response_model=EnrollmentPinOut)
-async def regenerate_enrollment_pin(db: AsyncSession = Depends(get_db)) -> EnrollmentPinOut:
+async def regenerate_enrollment_pin(
+    db: AsyncSession = Depends(get_db),
+    x_admin_pin: str | None = Header(default=None),
+) -> EnrollmentPinOut:
+    await require_admin_pin(db, x_admin_pin)
     account = await get_or_create_account(db)
     account.enrollment_pin = _gen_pin()
     await db.commit()

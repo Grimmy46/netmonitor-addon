@@ -2,7 +2,7 @@
 Network Integration API connections. Both feed the same sites/devices tables."""
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +17,7 @@ from app.schemas import (
     UnifiKeyStatus,
     UnifiSyncResult,
 )
+from app.api.routes.adminpin import require_admin_pin
 from app.services.sync import get_or_create_account, sync_all_consoles, sync_unifi
 from app.services.unifi import UnifiError, UnifiSiteManagerClient
 from app.services.unifi_console import (
@@ -42,7 +43,12 @@ async def unifi_status(db: AsyncSession = Depends(get_db)) -> UnifiKeyStatus:
 
 
 @router.put("/key", response_model=UnifiKeyStatus)
-async def set_unifi_key(payload: UnifiKeyIn, db: AsyncSession = Depends(get_db)) -> UnifiKeyStatus:
+async def set_unifi_key(
+    payload: UnifiKeyIn,
+    db: AsyncSession = Depends(get_db),
+    x_admin_pin: str | None = Header(default=None),
+) -> UnifiKeyStatus:
+    await require_admin_pin(db, x_admin_pin)
     # Verify the key against UniFi before persisting it.
     try:
         await UnifiSiteManagerClient(payload.api_key).verify()
@@ -62,7 +68,11 @@ async def set_unifi_key(payload: UnifiKeyIn, db: AsyncSession = Depends(get_db))
 
 
 @router.delete("/key", status_code=204)
-async def delete_unifi_key(db: AsyncSession = Depends(get_db)) -> None:
+async def delete_unifi_key(
+    db: AsyncSession = Depends(get_db),
+    x_admin_pin: str | None = Header(default=None),
+) -> None:
+    await require_admin_pin(db, x_admin_pin)
     cred = (await db.execute(select(UnifiCredential))).scalars().first()
     if cred is not None:
         await db.delete(cred)
@@ -107,8 +117,11 @@ async def list_consoles(db: AsyncSession = Depends(get_db)) -> list[UnifiConsole
 
 @router.post("/consoles", response_model=UnifiConsoleOut)
 async def add_console(
-    payload: UnifiConsoleIn, db: AsyncSession = Depends(get_db)
+    payload: UnifiConsoleIn,
+    db: AsyncSession = Depends(get_db),
+    x_admin_pin: str | None = Header(default=None),
 ) -> UnifiConsoleOut:
+    await require_admin_pin(db, x_admin_pin)
     # Normalize + verify the key against the console before persisting.
     try:
         base = normalize_base_url(payload.base_url)
@@ -136,8 +149,11 @@ async def add_console(
 
 @router.delete("/consoles/{console_id}", status_code=204)
 async def delete_console(
-    console_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+    console_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    x_admin_pin: str | None = Header(default=None),
 ) -> None:
+    await require_admin_pin(db, x_admin_pin)
     console = await db.get(UnifiConsole, console_id)
     if console is None:
         return

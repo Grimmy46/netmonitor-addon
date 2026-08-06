@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type Agent, type UnifiConsole, type UnifiStatus } from "../api/client";
+import { adminAuth, api, type Agent, type UnifiConsole, type UnifiStatus } from "../api/client";
 
 export function SettingsModal({
   status,
@@ -30,6 +30,35 @@ export function SettingsModal({
   const [pin, setPin] = useState<string | null>(null);
   const [pinShown, setPinShown] = useState(false);
 
+  // ── Dashboard admin PIN ─────────────────────────────────────────────────--
+  const [adminSet, setAdminSet] = useState<boolean | null>(null);
+  const [apNew, setApNew] = useState("");
+  const [apCurrent, setApCurrent] = useState("");
+  const [apBusy, setApBusy] = useState(false);
+  const [apMsg, setApMsg] = useState("");
+
+  async function saveAdminPin() {
+    const next = apNew.trim();
+    if (!/^\d{4,8}$/.test(next)) {
+      setApMsg("PIN must be 4–8 digits.");
+      return;
+    }
+    setApBusy(true);
+    setApMsg("");
+    try {
+      await api.pinSet(next, adminSet ? apCurrent.trim() : undefined);
+      adminAuth.set(next); // this browser stays unlocked with the new PIN
+      setAdminSet(true);
+      setApNew("");
+      setApCurrent("");
+      setApMsg("Dashboard PIN saved — changes now require it.");
+    } catch (e) {
+      setApMsg(String(e instanceof Error ? e.message : e));
+    } finally {
+      setApBusy(false);
+    }
+  }
+
   async function loadConsoles() {
     try {
       setConsoles(await api.consoles());
@@ -41,6 +70,7 @@ export function SettingsModal({
     loadConsoles();
     api.agents().then(setAgents).catch(() => {});
     api.enrollmentPin().then((r) => setPin(r.pin)).catch(() => {});
+    api.pinStatus().then((r) => setAdminSet(r.set)).catch(() => setAdminSet(null));
   }, []);
 
   async function regenPin() {
@@ -110,6 +140,46 @@ export function SettingsModal({
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h2>Settings</h2>
+
+        {/* ── Dashboard admin PIN ─────────────────────────────────────────── */}
+        <h3 style={{ margin: "4px 0 6px", fontSize: 15 }}>Dashboard PIN</h3>
+        <p style={{ marginTop: 0 }}>
+          {adminSet
+            ? "Changing or deleting anything on this dashboard requires this PIN."
+            : "No PIN set — anyone with dashboard access can change or delete things. Create one to lock the admin actions."}
+        </p>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
+          {adminSet ? (
+            <input
+              type="password"
+              inputMode="numeric"
+              autoComplete="off"
+              placeholder="Current PIN"
+              value={apCurrent}
+              onChange={(e) => setApCurrent(e.target.value.replace(/\D/g, "").slice(0, 8))}
+              style={{ width: 120 }}
+            />
+          ) : null}
+          <input
+            type="password"
+            inputMode="numeric"
+            autoComplete="off"
+            placeholder={adminSet ? "New PIN (4–8 digits)" : "New PIN (4–8 digits)"}
+            value={apNew}
+            onChange={(e) => setApNew(e.target.value.replace(/\D/g, "").slice(0, 8))}
+            style={{ width: 160 }}
+          />
+          <button
+            className="btn btn-primary"
+            onClick={saveAdminPin}
+            disabled={apBusy || apNew.trim().length < 4 || (adminSet === true && apCurrent.trim().length < 4)}
+          >
+            {apBusy ? "Saving…" : adminSet ? "Change PIN" : "Create PIN"}
+          </button>
+        </div>
+        {apMsg ? <div className="banner" style={{ marginBottom: 12 }}>{apMsg}</div> : null}
+
+        <hr style={{ border: "none", borderTop: "1px solid var(--line)", margin: "8px 0 16px" }} />
 
         {/* ── Agents (kiosks) ─────────────────────────────────────────────── */}
         <h3 style={{ margin: "4px 0 6px", fontSize: 15 }}>Kiosks &amp; stations</h3>

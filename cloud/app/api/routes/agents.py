@@ -101,6 +101,30 @@ def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
+async def _default_site_id(db: AsyncSession) -> uuid.UUID | None:
+    """The site stations auto-link to for LAN probing (settings, default 'Main')."""
+    name = (get_settings().default_probe_site_name or "").strip()
+    if not name:
+        return None
+    site = (
+        await db.execute(select(Site).where(func.lower(Site.name) == name.lower()))
+    ).scalars().first()
+    return site.id if site else None
+
+
+async def _ensure_probe_site(db: AsyncSession, agent: Agent) -> bool:
+    """Auto-link a station with NO probe site to the default site. Never touches
+    a station that was linked (or re-linked) manually. Returns True if changed."""
+    if agent.site_id is not None:
+        return False
+    sid = await _default_site_id(db)
+    if sid is None:
+        return False
+    agent.site_id = sid
+    await db.commit()
+    return True
+
+
 def _parse_iso(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -470,6 +494,9 @@ async def agent_targets(
     site this station is linked to that currently have an IP. Empty until the
     station is linked to a site (dashboard → Manage stations → Probe site)."""
     agent = await _agent_from_token(db, x_agent_token)
+    # Kiosks all live at Main — a station nobody linked yet links itself here on
+    # its first sweep (manual per-station overrides are respected).
+    await _ensure_probe_site(db, agent)
     if agent.site_id is None:
         return ProbeTargetsOut(site_id=None, site_name=None, targets=[])
     site = await db.get(Site, agent.site_id)
@@ -501,19 +528,37 @@ async def agent_device_report(
 ) -> DeviceProbeResult:
     """Ingest local reachability results from an on-site agent. Updates each
     device's local_reachable/local_rtt_ms/local_checked_at (scoped to the agent's
-    linked site so an agent can only touch its own site's devices)."""
+    linked site so an agent can only touch its own site's devices).
+
+    Multi-vantage merge: with many kiosks probing the same site, a device is
+    reachable if ANY kiosk reached it — a "reachable" sighting protects the
+    device from other kiosks' "unreachable" reports for a grace window, so
+    status doesn't flicker when one far-corner kiosk misses a ping."""
     agent = await _agent_from_token(db, x_agent_token)
+    await _ensure_probe_site(db, agent)
     if agent.site_id is None:
         return DeviceProbeResult(ok=True, updated=0)
     now = datetime.now(tz=timezone.utc)
+    grace = get_settings().probe_positive_grace_seconds
     updated = 0
     for r in report.results:
         dev = await db.get(Device, r.id)
         if dev is None or dev.site_id != agent.site_id:
             continue
-        dev.local_reachable = r.reachable
-        dev.local_rtt_ms = r.rtt_ms if r.reachable else None
-        dev.local_checked_at = now
+        if r.reachable:
+            dev.local_reachable = True
+            dev.local_rtt_ms = r.rtt_ms
+            dev.local_checked_at = now
+        else:
+            recently_seen_up = (
+                dev.local_reachable is True
+                and dev.local_checked_at is not None
+                and (now - dev.local_checked_at).total_seconds() < grace
+            )
+            if not recently_seen_up:
+                dev.local_reachable = False
+                dev.local_rtt_ms = None
+                dev.local_checked_at = now
         updated += 1
     await db.commit()
     return DeviceProbeResult(ok=True, updated=updated)
@@ -594,6 +639,8 @@ async def enroll_claim(body: EnrollClaimIn, db: AsyncSession = Depends(get_db)) 
                    "Release it in the dashboard, or pick a different station.",
         )
     token = await _claim(agent, body.hostname, body.machine_id)
+    if agent.site_id is None:
+        agent.site_id = await _default_site_id(db)  # kiosks live at Main
     await db.commit()
     return EnrollResult(token=token, name=agent.name)
 
@@ -603,6 +650,7 @@ async def enroll_add(body: EnrollAddIn, db: AsyncSession = Depends(get_db)) -> E
     account = await _require_pin(db, body.pin)
     agent = Agent(account_id=account.id, name=body.name, token_hash="", status="pending")
     token = await _claim(agent, body.hostname, body.machine_id)
+    agent.site_id = await _default_site_id(db)  # kiosks live at Main
     db.add(agent)
     await db.commit()
     return EnrollResult(token=token, name=agent.name)

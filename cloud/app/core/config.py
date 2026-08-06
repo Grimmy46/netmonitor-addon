@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     agent_offline_after_seconds: int = 120
     # Suggested seconds between an on-site agent's full LAN device-ping sweeps.
     agent_probe_interval_seconds: int = 120
+    # Stations with no probe site are auto-linked to the site with this name
+    # (kiosks all live at Main). Manual per-station overrides still stick.
+    default_probe_site_name: str = "Main"
+    # Multi-vantage merge: a "reachable" sighting from ANY kiosk protects a
+    # device from "unreachable" reports by other kiosks for this many seconds.
+    probe_positive_grace_seconds: int = 300
 
     @property
     def database_url(self) -> str:

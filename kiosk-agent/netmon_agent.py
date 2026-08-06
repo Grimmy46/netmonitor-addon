@@ -57,7 +57,7 @@ CONFIG_PATH = os.path.join(HERE, "netmon_agent.config.json")
 PAYLOAD_PATH = os.path.join(HERE, "agent_payload.py")
 LOG_PATH = os.path.join(HERE, "netmon_agent.log")
 _VER_RE = re.compile(r"""PAYLOAD_VERSION\s*=\s*["']([^"']+)["']""")
-BOOTSTRAP_VERSION = "2.3"
+BOOTSTRAP_VERSION = "2.4"
 ADD_NEW_LABEL = "➕ Add a new station…"
 
 
@@ -235,8 +235,63 @@ def http_post(cfg, path, body, timeout=20):
 
 
 # ── enrollment (first run only) ───────────────────────────────────────────────
+def _digit_runs(name):
+    runs = re.findall(r"\d+", name or "")
+    return (runs[-1] if runs else "", "".join(runs))
+
+
+def _match_station(stations, host):
+    """Auto-match this PC to its station by kiosk number, strict → loose:
+      A) last digit run matches   (host K6019   → station K3-6019, both '6019')
+      B) all digits match         (host K76044  → station K7-6044, both '76044')
+      C) host digits END WITH the station's number (belt-and-braces)
+    A stage only wins on a UNIQUE hit; anything ambiguous or unmatched falls
+    back to the interactive picker. Needs at least 3 digits to try at all."""
+    h_last, h_all = _digit_runs(host)
+    if len(h_last) < 3:
+        return None
+    keyed = [(s, *_digit_runs(s.get("name", ""))) for s in stations]
+    for hits in (
+        [s for s, s_last, _ in keyed if s_last == h_last],
+        [s for s, _, s_all in keyed if s_all and s_all == h_all],
+        [s for s, s_last, _ in keyed if len(s_last) >= 4 and h_all.endswith(s_last)],
+    ):
+        if len(hits) == 1:
+            return hits[0]
+    return None
+
+
+def _enroll_auto(cfg):
+    """Zero-touch enrollment for mass deployment: if the config carries
+    'enroll_pin', claim the station matching this hostname — no GUI, no typing.
+    Returns a token, or None to fall back to the interactive flow."""
+    pin = str(cfg.get("enroll_pin") or "").strip()
+    if not pin or not cfg.get("enroll_auto", True):
+        return None
+    host = hostname()
+    try:
+        stations = http_post(cfg, "/agents/enroll/stations", {"pin": pin})
+        station = _match_station(stations, host)
+        if station is None:
+            print(f"[enroll] no unique station match for '{host}' — opening picker",
+                  flush=True)
+            return None
+        r = http_post(cfg, "/agents/enroll/claim",
+                      {"pin": pin, "station_id": station["id"],
+                       "hostname": host, "machine_id": machine_id()})
+        print(f"[enroll] auto-enrolled as station '{r.get('name')}'", flush=True)
+        return r["token"]
+    except Exception as e:
+        print(f"[enroll] auto-enroll failed ({e}) — opening picker", flush=True)
+        return None
+
+
 def enroll(cfg):
-    """Return a token by claiming a station. GUI if possible, else console."""
+    """Return a token by claiming a station. Zero-touch if the config carries
+    the PIN (mass deployment); else GUI if possible, else console."""
+    tok = _enroll_auto(cfg)
+    if tok:
+        return tok
     if tk is not None:
         try:
             tok = _enroll_gui(cfg)

@@ -86,6 +86,21 @@ async def _agent_from_token(db: AsyncSession, token: str | None) -> Agent:
     return agent
 
 
+def _client_ip(request: Request) -> str | None:
+    """The real client IP behind the Caddy + Docker reverse proxy. request.client
+    only sees the proxy hop (172.18.x); Caddy forwards the true remote address in
+    X-Forwarded-For (first entry) / X-Real-IP."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        first = xff.split(",")[0].strip()
+        if first:
+            return first
+    real = request.headers.get("x-real-ip")
+    if real:
+        return real.strip()
+    return request.client.host if request.client else None
+
+
 def _parse_iso(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -386,8 +401,9 @@ async def agent_report(
         agent.os = report.os
     if report.target:
         agent.last_target = report.target
-    if request.client:
-        agent.last_ip = request.client.host
+    client_ip = _client_ip(request)
+    if client_ip:
+        agent.last_ip = client_ip
 
     stored = 0
     for s in report.samples:

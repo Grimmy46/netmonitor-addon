@@ -82,7 +82,7 @@ $DOMAIN {
     # exempt from the dashboard basic-auth since agents can't do interactive
     # auth. Everything else — including the agent MANAGEMENT endpoints — stays
     # behind basic-auth.
-    @agentapi path /agents/report /agents/payload /agents/version /agents/enroll/*
+    @agentapi path /agents/report /agents/payload /agents/version /agents/enroll/* /agents/targets /agents/device-report
     handle @agentapi {
         reverse_proxy 127.0.0.1:8010
     }

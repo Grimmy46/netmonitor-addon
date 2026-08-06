@@ -14,17 +14,22 @@ Rules for this file:
 `cfg`  = the kiosk's config file (server_url, token, target, gateway, intervals…).
 `ctx`  = {"server_url", "token", "running_version"} supplied by the bootstrapper.
 """
-import concurrent.futures
 import json
 import os
 import platform
 import re
 import socket
 import subprocess
+import threading
 import time
 import urllib.request
 
-PAYLOAD_VERSION = "2026.08.05.1"
+# NOTE: only import stdlib modules the BOOTSTRAPPER already bundles into the .exe
+# (see kiosk-agent/netmon_agent.py import list). The payload is exec'd inside the
+# frozen runtime, so an import it needs that the exe didn't bundle crashes the
+# agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
+# thread pool below instead of ThreadPoolExecutor.
+PAYLOAD_VERSION = "2026.08.05.2"
 
 SYSTEM = platform.system()
 _TIME_RE = re.compile(r"time[=<]\s*([\d.,]+)\s*ms", re.IGNORECASE)
@@ -138,15 +143,24 @@ def _probe_sweep(ctx, timeout_s):
     if not targets:
         return info.get("interval")
 
+    results = []
+    lock = threading.Lock()
+
     def _probe(t):
         rtt = ping_once(t.get("ip"), timeout_s)
-        return {"id": t["id"], "reachable": rtt is not None, "rtt_ms": rtt}
+        with lock:
+            results.append({"id": t["id"], "reachable": rtt is not None, "rtt_ms": rtt})
 
-    results = []
-    workers = min(24, max(4, len(targets)))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-        for r in ex.map(_probe, targets):
-            results.append(r)
+    # Manual bounded thread pool (stdlib threading — bundled in the exe; unlike
+    # concurrent.futures). Ping up to `batch` devices at once.
+    batch = 24
+    for i in range(0, len(targets), batch):
+        chunk = targets[i:i + batch]
+        threads = [threading.Thread(target=_probe, args=(t,)) for t in chunk]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(timeout_s + 2.0)
     try:
         _post_device_report(ctx, results)
         up = sum(1 for r in results if r["reachable"])

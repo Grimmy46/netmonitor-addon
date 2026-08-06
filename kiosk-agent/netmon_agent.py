@@ -26,6 +26,7 @@ import urllib.request
 # here so they're baked into the .exe. Add new stdlib modules a future payload
 # needs to this list — the only reason to ever rebuild the exe.
 import base64  # noqa: F401
+import concurrent.futures  # noqa: F401  (bundle for future payloads; not used here)
 import ctypes  # noqa: F401
 import glob  # noqa: F401
 import hashlib  # noqa: F401

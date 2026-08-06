@@ -74,6 +74,13 @@ export interface PingPoint {
   gateway_rtt_ms: number | null;
 }
 
+/** One per-minute sparkline bucket (from /agents/pings/recent). */
+export interface SparkPoint {
+  ts: string;
+  rtt: number | null;
+  loss: boolean;
+}
+
 export interface PingSummaryBucket {
   ts: string;
   avg_rtt_ms: number | null;
@@ -219,6 +226,8 @@ export const api = {
       body: JSON.stringify({ names }),
     }),
   agentPings: (id: string) => req<PingPoint[]>(`/agents/${id}/pings`),
+  agentSparklines: (minutes = 45) =>
+    req<Record<string, SparkPoint[]>>(`/agents/pings/recent?minutes=${minutes}`),
   agentPingSummary: (id: string, hours = 24) =>
     req<PingSummary>(`/agents/${id}/pings/summary?hours=${hours}`),
 

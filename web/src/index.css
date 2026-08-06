@@ -315,3 +315,11 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
 .hstat.clickable:hover { border-color: var(--baseline); transform: translateY(-1px); }
 .hstat.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 .hstat.static { cursor: default; }
+
+/* ── Kiosk card sparkline ─────────────────────────────────────────────── */
+.spark { margin-top: 12px; }
+.spark-empty {
+  height: 38px; display: flex; align-items: center; justify-content: center;
+  color: var(--ink-muted); font-size: 11px;
+  border-bottom: 1px solid var(--grid);
+}

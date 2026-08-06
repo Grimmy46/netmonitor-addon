@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
-import { api, type Agent, type MetricPoint, type PingPoint } from "../api/client";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { api, type Agent, type MetricPoint, type PingPoint, type SparkPoint } from "../api/client";
 import { downloadKioskReport } from "../lib/kioskReport";
 import { LatencyChart } from "./LatencyChart";
+import { Sparkline } from "./Sparkline";
 import { StationsPanel } from "./StationsPanel";
 import { StatusPill } from "./StatusPill";
 
@@ -14,10 +15,20 @@ function timeAgo(iso: string | null): string {
   return `${Math.floor(secs / 86400)}d ago`;
 }
 
-function AgentCard({ agent }: { agent: Agent }) {
-  const [open, setOpen] = useState(false);
+function AgentCard({
+  agent,
+  spark,
+  open,
+  onToggle,
+}: {
+  agent: Agent;
+  spark: SparkPoint[];
+  open: boolean;
+  onToggle: () => void;
+}) {
   const [pings, setPings] = useState<MetricPoint[] | null>(null);
 
+  // Detailed history only loads while this card's row is expanded.
   useEffect(() => {
     if (!open) return;
     let alive = true;
@@ -44,7 +55,7 @@ function AgentCard({ agent }: { agent: Agent }) {
   }, [open, agent.id]);
 
   return (
-    <div className={`card${open ? "" : " clickable"}`} onClick={open ? undefined : () => setOpen(true)}>
+    <div className="card clickable" onClick={open ? undefined : onToggle}>
       <div className="card-head">
         <div>
           <div className="name">{agent.name}</div>
@@ -76,15 +87,18 @@ function AgentCard({ agent }: { agent: Agent }) {
         </div>
       </div>
 
+      {/* Always-on mini trend; the expanded chart below carries the labels. */}
+      <Sparkline points={spark} />
+
       {open ? (
         <div className="detail">
-          <div style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 6 }}>
+          <div style={{ fontSize: 12, color: "var(--ink-muted)", margin: "10px 0 6px" }}>
             Ping latency {agent.version ? `· agent v${agent.version}` : ""}
             {agent.last_ip ? ` · ${agent.last_ip}` : ""}
           </div>
           {pings === null ? <p className="hint">Loading…</p> : <LatencyChart data={pings} />}
           <div style={{ marginTop: 12, textAlign: "right" }}>
-            <button className="btn" onClick={(e) => { e.stopPropagation(); setOpen(false); }}>
+            <button className="btn" onClick={(e) => { e.stopPropagation(); onToggle(); }}>
               Collapse
             </button>
           </div>
@@ -95,21 +109,29 @@ function AgentCard({ agent }: { agent: Agent }) {
 }
 
 /**
- * Kiosks tab: every site agent with live online/offline + latency. Click a card
- * to expand its ping-latency trend.
+ * Kiosks tab: every site agent as a card with a live sparkline. Clicking a card
+ * expands its whole VISUAL ROW — every kiosk in that row shows its detailed,
+ * labeled chart together (no more one tall card dragging empty neighbors).
  */
 export function AgentsView() {
   const [agents, setAgents] = useState<Agent[] | null>(null);
+  const [sparks, setSparks] = useState<Record<string, SparkPoint[]>>({});
   const [error, setError] = useState("");
   const [manage, setManage] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
+  const [cols, setCols] = useState(1);
+  const [openRows, setOpenRows] = useState<Set<number>>(new Set());
+  const gridRef = useRef<HTMLDivElement | null>(null);
 
   const load = () =>
     api.agents().then(setAgents).catch((e) => setError(String(e instanceof Error ? e.message : e)));
 
   useEffect(() => {
     let alive = true;
-    const tick = () => api.agents().then((a) => alive && setAgents(a)).catch(() => {});
+    const tick = () => {
+      api.agents().then((a) => alive && setAgents(a)).catch(() => {});
+      api.agentSparklines().then((s) => alive && setSparks(s)).catch(() => {});
+    };
     tick();
     const id = setInterval(tick, 15000);
     return () => {
@@ -118,10 +140,35 @@ export function AgentsView() {
     };
   }, []);
 
-  // Only claimed/reporting kiosks show as monitoring cards; the rest are just
-  // slots in the master list (managed via the Stations panel).
+  // Track how many columns the responsive grid currently renders, so "expand
+  // the row" matches what the user actually sees at this window size.
+  useLayoutEffect(() => {
+    const el = gridRef.current;
+    if (!el) return;
+    const measure = () => {
+      const n = getComputedStyle(el).gridTemplateColumns.split(" ").filter(Boolean).length || 1;
+      setCols((prev) => {
+        if (prev !== n) setOpenRows(new Set()); // row membership changed — reset
+        return n;
+      });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+
   const live = (agents ?? []).filter((a) => a.claimed || a.last_seen_at);
   const online = live.filter((a) => a.online).length;
+
+  function toggleRow(row: number) {
+    setOpenRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(row)) next.delete(row);
+      else next.add(row);
+      return next;
+    });
+  }
 
   async function makePdf() {
     if (!live.length || pdfBusy) return;
@@ -169,10 +216,19 @@ export function AgentsView() {
           </p>
         </div>
       ) : (
-        <div className="grid">
-          {live.map((a) => (
-            <AgentCard key={a.id} agent={a} />
-          ))}
+        <div className="grid" ref={gridRef}>
+          {live.map((a, i) => {
+            const row = Math.floor(i / cols);
+            return (
+              <AgentCard
+                key={a.id}
+                agent={a}
+                spark={sparks[a.id] ?? []}
+                open={openRows.has(row)}
+                onToggle={() => toggleRow(row)}
+              />
+            );
+          })}
         </div>
       )}
       {panel}

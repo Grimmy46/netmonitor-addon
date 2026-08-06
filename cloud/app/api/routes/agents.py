@@ -380,6 +380,43 @@ async def agent_ping_summary(
     }
 
 
+@router.get("/pings/recent")
+async def agents_recent_pings(
+    minutes: int = Query(45, ge=5, le=240),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Per-minute average latency for EVERY agent in one call — feeds the
+    always-on card sparklines without one request per kiosk. Aggregates in SQL."""
+    since = datetime.now(tz=timezone.utc) - timedelta(minutes=minutes)
+    bucket = func.date_trunc("minute", PingSample.ts).label("bucket")
+    rows = (
+        await db.execute(
+            select(
+                PingSample.agent_id,
+                bucket,
+                func.avg(PingSample.rtt_ms).label("avg_rtt"),
+                func.count().label("n"),
+                func.count(PingSample.rtt_ms).label("ok"),
+            )
+            .where(PingSample.ts >= since)
+            .group_by(PingSample.agent_id, bucket)
+            .order_by(PingSample.agent_id, bucket)
+        )
+    ).all()
+    out: dict[str, list] = {}
+    for r in rows:
+        n = int(r.n or 0)
+        ok = int(r.ok or 0)
+        out.setdefault(str(r.agent_id), []).append(
+            {
+                "ts": r.bucket.isoformat() if hasattr(r.bucket, "isoformat") else str(r.bucket),
+                "rtt": round(float(r.avg_rtt), 1) if r.avg_rtt is not None else None,
+                "loss": bool(n and ok < n),
+            }
+        )
+    return out
+
+
 # ── ingest (agent side) ──────────────────────────────────────────────────────
 @router.post("/report", response_model=AgentReportResult)
 async def agent_report(

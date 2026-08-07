@@ -1190,6 +1190,7 @@ function renderFields(b){
         if(!state.devices.length){const hint=document.createElement("span");hint.className="devhint";hint.textContent="add devices ↗";dl.appendChild(hint);}
         g.appendChild(dl);
       }
+      if(window.__nmAssignUI){try{__nmAssignUI(g,b,f,it,i);}catch(_e){}}
     });
     wrap.appendChild(g);
   });
@@ -1381,12 +1382,28 @@ let toastT;function toast(msg){const t=$("toast");t.textContent=msg;t.classList.
 
 setMode("draw");
 </script>
+<style>
+/* NetMonitor device panel */
+#nmPanel{position:fixed;top:110px;right:0;bottom:0;width:280px;z-index:60;background:rgba(10,18,32,.97);border-left:1px solid #24354d;display:none;flex-direction:column;font-size:13px;}
+#nmPanel.open{display:flex;}
+#nmPanel .nmHead{padding:10px 12px;font-weight:bold;border-bottom:1px solid #24354d;display:flex;align-items:center;gap:8px;}
+#nmPanel input{margin:8px 12px;padding:6px 8px;border-radius:6px;border:1px solid #24354d;background:#0d1626;color:#dfe9f5;}
+#nmRows{overflow-y:auto;flex:1;padding:0 6px 12px;}
+.nmRow{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:8px;margin:2px 4px;}
+.nmRow.drag{cursor:grab;}
+.nmRow.drag:hover{background:#15233a;}
+.nmDot{width:9px;height:9px;border-radius:50%;flex-shrink:0;}
+.nmName{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.nmType{color:#8ea3b8;font-size:11px;}
+.nmAssign{display:flex;gap:6px;align-items:center;margin:2px 0 6px 4px;}
+.nmAssign select{max-width:108px;font-size:11px;background:#0d1626;color:#dfe9f5;border:1px solid #24354d;border-radius:5px;padding:2px;}
+.nmAssign .nmDot{width:8px;height:8px;}
+</style>
 <script>
-/* ── NetMonitor cloud shim (embedded mode) ─────────────────────────────────
-   Active only inside the dashboard's Planner tab (?embedded=1&site=<id>).
-   Adds: ☁ Save/Load against /map/plans (aerial stored separately), admin-PIN
-   pickup from the dashboard session, and auto-wiring of the live 5-state
-   device feed (/map/live) into the planner's existing Monitor mode.        */
+/* ── NetMonitor cloud shim v2 ──────────────────────────────────────────────
+   Embedded mode only (?embedded=1&site=). Cloud ☁ Save/Load, admin-PIN pickup,
+   live feed auto-wiring, PLUS: a NetMonitor device panel (drag real UniFi gear
+   onto the map as live markers) and per-item Switch/AP service assignments. */
 (function(){
   const q = new URLSearchParams(location.search);
   if (q.get("embedded") !== "1") return;
@@ -1395,13 +1412,17 @@ setMode("draw");
   const pinHdr = () => { try { const p = sessionStorage.getItem("nm_admin_pin"); return p ? {"X-Admin-Pin": p} : {}; } catch(e){ return {}; } };
   const sig = (u) => (u ? u.length + ":" + u.slice(-64) : null);
   let lastAerialSig = null;
+  window.__nmAssign = window.__nmAssign || {};
+  const nmTypes = {};   // normalized mac -> device_type (ap/switch/gateway)
+  const nMac = (m) => String(m||"").toLowerCase().replace(/[^0-9a-f]/g,"");
 
+  /* ── cloud save/load ── */
   function projectObj(){
     return {version:4, imageDataUrl:null, blocks:state.blocks, links:state.links,
             devices:state.devices, statusFeed:state.statusFeed, nextNum:state.nextNum,
-            seq:state.seq, mseq:state.mseq, show:state.show, view:{rot:state.view.rot}};
+            seq:state.seq, mseq:state.mseq, show:state.show, view:{rot:state.view.rot},
+            nmAssign: window.__nmAssign};
   }
-
   async function cloudSave(){
     try{
       toast("Saving to cloud…");
@@ -1421,7 +1442,6 @@ setMode("draw");
       return true;
     }catch(e){ toast("Cloud save failed — "+e.message); return false; }
   }
-
   async function cloudLoad(quiet){
     try{
       const r = await fetch("/map/plans/"+SITE);
@@ -1429,6 +1449,7 @@ setMode("draw");
       if (!r.ok){ if(!quiet) toast("Cloud load failed (HTTP "+r.status+")."); return false; }
       const plan = await r.json();
       const proj = plan.data || {};
+      window.__nmAssign = proj.nmAssign || {};
       if (plan.has_aerial){
         const ra = await fetch("/map/plans/"+SITE+"/aerial");
         if (ra.ok){
@@ -1447,6 +1468,7 @@ setMode("draw");
     }catch(e){ if(!quiet) toast("Cloud load failed — "+e.message); return false; }
   }
 
+  /* ── live feed wiring + type map ── */
   function wireFeed(){
     try{
       state.statusFeed = state.statusFeed || {};
@@ -1457,9 +1479,113 @@ setMode("draw");
       const fa = document.getElementById("feedAuto");
       if (fa && !fa.checked){ fa.checked = true; fa.dispatchEvent(new Event("change", {bubbles:true})); }
       else if (typeof fetchStatus === "function"){ fetchStatus(); }
-    }catch(e){ /* feed wiring is best-effort */ }
+    }catch(e){}
+  }
+  async function pullTypes(){
+    try{
+      const r = await fetch("/map/live/"+SITE);
+      if (!r.ok) return;
+      const j = await r.json();
+      (j.devices||[]).forEach(d => { if (d.mac) nmTypes[nMac(d.mac)] = d.type || null; });
+      renderPanel();
+    }catch(e){}
   }
 
+  /* ── device panel (drag real gear onto the map) ── */
+  let pendingDrop = null, mseqBefore = 0;
+  function fieldFor(mac){ const t = nmTypes[nMac(mac)]; return t === "ap" ? "AP" : "SB"; }
+  function renderPanel(){
+    const rows = document.getElementById("nmRows");
+    if (!rows) return;
+    const qv = (document.getElementById("nmSearch")?.value || "").toLowerCase();
+    const linked = new Set();
+    state.blocks.forEach(b => ["SB","AP"].forEach(k => (b.items[k]||[]).forEach(it => { if(it.deviceMac) linked.add(nMac(it.deviceMac)); })));
+    rows.innerHTML = "";
+    state.devices
+      .filter(d => !qv || (d.name||"").toLowerCase().includes(qv) || (d.ip||"").includes(qv) || (d.mac||"").toLowerCase().includes(qv))
+      .forEach(d => {
+        const t = nmTypes[nMac(d.mac)];
+        const draggable = t === "ap" || t === "switch" || t === "gateway";
+        const row = document.createElement("div");
+        row.className = "nmRow" + (draggable ? " drag" : "");
+        row.title = draggable ? "Drag onto the map — drops as a live " + (t === "ap" ? "AP" : "SB") + " marker" : (d.mac||"");
+        const dot = document.createElement("span"); dot.className = "nmDot";
+        dot.style.background = statusColor(d.status || "");
+        const nm = document.createElement("span"); nm.className = "nmName";
+        nm.textContent = (linked.has(nMac(d.mac)) ? "✓ " : "") + (d.name || d.mac);
+        const ty = document.createElement("span"); ty.className = "nmType";
+        ty.textContent = t || "";
+        row.appendChild(dot); row.appendChild(nm); row.appendChild(ty);
+        if (draggable){
+          row.addEventListener("mousedown", (e) => {
+            pendingDrop = { mac: d.mac, name: d.name || d.mac };
+            mseqBefore = state.mseq;
+            startPlacing(fieldFor(d.mac), e);
+          });
+        }
+        rows.appendChild(row);
+      });
+  }
+  // After the app's own mouseup creates the marker, link it to the dragged device.
+  window.addEventListener("mouseup", () => {
+    if (!pendingDrop) return;
+    const dev = pendingDrop; pendingDrop = null;
+    setTimeout(() => {
+      if (state.mseq > mseqBefore){
+        const r = markerById(state.mseq);
+        if (r){ r.it.deviceMac = dev.mac; r.it.name = dev.name; render(); if (typeof renderList === "function") renderList(); }
+      }
+    }, 0);
+  });
+  function buildPanel(){
+    if (document.getElementById("nmPanel")) return;
+    const p = document.createElement("div"); p.id = "nmPanel";
+    p.innerHTML = '<div class="nmHead">🖧 NetMonitor devices<span style="flex:1"></span><button class="btn ghost sm" id="nmClose">✕</button></div>' +
+                  '<input id="nmSearch" placeholder="Search name / IP / MAC…">' +
+                  '<div id="nmRows"></div>';
+    document.body.appendChild(p);
+    document.getElementById("nmClose").addEventListener("click", () => p.classList.remove("open"));
+    document.getElementById("nmSearch").addEventListener("input", renderPanel);
+    const devBtn = document.getElementById("devBtn");
+    if (devBtn){
+      const b = document.createElement("button");
+      b.className = devBtn.className; b.id = "nmPanelBtn"; b.textContent = "📥 NetMonitor";
+      b.title = "Device palette — drag real UniFi gear onto the map as live markers";
+      b.addEventListener("click", () => { p.classList.toggle("open"); renderPanel(); });
+      devBtn.insertAdjacentElement("afterend", b);
+    }
+  }
+
+  /* ── per-item Switch/AP service assignment (hooked from renderFields) ── */
+  const aKey = (b, f, it) => (f.placed && it && it.id) ? "id:" + it.id : "nm:" + (b.id||0) + ":" + f.key + ":" + (typeof it === "string" ? it : (it && it.name) || "");
+  window.__nmAssignUI = function(g, b, f, it, i){
+    const key = aKey(b, f, it);
+    const cur = window.__nmAssign[key] || {};
+    const wrap = document.createElement("div"); wrap.className = "nmAssign";
+    const mk = (kind, label, types) => {
+      const dot = document.createElement("span"); dot.className = "nmDot";
+      const d = cur[kind] ? (typeof deviceByMac === "function" && deviceByMac(cur[kind])) : null;
+      dot.style.background = statusColor((d && d.status) || "");
+      const sel = document.createElement("select");
+      const opts = state.devices.filter(dv => types.includes(nmTypes[nMac(dv.mac)]));
+      sel.innerHTML = '<option value="">' + label + '</option>' +
+        opts.map(dv => '<option value="' + dv.mac + '"' + (nMac(dv.mac) === nMac(cur[kind]||"") ? " selected" : "") + '>' +
+          (dv.name || dv.mac) + (dv.status ? " · " + dv.status : "") + '</option>').join("");
+      sel.addEventListener("change", () => {
+        const a = window.__nmAssign[key] = window.__nmAssign[key] || {};
+        if (sel.value) a[kind] = sel.value; else delete a[kind];
+        if (!a.sw && !a.ap) delete window.__nmAssign[key];
+        const dd = sel.value && deviceByMac(sel.value);
+        dot.style.background = statusColor((dd && dd.status) || "");
+      });
+      wrap.appendChild(dot); wrap.appendChild(sel);
+    };
+    mk("sw", "— switch —", ["switch", "gateway"]);
+    mk("ap", "— AP —", ["ap"]);
+    g.appendChild(wrap);
+  };
+
+  /* ── buttons + boot ── */
   function addButtons(){
     const saveBtn = document.getElementById("saveBtn");
     if (!saveBtn || document.getElementById("cloudSaveBtn")) return;
@@ -1469,15 +1595,18 @@ setMode("draw");
       b.addEventListener("click", fn); return b;
     };
     saveBtn.insertAdjacentElement("afterend",
-      mk("cloudLoadBtn", "☁ Load", "Load this site's plan from the NetMonitor cloud", ()=>cloudLoad(false)));
+      mk("cloudLoadBtn", "☁ Load", "Load this site's plan from the NetMonitor cloud", () => cloudLoad(false)));
     saveBtn.insertAdjacentElement("afterend",
       mk("cloudSaveBtn", "☁ Save", "Save this plan to the NetMonitor cloud (admin PIN)", cloudSave));
   }
-
-  const boot = () => { addButtons(); cloudLoad(true).then((ok)=>{ if(!ok) wireFeed(); }); };
+  const boot = () => {
+    addButtons(); buildPanel();
+    pullTypes(); setInterval(pullTypes, 60000);
+    cloudLoad(true).then((ok) => { if (!ok) wireFeed(); });
+  };
   if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", boot);
   else boot();
-  window.__nmShim = { cloudSave, cloudLoad, wireFeed, SITE };
+  window.__nmShim = { cloudSave, cloudLoad, wireFeed, renderPanel, pullTypes, SITE };
 })();
 </script>
 

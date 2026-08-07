@@ -180,6 +180,7 @@ async def live_feed(site_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> d
                 "model": d.model,
                 "ip": d.ip,
                 "status": status,
+                "type": d.device_type,
                 "latency": d.local_rtt_ms,
                 "unifi_state": ("ONLINE" if d.is_online else "OFFLINE") if d.is_online is not None else None,
             }

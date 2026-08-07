@@ -1381,5 +1381,105 @@ let toastT;function toast(msg){const t=$("toast");t.textContent=msg;t.classList.
 
 setMode("draw");
 </script>
+<script>
+/* ── NetMonitor cloud shim (embedded mode) ─────────────────────────────────
+   Active only inside the dashboard's Planner tab (?embedded=1&site=<id>).
+   Adds: ☁ Save/Load against /map/plans (aerial stored separately), admin-PIN
+   pickup from the dashboard session, and auto-wiring of the live 5-state
+   device feed (/map/live) into the planner's existing Monitor mode.        */
+(function(){
+  const q = new URLSearchParams(location.search);
+  if (q.get("embedded") !== "1") return;
+  const SITE = q.get("site") || "";
+  if (!SITE) return;
+  const pinHdr = () => { try { const p = sessionStorage.getItem("nm_admin_pin"); return p ? {"X-Admin-Pin": p} : {}; } catch(e){ return {}; } };
+  const sig = (u) => (u ? u.length + ":" + u.slice(-64) : null);
+  let lastAerialSig = null;
+
+  function projectObj(){
+    return {version:4, imageDataUrl:null, blocks:state.blocks, links:state.links,
+            devices:state.devices, statusFeed:state.statusFeed, nextNum:state.nextNum,
+            seq:state.seq, mseq:state.mseq, show:state.show, view:{rot:state.view.rot}};
+  }
+
+  async function cloudSave(){
+    try{
+      toast("Saving to cloud…");
+      const r = await fetch("/map/plans/"+SITE, {method:"PUT",
+        headers:Object.assign({"Content-Type":"application/json"}, pinHdr()),
+        body: JSON.stringify({name:"Site plan", schema_version:4, data: projectObj()})});
+      if (r.status === 401){ toast("Admin PIN needed — unlock via the dashboard (⚙) first."); return false; }
+      if (!r.ok){ toast("Cloud save failed (HTTP "+r.status+")."); return false; }
+      if (state.imageDataUrl && sig(state.imageDataUrl) !== lastAerialSig){
+        const blob = await (await fetch(state.imageDataUrl)).blob();
+        const r2 = await fetch("/map/plans/"+SITE+"/aerial", {method:"PUT",
+          headers:Object.assign({"Content-Type": blob.type || "image/jpeg"}, pinHdr()), body: blob});
+        if (r2.ok) lastAerialSig = sig(state.imageDataUrl);
+        else { toast("Plan saved; aerial upload failed (HTTP "+r2.status+")."); return false; }
+      }
+      toast("Saved to cloud ✓");
+      return true;
+    }catch(e){ toast("Cloud save failed — "+e.message); return false; }
+  }
+
+  async function cloudLoad(quiet){
+    try{
+      const r = await fetch("/map/plans/"+SITE);
+      if (r.status === 404){ if(!quiet) toast("No cloud plan for this site yet — build one and ☁ Save."); return false; }
+      if (!r.ok){ if(!quiet) toast("Cloud load failed (HTTP "+r.status+")."); return false; }
+      const plan = await r.json();
+      const proj = plan.data || {};
+      if (plan.has_aerial){
+        const ra = await fetch("/map/plans/"+SITE+"/aerial");
+        if (ra.ok){
+          const blob = await ra.blob();
+          proj.imageDataUrl = await new Promise((res)=>{const fr=new FileReader();fr.onload=()=>res(fr.result);fr.readAsDataURL(blob);});
+          lastAerialSig = sig(proj.imageDataUrl);
+        }
+      }
+      const file = new File([JSON.stringify(proj)], "cloud_project.json", {type:"application/json"});
+      const dt = new DataTransfer(); dt.items.add(file);
+      const inp = document.getElementById("openInput");
+      inp.files = dt.files;
+      inp.dispatchEvent(new Event("change", {bubbles:true}));
+      setTimeout(wireFeed, 900);
+      return true;
+    }catch(e){ if(!quiet) toast("Cloud load failed — "+e.message); return false; }
+  }
+
+  function wireFeed(){
+    try{
+      state.statusFeed = state.statusFeed || {};
+      const url = "/map/live/"+SITE;
+      state.statusFeed.url = url;
+      const fu = document.getElementById("feedUrl");
+      if (fu){ fu.value = url; fu.dispatchEvent(new Event("input", {bubbles:true})); }
+      const fa = document.getElementById("feedAuto");
+      if (fa && !fa.checked){ fa.checked = true; fa.dispatchEvent(new Event("change", {bubbles:true})); }
+      else if (typeof fetchStatus === "function"){ fetchStatus(); }
+    }catch(e){ /* feed wiring is best-effort */ }
+  }
+
+  function addButtons(){
+    const saveBtn = document.getElementById("saveBtn");
+    if (!saveBtn || document.getElementById("cloudSaveBtn")) return;
+    const mk = (id, label, title, fn) => {
+      const b = document.createElement("button");
+      b.id = id; b.className = saveBtn.className; b.textContent = label; b.title = title;
+      b.addEventListener("click", fn); return b;
+    };
+    saveBtn.insertAdjacentElement("afterend",
+      mk("cloudLoadBtn", "☁ Load", "Load this site's plan from the NetMonitor cloud", ()=>cloudLoad(false)));
+    saveBtn.insertAdjacentElement("afterend",
+      mk("cloudSaveBtn", "☁ Save", "Save this plan to the NetMonitor cloud (admin PIN)", cloudSave));
+  }
+
+  const boot = () => { addButtons(); cloudLoad(true).then((ok)=>{ if(!ok) wireFeed(); }); };
+  if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", boot);
+  else boot();
+  window.__nmShim = { cloudSave, cloudLoad, wireFeed, SITE };
+})();
+</script>
+
 </body>
 </html>

@@ -5,6 +5,7 @@ from app.models.device import Device
 from app.models.isp_metric import IspMetric
 from app.models.ping_sample import PingSample
 from app.models.site import Site
+from app.models.site_plan import SitePlan
 from app.models.unifi_console import UnifiConsole
 from app.models.unifi_credential import UnifiCredential
 from app.models.user import User
@@ -16,6 +17,7 @@ __all__ = [
     "IspMetric",
     "PingSample",
     "Site",
+    "SitePlan",
     "UnifiConsole",
     "UnifiCredential",
     "User",

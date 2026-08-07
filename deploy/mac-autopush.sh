@@ -17,3 +17,10 @@ find .git -maxdepth 1 -name '*.lock' -mmin +2 -delete 2>/dev/null
 
 echo "== $(date '+%F %T') pushing $AHEAD commit(s)" >>"$LOG"
 git push origin v2 >>"$LOG" 2>&1
+
+# Private mirror: if a remote named "backup" is configured (URL lives only in
+# this machine's .git/config), keep it in sync too — full history, all branches
+# and tags. Best-effort; failures never block the production push.
+if git remote get-url backup >/dev/null 2>&1; then
+  git push backup 'refs/heads/*' 'refs/tags/*' >>"$LOG" 2>&1 || echo "backup mirror push failed (non-fatal)" >>"$LOG"
+fi

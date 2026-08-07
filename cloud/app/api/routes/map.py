@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import current_user, require_admin
 from app.core.db import get_db
 from app.models import Site
 
@@ -23,7 +24,7 @@ class PositionsIn(BaseModel):
 
 
 @router.put("/positions", status_code=204)
-async def save_positions(body: PositionsIn, db: AsyncSession = Depends(get_db)) -> None:
+async def save_positions(body: PositionsIn, db: AsyncSession = Depends(get_db), _admin=Depends(require_admin)) -> None:
     """Save fleet-map node positions. Sent on drag-drop; idempotent upsert."""
     ids = [p.site_id for p in body.positions]
     if not ids:
@@ -45,7 +46,6 @@ async def save_positions(body: PositionsIn, db: AsyncSession = Depends(get_db)) 
 import base64  # noqa: E402
 from fastapi import Header, HTTPException, Request, Response  # noqa: E402
 
-from app.api.routes.adminpin import require_admin_pin  # noqa: E402
 from app.models import Device, SitePlan  # noqa: E402
 
 MAX_PLAN_BYTES = 2 * 1024 * 1024
@@ -59,7 +59,7 @@ class PlanIn(BaseModel):
 
 
 @router.get("/plans")
-async def list_plans(db: AsyncSession = Depends(get_db)) -> list[dict]:
+async def list_plans(db: AsyncSession = Depends(get_db), _user=Depends(current_user)) -> list[dict]:
     plans = (await db.execute(select(SitePlan))).scalars().all()
     sites = {s.id: s.name for s in (await db.execute(select(Site))).scalars()}
     return [
@@ -76,7 +76,7 @@ async def list_plans(db: AsyncSession = Depends(get_db)) -> list[dict]:
 
 
 @router.get("/plans/{site_id}")
-async def get_plan(site_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> dict:
+async def get_plan(site_id: uuid.UUID, db: AsyncSession = Depends(get_db), _user=Depends(current_user)) -> dict:
     plan = (
         await db.execute(select(SitePlan).where(SitePlan.site_id == site_id))
     ).scalars().first()
@@ -96,9 +96,8 @@ async def save_plan(
     site_id: uuid.UUID,
     body: PlanIn,
     db: AsyncSession = Depends(get_db),
-    x_admin_pin: str | None = Header(default=None),
+    _admin=Depends(require_admin),
 ) -> None:
-    await require_admin_pin(db, x_admin_pin)
     if await db.get(Site, site_id) is None:
         raise HTTPException(status_code=404, detail="Unknown site.")
     import json as _json
@@ -117,7 +116,7 @@ async def save_plan(
 
 
 @router.get("/plans/{site_id}/aerial")
-async def get_aerial(site_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> Response:
+async def get_aerial(site_id: uuid.UUID, db: AsyncSession = Depends(get_db), _user=Depends(current_user)) -> Response:
     plan = (
         await db.execute(select(SitePlan).where(SitePlan.site_id == site_id))
     ).scalars().first()
@@ -131,9 +130,8 @@ async def save_aerial(
     site_id: uuid.UUID,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    x_admin_pin: str | None = Header(default=None),
+    _admin=Depends(require_admin),
 ) -> None:
-    await require_admin_pin(db, x_admin_pin)
     if await db.get(Site, site_id) is None:
         raise HTTPException(status_code=404, detail="Unknown site.")
     raw = await request.body()
@@ -153,7 +151,7 @@ async def save_aerial(
 
 
 @router.get("/live/{site_id}")
-async def live_feed(site_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> dict:
+async def live_feed(site_id: uuid.UUID, db: AsyncSession = Depends(get_db), _user=Depends(current_user)) -> dict:
     """Live device status in the shape SitePlanner's Monitor mode consumes.
     Status vocabulary matches the dashboard's 5-state exactly."""
     from datetime import datetime, timezone

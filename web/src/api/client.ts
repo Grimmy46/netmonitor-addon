@@ -141,32 +141,16 @@ export interface ConsoleSyncResult {
   errors: { console: string; error: string }[];
 }
 
-/** Admin PIN for this browser session — gates destructive/config actions.
- * Kept in sessionStorage so a refresh doesn't re-prompt; cleared on tab close. */
-export const adminAuth = {
-  get pin(): string | null {
-    try {
-      return sessionStorage.getItem("nm_admin_pin");
-    } catch {
-      return null;
-    }
-  },
-  set(pin: string | null) {
-    try {
-      if (pin) sessionStorage.setItem("nm_admin_pin", pin);
-      else sessionStorage.removeItem("nm_admin_pin");
-    } catch {
-      /* ignore */
-    }
-  },
-};
-
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const pin = adminAuth.pin;
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(pin ? { "X-Admin-Pin": pin } : {}) },
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
     ...init,
   });
+  if (res.status === 401 && !path.startsWith("/auth/")) {
+    // Session gone (expired / signed out elsewhere) — bounce to the login page.
+    window.dispatchEvent(new Event("nm-unauthorized"));
+  }
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
     try {
@@ -256,16 +240,38 @@ export const api = {
   regenerateEnrollmentPin: () =>
     req<{ pin: string }>("/agents/enrollment/regenerate", { method: "POST" }),
 
-  // Dashboard admin PIN (second gate on top of basic-auth for mutations).
-  pinStatus: () => req<{ set: boolean }>("/integrations/pin/status"),
-  pinVerify: (pin: string) =>
-    req<{ set: boolean }>("/integrations/pin/verify", {
-      method: "POST",
-      body: JSON.stringify({ pin }),
-    }),
-  pinSet: (pin: string, current?: string) =>
-    req<{ set: boolean }>("/integrations/pin", {
-      method: "POST",
-      body: JSON.stringify({ pin, current: current ?? null }),
-    }),
+  // Accounts & sessions.
+  authStatus: () => req<AuthStatus>("/auth/status"),
+  setup: (email: string, password: string) =>
+    req<AuthUser>("/auth/setup", { method: "POST", body: JSON.stringify({ email, password }) }),
+  login: (email: string, password: string) =>
+    req<AuthUser>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
+  logout: () => req<void>("/auth/logout", { method: "POST" }),
+  me: () => req<AuthUser>("/auth/me"),
+  users: () => req<AuthUser[]>("/auth/users"),
+  createUser: (email: string, password: string, role: string) =>
+    req<AuthUser>("/auth/users", { method: "POST", body: JSON.stringify({ email, password, role }) }),
+  deleteUser: (id: string) => req<void>(`/auth/users/${id}`, { method: "DELETE" }),
+  setUserPassword: (id: string, password: string) =>
+    req<void>(`/auth/users/${id}/password`, { method: "POST", body: JSON.stringify({ password }) }),
+  setUserRole: (id: string, role: string) =>
+    req<AuthUser>(`/auth/users/${id}/role`, { method: "POST", body: JSON.stringify({ role }) }),
 };
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  role: "admin" | "viewer";
+  is_active: boolean;
+}
+
+export interface AuthStatus {
+  setup_required: boolean;
+  authenticated: boolean;
+  user: AuthUser | null;
+}
+
+/** Set once at app bootstrap; components read the role for UI gating.
+ * (The SERVER enforces permissions regardless — this only shapes the UI.) */
+export const session: { user: AuthUser | null } = { user: null };
+export const isAdmin = () => session.user?.role === "admin";

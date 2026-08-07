@@ -35,7 +35,7 @@ from app.schemas import (
     ProbeTarget,
     ProbeTargetsOut,
 )
-from app.api.routes.adminpin import require_admin_pin
+from app.core.auth import current_user, require_admin
 from app.services.sync import get_or_create_account
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -169,9 +169,8 @@ def _agent_out(a: Agent, site_name: str | None, latest_rtt: float | None) -> Age
 async def create_agent(
     payload: AgentCreate,
     db: AsyncSession = Depends(get_db),
-    x_admin_pin: str | None = Header(default=None),
+    _admin=Depends(require_admin),
 ) -> AgentOut:
-    await require_admin_pin(db, x_admin_pin)
     """Create a *station* — a named slot a kiosk claims on first run. No token is
     issued here; claiming (via the enrollment PIN) mints the token on the kiosk."""
     account = await get_or_create_account(db)
@@ -198,9 +197,8 @@ async def create_agent(
 async def bulk_create_stations(
     body: BulkStationsIn,
     db: AsyncSession = Depends(get_db),
-    x_admin_pin: str | None = Header(default=None),
+    _admin=Depends(require_admin),
 ) -> BulkResult:
-    await require_admin_pin(db, x_admin_pin)
     """Create many stations at once (duplicates by name are skipped)."""
     account = await get_or_create_account(db)
     existing = {a.name for a in (await db.execute(select(Agent))).scalars()}
@@ -223,9 +221,8 @@ async def bulk_create_stations(
 async def release_agent(
     agent_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    x_admin_pin: str | None = Header(default=None),
+    _admin=Depends(require_admin),
 ) -> AgentOut:
-    await require_admin_pin(db, x_admin_pin)
     """Un-claim a station so a (different) kiosk can enroll as it again."""
     agent = await db.get(Agent, agent_id)
     if agent is None:
@@ -247,9 +244,8 @@ async def set_agent_site(
     agent_id: uuid.UUID,
     body: AgentSiteIn,
     db: AsyncSession = Depends(get_db),
-    x_admin_pin: str | None = Header(default=None),
+    _admin=Depends(require_admin),
 ) -> AgentOut:
-    await require_admin_pin(db, x_admin_pin)
     """Link a station to the UniFi site it should probe on its LAN (or null to
     unlink). This is what tells the agent which devices to ping."""
     agent = await db.get(Agent, agent_id)
@@ -268,7 +264,7 @@ async def set_agent_site(
 
 
 @router.get("", response_model=list[AgentOut])
-async def list_agents(db: AsyncSession = Depends(get_db)) -> list[AgentOut]:
+async def list_agents(db: AsyncSession = Depends(get_db), _user=Depends(current_user)) -> list[AgentOut]:
     agents = (await db.execute(select(Agent).order_by(Agent.name))).scalars().all()
     sites = {s.id: s.name for s in (await db.execute(select(Site))).scalars()}
     out: list[AgentOut] = []
@@ -289,9 +285,8 @@ async def list_agents(db: AsyncSession = Depends(get_db)) -> list[AgentOut]:
 async def delete_agent(
     agent_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    x_admin_pin: str | None = Header(default=None),
+    _admin=Depends(require_admin),
 ) -> None:
-    await require_admin_pin(db, x_admin_pin)
     agent = await db.get(Agent, agent_id)
     if agent is None:
         return
@@ -305,6 +300,7 @@ async def agent_pings(
     agent_id: uuid.UUID,
     limit: int = Query(300, ge=1, le=5000),
     db: AsyncSession = Depends(get_db),
+    _user=Depends(current_user),
 ) -> list[PingPoint]:
     if await db.get(Agent, agent_id) is None:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -327,6 +323,7 @@ async def agent_ping_summary(
     agent_id: uuid.UUID,
     hours: int = Query(24, ge=1, le=168),
     db: AsyncSession = Depends(get_db),
+    _user=Depends(current_user),
 ) -> dict:
     """Aggregate a window of ping samples (default 24h) for the PDF report.
 
@@ -433,6 +430,7 @@ async def agent_ping_summary(
 async def agents_recent_pings(
     minutes: int = Query(45, ge=5, le=240),
     db: AsyncSession = Depends(get_db),
+    _user=Depends(current_user),
 ) -> dict:
     """Per-minute average latency for EVERY agent in one call — feeds the
     always-on card sparklines without one request per kiosk. Aggregates in SQL."""
@@ -619,9 +617,8 @@ async def agent_payload(
 @router.get("/enrollment", response_model=EnrollmentPinOut)
 async def get_enrollment_pin(
     db: AsyncSession = Depends(get_db),
-    x_admin_pin: str | None = Header(default=None),
+    _admin=Depends(require_admin),
 ) -> EnrollmentPinOut:
-    await require_admin_pin(db, x_admin_pin)
     _, pin = await _get_pin(db)
     return EnrollmentPinOut(pin=pin)
 
@@ -629,9 +626,8 @@ async def get_enrollment_pin(
 @router.post("/enrollment/regenerate", response_model=EnrollmentPinOut)
 async def regenerate_enrollment_pin(
     db: AsyncSession = Depends(get_db),
-    x_admin_pin: str | None = Header(default=None),
+    _admin=Depends(require_admin),
 ) -> EnrollmentPinOut:
-    await require_admin_pin(db, x_admin_pin)
     account = await get_or_create_account(db)
     account.enrollment_pin = _gen_pin()
     await db.commit()

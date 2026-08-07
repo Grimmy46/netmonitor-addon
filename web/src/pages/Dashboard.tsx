@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, type Site, type UnifiStatus } from "../api/client";
-import { PinPrompt, needsPinPrompt } from "../components/PinPrompt";
+import { api, isAdmin, session, type Site, type UnifiStatus } from "../api/client";
 import { PlannerView } from "../components/PlannerView";
 import { PulseLogo } from "../components/PulseLogo";
 import { AgentsView } from "../components/AgentsView";
@@ -33,11 +32,14 @@ export function Dashboard() {
   const [version, setVersion] = useState("");
   const [error, setError] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [pinAsk, setPinAsk] = useState(false);
 
-  async function openSettings() {
-    if (await needsPinPrompt()) setPinAsk(true);
-    else setSettingsOpen(true);
+  function openSettings() {
+    setSettingsOpen(true);
+  }
+
+  async function signOut() {
+    try { await api.logout(); } catch { /* ignore */ }
+    window.dispatchEvent(new Event("nm-unauthorized"));
   }
   const [syncing, setSyncing] = useState(false);
   const [view, setView] = useState<"fleet" | "map" | "dormant" | "kiosks" | "planner">("fleet");
@@ -127,7 +129,9 @@ export function Dashboard() {
         ) : null}
         <div className="spacer" />
         <ThemeToggle />
-        <button className="btn" onClick={openSettings}>⚙ Settings</button>
+        <span className="sub" style={{ margin: "0 4px" }}>{session.user?.email}</span>
+        {isAdmin() ? <button className="btn" onClick={openSettings}>⚙ Settings</button> : null}
+        <button className="btn" onClick={signOut} title="Sign out">⎋</button>
       </header>
 
       {siteRoute ? (
@@ -205,12 +209,6 @@ export function Dashboard() {
       </div>
       )}
 
-      {pinAsk ? (
-        <PinPrompt
-          onUnlocked={() => { setPinAsk(false); setSettingsOpen(true); }}
-          onClose={() => setPinAsk(false)}
-        />
-      ) : null}
       {settingsOpen ? (
         <SettingsModal
           status={status}

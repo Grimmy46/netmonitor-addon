@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { adminAuth, api, type Agent, type UnifiConsole, type UnifiStatus } from "../api/client";
+import { api, type Agent, type AuthUser, type UnifiConsole, type UnifiStatus } from "../api/client";
 
 export function SettingsModal({
   status,
@@ -30,33 +30,59 @@ export function SettingsModal({
   const [pin, setPin] = useState<string | null>(null);
   const [pinShown, setPinShown] = useState(false);
 
-  // ── Dashboard admin PIN ─────────────────────────────────────────────────--
-  const [adminSet, setAdminSet] = useState<boolean | null>(null);
-  const [apNew, setApNew] = useState("");
-  const [apCurrent, setApCurrent] = useState("");
-  const [apBusy, setApBusy] = useState(false);
-  const [apMsg, setApMsg] = useState("");
+  // ── Users (accounts & roles) ────────────────────────────────────────────--
+  const [users, setUsers] = useState<AuthUser[]>([]);
+  const [uEmail, setUEmail] = useState("");
+  const [uPass, setUPass] = useState("");
+  const [uRole, setURole] = useState("viewer");
+  const [uBusy, setUBusy] = useState(false);
+  const [uMsg, setUMsg] = useState("");
 
-  async function saveAdminPin() {
-    const next = apNew.trim();
-    if (!/^\d{4,8}$/.test(next)) {
-      setApMsg("PIN must be 4–8 digits.");
+  const loadUsers = () => api.users().then(setUsers).catch(() => {});
+
+  async function addUser() {
+    if (!uEmail.trim() || uPass.length < 8) {
+      setUMsg("Email + password (min 8 chars) required.");
       return;
     }
-    setApBusy(true);
-    setApMsg("");
+    setUBusy(true);
+    setUMsg("");
     try {
-      await api.pinSet(next, adminSet ? apCurrent.trim() : undefined);
-      adminAuth.set(next); // this browser stays unlocked with the new PIN
-      setAdminSet(true);
-      setApNew("");
-      setApCurrent("");
-      setApMsg("Dashboard PIN saved — changes now require it.");
+      await api.createUser(uEmail.trim(), uPass, uRole);
+      setUEmail(""); setUPass("");
+      await loadUsers();
+      setUMsg("Account created.");
     } catch (e) {
-      setApMsg(String(e instanceof Error ? e.message : e));
+      setUMsg(String(e instanceof Error ? e.message : e));
     } finally {
-      setApBusy(false);
+      setUBusy(false);
     }
+  }
+
+  async function removeUser(id: string) {
+    setUBusy(true);
+    setUMsg("");
+    try { await api.deleteUser(id); await loadUsers(); }
+    catch (e) { setUMsg(String(e instanceof Error ? e.message : e)); }
+    finally { setUBusy(false); }
+  }
+
+  async function changeRole(id: string, role: string) {
+    setUBusy(true);
+    setUMsg("");
+    try { await api.setUserRole(id, role); await loadUsers(); }
+    catch (e) { setUMsg(String(e instanceof Error ? e.message : e)); }
+    finally { setUBusy(false); }
+  }
+
+  async function resetPassword(id: string, email: string) {
+    const p = window.prompt(`New password for ${email} (min 8 chars):`);
+    if (!p) return;
+    setUBusy(true);
+    setUMsg("");
+    try { await api.setUserPassword(id, p); setUMsg(`Password updated for ${email}.`); }
+    catch (e) { setUMsg(String(e instanceof Error ? e.message : e)); }
+    finally { setUBusy(false); }
   }
 
   async function loadConsoles() {
@@ -70,7 +96,7 @@ export function SettingsModal({
     loadConsoles();
     api.agents().then(setAgents).catch(() => {});
     api.enrollmentPin().then((r) => setPin(r.pin)).catch(() => {});
-    api.pinStatus().then((r) => setAdminSet(r.set)).catch(() => setAdminSet(null));
+    loadUsers();
   }, []);
 
   async function regenPin() {
@@ -141,43 +167,43 @@ export function SettingsModal({
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h2>Settings</h2>
 
-        {/* ── Dashboard admin PIN ─────────────────────────────────────────── */}
-        <h3 style={{ margin: "4px 0 6px", fontSize: 15 }}>Dashboard PIN</h3>
+        {/* ── Users & roles ───────────────────────────────────────────────── */}
+        <h3 style={{ margin: "4px 0 6px", fontSize: 15 }}>Users</h3>
         <p style={{ marginTop: 0 }}>
-          {adminSet
-            ? "Changing or deleting anything on this dashboard requires this PIN."
-            : "No PIN set — anyone with dashboard access can change or delete things. Create one to lock the admin actions."}
+          <strong>Admins</strong> can change anything; <strong>viewers</strong> can watch
+          everything but touch nothing. Server-enforced.
         </p>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
-          {adminSet ? (
-            <input
-              type="password"
-              inputMode="numeric"
-              autoComplete="off"
-              placeholder="Current PIN"
-              value={apCurrent}
-              onChange={(e) => setApCurrent(e.target.value.replace(/\D/g, "").slice(0, 8))}
-              style={{ width: 120 }}
-            />
-          ) : null}
-          <input
-            type="password"
-            inputMode="numeric"
-            autoComplete="off"
-            placeholder={adminSet ? "New PIN (4–8 digits)" : "New PIN (4–8 digits)"}
-            value={apNew}
-            onChange={(e) => setApNew(e.target.value.replace(/\D/g, "").slice(0, 8))}
-            style={{ width: 160 }}
-          />
-          <button
-            className="btn btn-primary"
-            onClick={saveAdminPin}
-            disabled={apBusy || apNew.trim().length < 4 || (adminSet === true && apCurrent.trim().length < 4)}
-          >
-            {apBusy ? "Saving…" : adminSet ? "Change PIN" : "Create PIN"}
-          </button>
+        <div style={{ marginBottom: 10 }}>
+          {users.map((u) => (
+            <div key={u.id} className="banner" style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <strong style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{u.email}</strong>
+              <div className="spacer" style={{ flex: 1 }} />
+              <select
+                value={u.role}
+                onChange={(e) => changeRole(u.id, e.target.value)}
+                disabled={uBusy}
+                style={{ padding: "3px 6px" }}
+              >
+                <option value="admin">admin</option>
+                <option value="viewer">viewer</option>
+              </select>
+              <button className="btn" onClick={() => resetPassword(u.id, u.email)} disabled={uBusy}>Password</button>
+              <button className="btn" onClick={() => removeUser(u.id)} disabled={uBusy}>Remove</button>
+            </div>
+          ))}
         </div>
-        {apMsg ? <div className="banner" style={{ marginBottom: 12 }}>{apMsg}</div> : null}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 6 }}>
+          <input type="email" placeholder="email" autoComplete="off" value={uEmail}
+            onChange={(e) => setUEmail(e.target.value)} style={{ flex: 1, minWidth: 140 }} />
+          <input type="password" placeholder="password (8+)" autoComplete="new-password" value={uPass}
+            onChange={(e) => setUPass(e.target.value)} style={{ width: 140 }} />
+          <select value={uRole} onChange={(e) => setURole(e.target.value)} style={{ padding: "6px" }}>
+            <option value="viewer">viewer</option>
+            <option value="admin">admin</option>
+          </select>
+          <button className="btn btn-primary" onClick={addUser} disabled={uBusy}>Add user</button>
+        </div>
+        {uMsg ? <div className="banner" style={{ marginBottom: 12 }}>{uMsg}</div> : null}
 
         <hr style={{ border: "none", borderTop: "1px solid var(--line)", margin: "8px 0 16px" }} />
 

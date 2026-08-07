@@ -60,14 +60,7 @@ ENV
   chmod 600 .env
 fi
 
-echo "== dashboard password (basic-auth at the edge) =="
-if [ ! -f .dashpass ]; then
-  echo "FATAL: /opt/netmonitor/.dashpass is missing — refusing to silently generate a new dashboard password." >&2
-  echo "Create it first:  sudo bash -c 'read -s -p \"Password: \" P; echo; printf \"%s\" \"$P\" > .dashpass; chmod 600 .dashpass'" >&2
-  exit 1
-fi
-DASHPASS=$(cat .dashpass)
-HASH=$(caddy hash-password --plaintext "$DASHPASS")
+echo "== edge auth: retired (app-level accounts + sessions now) =="
 
 echo "== build the React app to static (same-origin API) =="
 docker run --rm -v "$APP/web":/app -w /app node:20-alpine \
@@ -81,29 +74,17 @@ cat > /etc/caddy/Caddyfile <<CADDY
 $DOMAIN {
     encode zstd gzip
 
-    # Site agents hit these with their own X-Agent-Token (verified at the app
-    # layer): report (push samples), version + payload (self-update). They are
-    # exempt from the dashboard basic-auth since agents can't do interactive
-    # auth. Everything else — including the agent MANAGEMENT endpoints — stays
-    # behind basic-auth.
-    @agentapi path /agents/report /agents/payload /agents/version /agents/enroll/* /agents/targets /agents/device-report
-    handle @agentapi {
+    # Auth lives in the app now (login page + session cookies + roles).
+    # Agents authenticate with X-Agent-Token on their own endpoints; every
+    # dashboard data endpoint requires a signed-in session server-side.
+    @api path /health* /sites* /integrations* /map* /agents* /auth* /docs* /openapi.json /redoc*
+    handle @api {
         reverse_proxy 127.0.0.1:8010
     }
-
     handle {
-        basic_auth {
-            admin $HASH
-        }
-        @api path /health* /sites* /integrations* /map* /agents* /docs* /openapi.json /redoc*
-        handle @api {
-            reverse_proxy 127.0.0.1:8010
-        }
-        handle {
-            root * $APP/web/dist
-            try_files {path} /index.html
-            file_server
-        }
+        root * $APP/web/dist
+        try_files {path} /index.html
+        file_server
     }
 }
 CADDY
@@ -112,6 +93,6 @@ systemctl reload caddy
 echo
 echo "===================== DONE ====================="
 echo " NetMonitor is live at:  https://$DOMAIN"
-echo " Login:  admin  /  $DASHPASS"
+echo " Sign in with your NetMonitor account (first visit creates the admin)."
 echo " Then open Settings and paste a valid UniFi owner key."
 echo "================================================"

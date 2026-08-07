@@ -1409,7 +1409,6 @@ setMode("draw");
   if (q.get("embedded") !== "1") return;
   const SITE = q.get("site") || "";
   if (!SITE) return;
-  const pinHdr = () => { try { const p = sessionStorage.getItem("nm_admin_pin"); return p ? {"X-Admin-Pin": p} : {}; } catch(e){ return {}; } };
   const sig = (u) => (u ? u.length + ":" + u.slice(-64) : null);
   let lastAerialSig = null;
   window.__nmAssign = window.__nmAssign || {};
@@ -1427,14 +1426,14 @@ setMode("draw");
     try{
       toast("Saving to cloud…");
       const r = await fetch("/map/plans/"+SITE, {method:"PUT",
-        headers:Object.assign({"Content-Type":"application/json"}, pinHdr()),
+        headers:{"Content-Type":"application/json"},
         body: JSON.stringify({name:"Site plan", schema_version:4, data: projectObj()})});
-      if (r.status === 401){ toast("Admin PIN needed — unlock via the dashboard (⚙) first."); return false; }
+      if (r.status === 401 || r.status === 403){ toast("Saving needs an ADMIN sign-in on the dashboard."); return false; }
       if (!r.ok){ toast("Cloud save failed (HTTP "+r.status+")."); return false; }
       if (state.imageDataUrl && sig(state.imageDataUrl) !== lastAerialSig){
         const blob = await (await fetch(state.imageDataUrl)).blob();
         const r2 = await fetch("/map/plans/"+SITE+"/aerial", {method:"PUT",
-          headers:Object.assign({"Content-Type": blob.type || "image/jpeg"}, pinHdr()), body: blob});
+          headers:{"Content-Type": blob.type || "image/jpeg"}, body: blob});
         if (r2.ok) lastAerialSig = sig(state.imageDataUrl);
         else { toast("Plan saved; aerial upload failed (HTTP "+r2.status+")."); return false; }
       }

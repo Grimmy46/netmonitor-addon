@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.core.auth import current_user
 from app.core.db import get_db
 from app.models import Device, IspMetric, Site
 from app.schemas import DeviceOut, DormantDeviceOut, MetricPoint, SiteOut
@@ -85,7 +86,7 @@ def _device_out(dev: Device, now: datetime, cutoff: datetime) -> DeviceOut:
 
 
 @router.get("", response_model=list[SiteOut])
-async def list_sites(db: AsyncSession = Depends(get_db)) -> list[SiteOut]:
+async def list_sites(db: AsyncSession = Depends(get_db), _user=Depends(current_user)) -> list[SiteOut]:
     cutoff = _dormant_cutoff()
     total = func.count(Device.id)
     online = func.count(Device.id).filter(Device.is_online.is_(True))
@@ -107,7 +108,7 @@ async def list_sites(db: AsyncSession = Depends(get_db)) -> list[SiteOut]:
 
 
 @router.get("/dormant-devices", response_model=list[DormantDeviceOut])
-async def dormant_devices(db: AsyncSession = Depends(get_db)) -> list[DormantDeviceOut]:
+async def dormant_devices(db: AsyncSession = Depends(get_db), _user=Depends(current_user)) -> list[DormantDeviceOut]:
     """Fleet-wide list of dormant devices (offline past the threshold), each
     carrying its site — this powers the Dormant tab. Longest-dead first."""
     now = _now()
@@ -137,7 +138,7 @@ async def dormant_devices(db: AsyncSession = Depends(get_db)) -> list[DormantDev
 
 
 @router.get("/{site_id}", response_model=SiteOut)
-async def get_site(site_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> SiteOut:
+async def get_site(site_id: uuid.UUID, db: AsyncSession = Depends(get_db), _user=Depends(current_user)) -> SiteOut:
     site = await db.get(Site, site_id)
     if site is None:
         raise HTTPException(status_code=404, detail="Site not found")
@@ -161,6 +162,7 @@ async def list_site_devices(
     site_id: uuid.UUID,
     status: str = Query("active", pattern="^(active|dormant|offline|online|all)$"),
     db: AsyncSession = Depends(get_db),
+    _user=Depends(current_user),
 ) -> list[DeviceOut]:
     """Devices for a site. `status` filters server-side:
     active (default, excludes dormant), dormant, offline (active offline only),
@@ -187,6 +189,7 @@ async def site_metrics(
     site_id: uuid.UUID,
     limit: int = Query(200, ge=1, le=2000),
     db: AsyncSession = Depends(get_db),
+    _user=Depends(current_user),
 ) -> list[MetricPoint]:
     if await db.get(Site, site_id) is None:
         raise HTTPException(status_code=404, detail="Site not found")

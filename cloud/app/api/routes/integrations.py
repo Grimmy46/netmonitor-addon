@@ -17,7 +17,7 @@ from app.schemas import (
     UnifiKeyStatus,
     UnifiSyncResult,
 )
-from app.api.routes.adminpin import require_admin_pin
+from app.core.auth import current_user, require_admin
 from app.services.sync import get_or_create_account, sync_all_consoles, sync_unifi
 from app.services.unifi import UnifiError, UnifiSiteManagerClient
 from app.services.unifi_console import (
@@ -30,7 +30,7 @@ router = APIRouter(prefix="/integrations/unifi", tags=["integrations"])
 
 
 @router.get("/status", response_model=UnifiKeyStatus)
-async def unifi_status(db: AsyncSession = Depends(get_db)) -> UnifiKeyStatus:
+async def unifi_status(db: AsyncSession = Depends(get_db), _user=Depends(current_user)) -> UnifiKeyStatus:
     cred = (await db.execute(select(UnifiCredential))).scalars().first()
     if cred is None:
         return UnifiKeyStatus(configured=False)
@@ -46,9 +46,8 @@ async def unifi_status(db: AsyncSession = Depends(get_db)) -> UnifiKeyStatus:
 async def set_unifi_key(
     payload: UnifiKeyIn,
     db: AsyncSession = Depends(get_db),
-    x_admin_pin: str | None = Header(default=None),
+    _admin=Depends(require_admin),
 ) -> UnifiKeyStatus:
-    await require_admin_pin(db, x_admin_pin)
     # Verify the key against UniFi before persisting it.
     try:
         await UnifiSiteManagerClient(payload.api_key).verify()
@@ -70,9 +69,8 @@ async def set_unifi_key(
 @router.delete("/key", status_code=204)
 async def delete_unifi_key(
     db: AsyncSession = Depends(get_db),
-    x_admin_pin: str | None = Header(default=None),
+    _admin=Depends(require_admin),
 ) -> None:
-    await require_admin_pin(db, x_admin_pin)
     cred = (await db.execute(select(UnifiCredential))).scalars().first()
     if cred is not None:
         await db.delete(cred)
@@ -80,7 +78,7 @@ async def delete_unifi_key(
 
 
 @router.post("/sync", response_model=UnifiSyncResult)
-async def unifi_sync(db: AsyncSession = Depends(get_db)) -> UnifiSyncResult:
+async def unifi_sync(db: AsyncSession = Depends(get_db), _user=Depends(current_user)) -> UnifiSyncResult:
     try:
         result = await sync_unifi(db)
     except UnifiError as exc:
@@ -108,7 +106,7 @@ async def _console_out(db: AsyncSession, console: UnifiConsole) -> UnifiConsoleO
 
 
 @router.get("/consoles", response_model=list[UnifiConsoleOut])
-async def list_consoles(db: AsyncSession = Depends(get_db)) -> list[UnifiConsoleOut]:
+async def list_consoles(db: AsyncSession = Depends(get_db), _user=Depends(current_user)) -> list[UnifiConsoleOut]:
     consoles = (
         await db.execute(select(UnifiConsole).order_by(UnifiConsole.label))
     ).scalars().all()
@@ -119,9 +117,8 @@ async def list_consoles(db: AsyncSession = Depends(get_db)) -> list[UnifiConsole
 async def add_console(
     payload: UnifiConsoleIn,
     db: AsyncSession = Depends(get_db),
-    x_admin_pin: str | None = Header(default=None),
+    _admin=Depends(require_admin),
 ) -> UnifiConsoleOut:
-    await require_admin_pin(db, x_admin_pin)
     # Normalize + verify the key against the console before persisting.
     try:
         base = normalize_base_url(payload.base_url)
@@ -151,9 +148,8 @@ async def add_console(
 async def delete_console(
     console_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    x_admin_pin: str | None = Header(default=None),
+    _admin=Depends(require_admin),
 ) -> None:
-    await require_admin_pin(db, x_admin_pin)
     console = await db.get(UnifiConsole, console_id)
     if console is None:
         return
@@ -169,6 +165,6 @@ async def delete_console(
 
 
 @router.post("/consoles/sync", response_model=UnifiConsoleSyncResult)
-async def sync_consoles(db: AsyncSession = Depends(get_db)) -> UnifiConsoleSyncResult:
+async def sync_consoles(db: AsyncSession = Depends(get_db), _user=Depends(current_user)) -> UnifiConsoleSyncResult:
     result = await sync_all_consoles(db)
     return UnifiConsoleSyncResult(**result)

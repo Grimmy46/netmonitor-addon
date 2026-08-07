@@ -25,7 +25,7 @@ export function PlannerView() {
   }, []);
 
   const src = useMemo(
-    () => `/planner/?embedded=1${siteId ? `&site=${siteId}` : ""}`,
+    () => `/planner/index.html?embedded=1${siteId ? `&site=${siteId}` : ""}`,
     [siteId],
   );
 

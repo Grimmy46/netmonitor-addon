@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Site, type UnifiStatus } from "../api/client";
 import { PinPrompt, needsPinPrompt } from "../components/PinPrompt";
+import { PlannerView } from "../components/PlannerView";
 import { PulseLogo } from "../components/PulseLogo";
 import { AgentsView } from "../components/AgentsView";
 import { DormantView } from "../components/DormantView";
@@ -39,7 +40,7 @@ export function Dashboard() {
     else setSettingsOpen(true);
   }
   const [syncing, setSyncing] = useState(false);
-  const [view, setView] = useState<"fleet" | "map" | "dormant" | "kiosks">("fleet");
+  const [view, setView] = useState<"fleet" | "map" | "dormant" | "kiosks" | "planner">("fleet");
   const [fleetFilter, setFleetFilter] = useState<FleetFilter>("all");
   const [siteRoute, setSiteRoute] = useState<string | null>(siteIdFromHash());
 
@@ -121,6 +122,7 @@ export function Dashboard() {
             <button className={`tab ${view === "map" ? "active" : ""}`} onClick={() => setView("map")}>Map</button>
             <button className={`tab ${view === "dormant" ? "active" : ""}`} onClick={() => setView("dormant")}>Dormant</button>
             <button className={`tab ${view === "kiosks" ? "active" : ""}`} onClick={() => setView("kiosks")}>Kiosks</button>
+            <button className={`tab ${view === "planner" ? "active" : ""}`} onClick={() => setView("planner")}>Planner</button>
           </nav>
         ) : null}
         <div className="spacer" />
@@ -174,6 +176,8 @@ export function Dashboard() {
           <DormantView />
         ) : view === "kiosks" ? (
           <AgentsView />
+        ) : view === "planner" ? (
+          <PlannerView />
         ) : (
           <>
             <div className="filter-chips" style={{ marginBottom: 16 }}>

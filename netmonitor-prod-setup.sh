@@ -61,7 +61,11 @@ ENV
 fi
 
 echo "== dashboard password (basic-auth at the edge) =="
-if [ ! -f .dashpass ]; then openssl rand -base64 12 | tr -d '/+=' > .dashpass; chmod 600 .dashpass; fi
+if [ ! -f .dashpass ]; then
+  echo "FATAL: /opt/netmonitor/.dashpass is missing — refusing to silently generate a new dashboard password." >&2
+  echo "Create it first:  sudo bash -c 'read -s -p \"Password: \" P; echo; printf \"%s\" \"$P\" > .dashpass; chmod 600 .dashpass'" >&2
+  exit 1
+fi
 DASHPASS=$(cat .dashpass)
 HASH=$(caddy hash-password --plaintext "$DASHPASS")
 

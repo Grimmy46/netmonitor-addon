@@ -49,8 +49,14 @@ def upgrade() -> None:
             sa.Column("auth", sa.Text(), nullable=False),
             sa.Column("ua", sa.Text(), nullable=True),
             sa.Column("failures", sa.Integer(), nullable=False, server_default="0"),
-            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column(
+                "created_at", sa.DateTime(timezone=True), nullable=False,
+                server_default=sa.func.now(),
+            ),
+            sa.Column(
+                "updated_at", sa.DateTime(timezone=True), nullable=False,
+                server_default=sa.func.now(),
+            ),
         )
 
     for col in ("vapid_public_key", "vapid_private_key"):

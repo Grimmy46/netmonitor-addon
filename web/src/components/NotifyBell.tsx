@@ -55,7 +55,11 @@ export function NotifyBell() {
     setMsg("");
     try {
       const r = await api.pushTest();
-      setMsg(r.sent > 0 ? "Test sent — check your notifications." : "No subscribed devices for your account yet.");
+      setMsg(
+        r.sent > 0
+          ? `Test sent to ${r.sent} device${r.sent === 1 ? "" : "s"} — check your notifications.`
+          : "None of your devices have alerts turned on yet — hit “Turn on” first (on the device that should get the push).",
+      );
     } catch (e) {
       setMsg(String(e instanceof Error ? e.message : e));
     } finally {
@@ -79,7 +83,7 @@ export function NotifyBell() {
             position: "absolute",
             right: 0,
             top: "calc(100% + 8px)",
-            width: 280,
+            width: "min(280px, calc(100vw - 24px))",
             padding: 14,
             zIndex: 60,
             boxShadow: "var(--shadow)",
@@ -99,15 +103,16 @@ export function NotifyBell() {
                 device goes down or unreachable — and when it comes back. Mass
                 power-downs arrive as one summary, not a storm.
               </p>
-              <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button className="btn" disabled={busy} onClick={toggle}>
                   {busy ? "…" : on ? "Turn off" : "Turn on"}
                 </button>
-                {on ? (
-                  <button className="btn" disabled={busy} onClick={test}>
-                    Send test
-                  </button>
-                ) : null}
+                {/* Always available: tests EVERY device your account has alerts
+                    on — so you can fire it from the desktop and watch the
+                    phone in your hand light up. */}
+                <button className="btn" disabled={busy} onClick={test}>
+                  🔔 Send test
+                </button>
               </div>
             </>
           )}

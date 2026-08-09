@@ -18,6 +18,7 @@ export function DeviceTable({
 }) {
   if (devices.length === 0) return <p className="hint">No devices match.</p>;
   return (
+    <div className="table-scroll">
     <table className="devices">
       <thead>
         <tr>
@@ -114,5 +115,6 @@ export function DeviceTable({
         })}
       </tbody>
     </table>
+    </div>
   );
 }

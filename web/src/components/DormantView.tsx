@@ -51,6 +51,7 @@ export function DormantView() {
         reports in; parked gear stays until you restore it.
       </p>
       <div className="panel">
+        <div className="table-scroll">
         <table className="devices">
           <thead>
             <tr>
@@ -109,6 +110,7 @@ export function DormantView() {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
     </>
   );

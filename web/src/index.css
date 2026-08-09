@@ -323,3 +323,27 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
   color: var(--ink-muted); font-size: 11px;
   border-bottom: 1px solid var(--grid);
 }
+
+/* ── Phone-width layout ──────────────────────────────────────────────────
+   Tables scroll inside their panel instead of stretching the whole page
+   (which squeezed the hero and pushed content past the screen edge). */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+.table-scroll table.devices { min-width: 640px; }
+
+@media (max-width: 760px) {
+  .container { padding: 12px; }
+  .app-header { padding: 10px 12px; gap: 8px; row-gap: 6px; flex-wrap: wrap; }
+  .app-header h1 { font-size: 17px; }
+  .hide-sm { display: none !important; }
+  .map-tabs { order: 10; flex-basis: 100%; overflow-x: auto; padding-bottom: 2px; margin-left: 0 !important; }
+  .map-tabs .tab { white-space: nowrap; }
+  .btn { padding: 7px 10px; font-size: 13px; }
+  .site-hero { padding: 16px 14px; }
+  .hero-title { font-size: 21px; }
+  .hero-stats { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .hstat-val { font-size: 24px; }
+  .panel { padding: 14px 12px; }
+  .search { width: 100%; }
+  .devices-toolbar .search { flex-basis: 100%; }
+  .tiles { gap: 8px; }
+}

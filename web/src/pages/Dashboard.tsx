@@ -118,7 +118,7 @@ export function Dashboard() {
       <header className="app-header">
         <PulseLogo size={26} />
         <h1>NetMonitor</h1>
-        <span className="sub">2.0{version && ` · cloud v${version}`}</span>
+        <span className="sub hide-sm">2.0{version && ` · cloud v${version}`}</span>
         {configured && !siteRoute ? (
           <nav className="map-tabs" style={{ marginLeft: 12 }}>
             <button className={`tab ${view === "fleet" ? "active" : ""}`} onClick={() => setView("fleet")}>Fleet</button>
@@ -131,7 +131,7 @@ export function Dashboard() {
         <div className="spacer" />
         <NotifyBell />
         <ThemeToggle />
-        <span className="sub" style={{ margin: "0 4px" }}>{session.user?.email}</span>
+        <span className="sub hide-sm" style={{ margin: "0 4px" }}>{session.user?.email}</span>
         {isAdmin() ? <button className="btn" onClick={openSettings}>⚙ Settings</button> : null}
         <button className="btn" onClick={signOut} title="Sign out">⎋</button>
       </header>

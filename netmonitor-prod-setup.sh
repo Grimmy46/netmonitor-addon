@@ -77,7 +77,7 @@ $DOMAIN {
     # Auth lives in the app now (login page + session cookies + roles).
     # Agents authenticate with X-Agent-Token on their own endpoints; every
     # dashboard data endpoint requires a signed-in session server-side.
-    @api path /health* /sites* /integrations* /map* /agents* /auth* /docs* /openapi.json /redoc*
+    @api path /health* /sites* /integrations* /map* /agents* /auth* /notifications* /docs* /openapi.json /redoc*
     handle @api {
         reverse_proxy 127.0.0.1:8010
     }

@@ -248,6 +248,21 @@ export const api = {
   regenerateEnrollmentPin: () =>
     req<{ pin: string }>("/agents/enrollment/regenerate", { method: "POST" }),
 
+  // Push notifications.
+  vapidKey: () => req<{ public_key: string }>("/notifications/vapid"),
+  pushStatus: () => req<{ subscription_count: number; mine: number }>("/notifications/status"),
+  pushSubscribe: (sub: { endpoint: string; keys: { p256dh: string; auth: string } }) =>
+    req<{ subscription_count: number; mine: number }>("/notifications/subscribe", {
+      method: "POST",
+      body: JSON.stringify(sub),
+    }),
+  pushUnsubscribe: (endpoint: string) =>
+    req<{ subscription_count: number; mine: number }>("/notifications/unsubscribe", {
+      method: "POST",
+      body: JSON.stringify({ endpoint }),
+    }),
+  pushTest: () => req<{ sent: number }>("/notifications/test", { method: "POST" }),
+
   // Accounts & sessions.
   authStatus: () => req<AuthStatus>("/auth/status"),
   setup: (email: string, password: string) =>

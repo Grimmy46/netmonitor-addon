@@ -4,6 +4,7 @@ from app.models.agent import Agent
 from app.models.device import Device
 from app.models.isp_metric import IspMetric
 from app.models.ping_sample import PingSample
+from app.models.push_subscription import PushSubscription
 from app.models.site import Site
 from app.models.site_plan import SitePlan
 from app.models.unifi_console import UnifiConsole
@@ -16,6 +17,7 @@ __all__ = [
     "Device",
     "IspMetric",
     "PingSample",
+    "PushSubscription",
     "Site",
     "SitePlan",
     "UnifiConsole",

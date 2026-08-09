@@ -57,10 +57,16 @@ async def run_unifi_poller() -> None:
 
 @contextlib.asynccontextmanager
 async def poller_lifespan(_app):
-    task = asyncio.create_task(run_unifi_poller())
+    from app.workers.alerts import run_alert_sweeper  # local import: no cycle
+
+    tasks = [
+        asyncio.create_task(run_unifi_poller()),
+        asyncio.create_task(run_alert_sweeper()),
+    ]
     try:
         yield
     finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        for task in tasks:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task

@@ -40,6 +40,26 @@ class Settings(BaseSettings):
     # device from "unreachable" reports by other kiosks for this many seconds.
     probe_positive_grace_seconds: int = 300
 
+    # ── Push alerting (24/7, faults only) ──────────────────────────────────
+    # How often the alert sweep runs.
+    alert_sweep_interval_seconds: int = 60
+    # A kiosk silent this long counts as a fault (kiosks check in ~every 60s;
+    # 5 min rides out reboots and brief network blips without flapping).
+    alert_kiosk_offline_seconds: int = 300
+    # A device fault must persist this long before it alerts (debounce).
+    alert_confirm_seconds: int = 180
+    # Faults older than this when first seen never alert (e.g. right after a
+    # deploy/restart) — they're history, not news.
+    alert_fresh_window_seconds: int = 1800
+    # This many NEW faults in one sweep = mass power-down/outage: individual
+    # pushes are suppressed and one summary push is sent instead.
+    alert_mass_threshold: int = 6
+    # Which site's devices can alert (empty = same as default_probe_site_name).
+    # Kiosk agents alert regardless of site.
+    alert_site_name: str = ""
+    # VAPID "sub" claim sent to the push services.
+    vapid_subject: str = "mailto:dawidrcs@gmail.com"
+
     @property
     def database_url(self) -> str:
         return (

@@ -4,6 +4,7 @@ import { PlannerView } from "../components/PlannerView";
 import { PulseLogo } from "../components/PulseLogo";
 import { AgentsView } from "../components/AgentsView";
 import { DormantView } from "../components/DormantView";
+import { NotifyBell } from "../components/NotifyBell";
 import { SettingsModal } from "../components/SettingsModal";
 import { SiteCard } from "../components/SiteCard";
 import { SiteMap } from "../components/SiteMap";
@@ -128,6 +129,7 @@ export function Dashboard() {
           </nav>
         ) : null}
         <div className="spacer" />
+        <NotifyBell />
         <ThemeToggle />
         <span className="sub" style={{ margin: "0 4px" }}>{session.user?.email}</span>
         {isAdmin() ? <button className="btn" onClick={openSettings}>⚙ Settings</button> : null}

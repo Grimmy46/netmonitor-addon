@@ -4,8 +4,9 @@ Only deployed to select sites. Registers via a pairing token; authenticates each
 push with its per-agent token.
 """
 import uuid
+from datetime import datetime
 
-from sqlalchemy import ForeignKey
+from sqlalchemy import DateTime, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -34,3 +35,9 @@ class Agent(Base, UUIDPk, Timestamps):
     # Enrollment: which machine claimed this station (locks it), and when.
     claimed_at: Mapped[str | None] = mapped_column(default=None)
     machine_id: Mapped[str | None] = mapped_column(default=None)
+
+    # Alert sweep state machine (see Device.alert_state for the values).
+    alert_state: Mapped[str | None] = mapped_column(default=None)
+    alert_state_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )

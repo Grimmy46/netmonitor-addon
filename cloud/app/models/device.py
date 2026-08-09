@@ -51,4 +51,13 @@ class Device(Base, UUIDPk, Timestamps):
         DateTime(timezone=True), default=None
     )
 
+    # Alert sweep state machine: None (healthy / nothing to say), "notified"
+    # (down push sent — a recovery push goes out when it returns), "suppressed"
+    # (part of a mass power-down; no individual pushes either way), or "stale"
+    # (fault predates the alerting feature / was too old to alert on).
+    alert_state: Mapped[str | None] = mapped_column(default=None)
+    alert_state_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+
     site: Mapped["Site"] = relationship(back_populates="devices")  # noqa: F821

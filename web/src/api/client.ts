@@ -250,7 +250,10 @@ export const api = {
 
   // Push notifications.
   vapidKey: () => req<{ public_key: string }>("/notifications/vapid"),
-  pushStatus: () => req<{ subscription_count: number; mine: number }>("/notifications/status"),
+  pushStatus: (endpoint?: string) =>
+    req<{ subscription_count: number; mine: number; this_device: boolean }>(
+      `/notifications/status${endpoint ? `?endpoint=${encodeURIComponent(endpoint)}` : ""}`,
+    ),
   pushSubscribe: (sub: { endpoint: string; keys: { p256dh: string; auth: string } }) =>
     req<{ subscription_count: number; mine: number }>("/notifications/subscribe", {
       method: "POST",

@@ -40,6 +40,10 @@ class UnsubscribeIn(BaseModel):
 class StatusOut(BaseModel):
     subscription_count: int  # across all users — "is anyone listening"
     mine: int
+    # Set when the caller passes ?endpoint=…: is THIS browser's subscription
+    # actually saved server-side? (A phone can hold a local subscription the
+    # server never received — the UI must not claim it's on.)
+    this_device: bool = False
 
 
 @router.get("/vapid", response_model=VapidOut)
@@ -52,7 +56,9 @@ async def vapid_public_key(
 
 @router.get("/status", response_model=StatusOut)
 async def status(
-    db: AsyncSession = Depends(get_db), user: User = Depends(current_user)
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(current_user),
+    endpoint: str | None = None,
 ) -> StatusOut:
     total = (await db.execute(select(func.count(PushSubscription.id)))).scalar() or 0
     mine = (
@@ -62,7 +68,14 @@ async def status(
             )
         )
     ).scalar() or 0
-    return StatusOut(subscription_count=int(total), mine=int(mine))
+    this_device = False
+    if endpoint:
+        this_device = (
+            await db.execute(
+                select(PushSubscription.id).where(PushSubscription.endpoint == endpoint)
+            )
+        ).first() is not None
+    return StatusOut(subscription_count=int(total), mine=int(mine), this_device=this_device)
 
 
 @router.post("/subscribe", response_model=StatusOut)

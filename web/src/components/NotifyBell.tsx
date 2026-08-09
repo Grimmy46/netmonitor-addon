@@ -1,35 +1,41 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
-import { disablePush, enablePush, pushEnabled, pushSupport } from "../lib/push";
+import { disablePush, enablePush, pushSupport } from "../lib/push";
 
 /**
  * Header bell: per-device alert toggle for ANY signed-in user (viewers too).
- * 🔔 = this device gets offline alerts; 🔕 = it doesn't. The popover carries
- * the enable/disable action, a test button, and the iPhone install hint.
+ * The ON state means the SERVER has this browser's subscription — not merely
+ * that the browser holds one locally (those can drift; the server is truth).
+ * The popover reports each enable step live so a stall points at its cause.
  */
 export function NotifyBell() {
   const support = pushSupport();
   const [on, setOn] = useState(false);
+  const [mine, setMine] = useState<number | null>(null);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [popStyle, setPopStyle] = useState<React.CSSProperties>({});
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
-  function togglePop() {
-    // On phones the bell can sit anywhere after the header wraps, so an
-    // anchored popover can hang off-screen — pin it to the viewport instead.
-    const r = wrapRef.current?.getBoundingClientRect();
-    if (window.innerWidth <= 760 && r) {
-      setPopStyle({ position: "fixed", left: 12, right: 12, top: r.bottom + 10, width: "auto" });
-    } else {
-      setPopStyle({ position: "absolute", right: 0, top: "calc(100% + 8px)", width: 280 });
+  async function refresh() {
+    try {
+      let endpoint: string | undefined;
+      if (support === "ok" && "serviceWorker" in navigator && Notification.permission === "granted") {
+        const reg = await navigator.serviceWorker.getRegistration();
+        endpoint = (await reg?.pushManager.getSubscription())?.endpoint;
+      }
+      const st = await api.pushStatus(endpoint);
+      setOn(!!endpoint && st.this_device);
+      setMine(st.mine);
+    } catch {
+      /* signed-out or offline — leave defaults */
     }
-    setOpen((v) => !v);
   }
 
   useEffect(() => {
-    pushEnabled().then(setOn);
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -43,38 +49,50 @@ export function NotifyBell() {
 
   if (support === "unsupported") return null;
 
+  function togglePop() {
+    // On phones the bell can sit anywhere after the header wraps, so an
+    // anchored popover can hang off-screen — pin it to the viewport instead.
+    const r = wrapRef.current?.getBoundingClientRect();
+    if (window.innerWidth <= 760 && r) {
+      setPopStyle({ position: "fixed", left: 12, right: 12, top: r.bottom + 10, width: "auto" });
+    } else {
+      setPopStyle({ position: "absolute", right: 0, top: "calc(100% + 8px)", width: 280 });
+    }
+    setOpen((v) => !v);
+    if (!open) refresh();
+  }
+
   async function toggle() {
     setBusy(true);
     setMsg("");
     try {
       if (on) {
         await disablePush();
-        setOn(false);
         setMsg("Alerts off on this device.");
       } else {
-        await enablePush();
-        setOn(true);
-        setMsg("Alerts on — try a test push.");
+        await enablePush(setMsg);
+        setMsg("✅ This device is registered — send a test.");
       }
     } catch (e) {
-      setMsg(String(e instanceof Error ? e.message : e));
+      setMsg(`⚠️ ${String(e instanceof Error ? e.message : e)}`);
     } finally {
       setBusy(false);
+      refresh();
     }
   }
 
   async function test() {
     setBusy(true);
-    setMsg("");
+    setMsg("Sending test…");
     try {
       const r = await api.pushTest();
       setMsg(
         r.sent > 0
           ? `Test sent to ${r.sent} device${r.sent === 1 ? "" : "s"} — check your notifications.`
-          : "None of your devices have alerts turned on yet — hit “Turn on” first (on the device that should get the push).",
+          : "The server has no registered devices for your account yet — hit “Turn on” first (on the device that should get the push).",
       );
     } catch (e) {
-      setMsg(String(e instanceof Error ? e.message : e));
+      setMsg(`⚠️ ${String(e instanceof Error ? e.message : e)}`);
     } finally {
       setBusy(false);
     }
@@ -92,12 +110,7 @@ export function NotifyBell() {
       {open ? (
         <div
           className="panel"
-          style={{
-            padding: 14,
-            zIndex: 60,
-            boxShadow: "var(--shadow)",
-            ...popStyle,
-          }}
+          style={{ padding: 14, zIndex: 60, boxShadow: "var(--shadow)", ...popStyle }}
         >
           <div style={{ fontWeight: 600, marginBottom: 6 }}>Offline alerts</div>
           {support === "needs-install" ? (
@@ -108,18 +121,19 @@ export function NotifyBell() {
             </p>
           ) : (
             <>
-              <p className="sub" style={{ fontSize: 13, marginBottom: 10 }}>
+              <p className="sub" style={{ fontSize: 13, marginBottom: 6 }}>
                 Get a push on this device when a kiosk stops reporting or a Main-site
                 device goes down or unreachable — and when it comes back. Mass
                 power-downs arrive as one summary, not a storm.
+              </p>
+              <p className="sub" style={{ fontSize: 12, marginBottom: 10 }}>
+                This device: <strong>{on ? "registered ✓" : "not registered"}</strong>
+                {mine !== null ? <> · your account: {mine} device{mine === 1 ? "" : "s"}</> : null}
               </p>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button className="btn" disabled={busy} onClick={toggle}>
                   {busy ? "…" : on ? "Turn off" : "Turn on"}
                 </button>
-                {/* Always available: tests EVERY device your account has alerts
-                    on — so you can fire it from the desktop and watch the
-                    phone in your hand light up. */}
                 <button className="btn" disabled={busy} onClick={test}>
                   🔔 Send test
                 </button>
@@ -127,7 +141,7 @@ export function NotifyBell() {
             </>
           )}
           {msg ? (
-            <p className="sub" style={{ fontSize: 12, marginTop: 8 }}>{msg}</p>
+            <p className="sub" style={{ fontSize: 12, marginTop: 8, wordBreak: "break-word" }}>{msg}</p>
           ) : null}
         </div>
       ) : null}

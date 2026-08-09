@@ -41,22 +41,62 @@ export async function pushEnabled(): Promise<boolean> {
   }
 }
 
-export async function enablePush(): Promise<void> {
-  if ((await Notification.requestPermission()) !== "granted")
-    throw new Error("Notifications are blocked for this site — allow them in your browser settings.");
-  const reg = await registration();
-  const { public_key } = await api.vapidKey();
-  const sub =
-    (await reg.pushManager.getSubscription()) ??
-    (await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: b64ToU8(public_key).buffer as ArrayBuffer,
-    }));
+function withTimeout<T>(p: Promise<T>, ms: number, step: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, rej) =>
+      setTimeout(() => rej(new Error(`${step} timed out (${Math.round(ms / 1000)}s) — close and reopen the app, then try again.`)), ms),
+    ),
+  ]);
+}
+
+/** Subscribe this device. Reports progress via onStep so a stall is visible,
+ * and every stage has a timeout — it can fail loudly but never hang. */
+export async function enablePush(onStep?: (s: string) => void): Promise<void> {
+  onStep?.("Asking permission…");
+  const perm = await withTimeout(
+    Promise.resolve(Notification.requestPermission()),
+    30000,
+    "Permission prompt",
+  );
+  if (perm === "denied")
+    throw new Error(
+      "Notifications are blocked for NetMonitor on this device. iPhone: Settings → Apps → Notifications → NetMonitor → Allow. Then come back and try again.",
+    );
+  if (perm !== "granted") throw new Error("Permission prompt was dismissed — tap Turn on again.");
+
+  onStep?.("Starting service worker…");
+  const reg = await withTimeout(registration(), 15000, "Service worker");
+
+  onStep?.("Fetching server key…");
+  const { public_key } = await withTimeout(api.vapidKey(), 15000, "Server key fetch");
+
+  onStep?.("Registering with the push service…");
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub)
+    sub = await withTimeout(
+      reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: b64ToU8(public_key) as BufferSource,
+      }),
+      20000,
+      "Push-service registration",
+    );
+
+  onStep?.("Saving to NetMonitor…");
   const json = sub.toJSON();
-  await api.pushSubscribe({
-    endpoint: sub.endpoint,
-    keys: { p256dh: json.keys!.p256dh, auth: json.keys!.auth },
-  });
+  if (!json.keys?.p256dh || !json.keys?.auth) {
+    await sub.unsubscribe().catch(() => {});
+    throw new Error("The push service returned an incomplete subscription — try Turn on again.");
+  }
+  await withTimeout(
+    api.pushSubscribe({
+      endpoint: sub.endpoint,
+      keys: { p256dh: json.keys.p256dh, auth: json.keys.auth },
+    }),
+    15000,
+    "Saving the subscription",
+  );
 }
 
 export async function disablePush(): Promise<void> {

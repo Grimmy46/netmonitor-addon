@@ -29,6 +29,7 @@ export interface Device {
   last_online_at: string | null;
   down_seconds: number | null;
   dormant: boolean;
+  manual_dormant: boolean;
   // Local LAN reachability from an on-site agent (null = never probed).
   local_reachable: boolean | null;
   local_rtt_ms: number | null;
@@ -46,6 +47,8 @@ export interface DormantDevice {
   site_name: string;
   offline_since: string | null;
   down_seconds: number | null;
+  is_online: boolean | null;
+  manual_dormant: boolean;
 }
 
 export type DeviceStatusFilter = "active" | "dormant" | "offline" | "online" | "all";
@@ -172,6 +175,11 @@ export const api = {
   devices: (siteId: string, status: DeviceStatusFilter = "active") =>
     req<Device[]>(`/sites/${siteId}/devices?status=${status}`),
   dormantDevices: () => req<DormantDevice[]>("/sites/dormant-devices"),
+  setDeviceDormant: (siteId: string, deviceId: string, dormant: boolean) =>
+    req<Device>(`/sites/${siteId}/devices/${deviceId}/dormant`, {
+      method: "POST",
+      body: JSON.stringify({ dormant }),
+    }),
   metrics: (siteId: string) => req<MetricPoint[]>(`/sites/${siteId}/metrics`),
 
   unifiStatus: () => req<UnifiStatus>("/integrations/unifi/status"),

@@ -20,7 +20,8 @@ class DeviceOut(BaseModel):
     offline_since: datetime | None = None
     last_online_at: datetime | None = None
     down_seconds: int | None = None  # how long it's been offline
-    dormant: bool = False  # offline longer than the dormant threshold
+    dormant: bool = False  # effective: manually parked OR past the age threshold
+    manual_dormant: bool = False  # operator explicitly parked this device
 
     # Local reachability from an on-site agent's LAN ping (independent of UniFi).
     # None = never probed. Powers the "unreachable" 5-state.
@@ -41,6 +42,8 @@ class DormantDeviceOut(BaseModel):
     site_name: str
     offline_since: datetime | None = None
     down_seconds: int | None = None
+    is_online: bool | None = None  # a manually-parked device can even be online
+    manual_dormant: bool = False
 
 
 class SiteOut(BaseModel):

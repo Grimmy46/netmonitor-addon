@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type Device, type MetricPoint, type Site } from "../api/client";
+import { api, isAdmin, type Device, type MetricPoint, type Site } from "../api/client";
 import { DeviceTable } from "../components/DeviceTable";
 import { LatencyChart } from "../components/LatencyChart";
 import { StatusPill } from "../components/StatusPill";
@@ -223,7 +223,18 @@ export function SitePage({ siteId, onBack }: { siteId: string; onBack: () => voi
         {devices === null ? (
           <p className="hint">Loading devices…</p>
         ) : (
-          <DeviceTable devices={shown} />
+          <DeviceTable
+            devices={shown}
+            onSetDormant={
+              isAdmin()
+                ? (d, dormant) =>
+                    api
+                      .setDeviceDormant(siteId, d.id, dormant)
+                      .then(() => api.devices(siteId, "all").then(setDevices))
+                      .catch((e) => setError(String(e instanceof Error ? e.message : e)))
+                : undefined
+            }
+          />
         )}
       </section>
     </div>

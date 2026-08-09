@@ -36,6 +36,11 @@ class Device(Base, UUIDPk, Timestamps):
         DateTime(timezone=True), default=None
     )
 
+    # Operator override: park this device in the Dormant tab regardless of how
+    # long it's been offline (packed-up gear, spares). Effective dormancy is
+    # manual_dormant OR the automatic offline-age rule.
+    manual_dormant: Mapped[bool] = mapped_column(default=False)
+
     # Local reachability from an on-site agent actively pinging this device on the
     # LAN (by its current IP). This is independent of UniFi's `is_online`: a device
     # can be ONLINE in the controller yet not answer a LAN ping ("unreachable").

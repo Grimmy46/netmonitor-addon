@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type DormantDevice } from "../api/client";
+import { api, isAdmin, type DormantDevice } from "../api/client";
 import { humanizeDuration } from "../lib/duration";
 
 const TYPE_LABEL: Record<string, string> = {
@@ -46,8 +46,9 @@ export function DormantView() {
   return (
     <>
       <p className="sub" style={{ marginBottom: 12 }}>
-        {rows.length} device{rows.length === 1 ? "" : "s"} offline longer than the dormant
-        threshold. They come back automatically the moment they report in again.
+        {rows.length} device{rows.length === 1 ? "" : "s"} dormant — offline longer than the
+        threshold, or parked here manually. Auto-dormant gear comes back the moment it
+        reports in; parked gear stays until you restore it.
       </p>
       <div className="panel">
         <table className="devices">
@@ -60,6 +61,7 @@ export function DormantView() {
               <th>IP</th>
               <th>Down for</th>
               <th>Since</th>
+              {isAdmin() ? <th></th> : null}
             </tr>
           </thead>
           <tbody>
@@ -72,12 +74,37 @@ export function DormantView() {
                 <td>{d.device_type ? (TYPE_LABEL[d.device_type] ?? d.device_type) : "—"}</td>
                 <td className="mono">{d.model ?? "—"}</td>
                 <td className="mono">{d.ip ?? "—"}</td>
-                <td style={{ color: "var(--critical)", fontWeight: 600 }}>
-                  {humanizeDuration(d.down_seconds) ?? "—"}
+                <td style={d.is_online ? { color: "var(--good)" } : { color: "var(--critical)", fontWeight: 600 }}>
+                  {d.is_online
+                    ? "online (parked)"
+                    : humanizeDuration(d.down_seconds) ?? "—"}
                 </td>
                 <td className="mono">
-                  {d.offline_since ? new Date(d.offline_since).toLocaleDateString() : "—"}
+                  {d.manual_dormant
+                    ? "parked"
+                    : d.offline_since
+                      ? new Date(d.offline_since).toLocaleDateString()
+                      : "—"}
                 </td>
+                {isAdmin() ? (
+                  <td style={{ textAlign: "right" }}>
+                    {d.manual_dormant ? (
+                      <button
+                        className="btn"
+                        style={{ fontSize: 12, padding: "3px 8px" }}
+                        title="Bring this device back into the active views"
+                        onClick={() =>
+                          api
+                            .setDeviceDormant(d.site_id, d.id, false)
+                            .then(() => api.dormantDevices().then(setRows))
+                            .catch((e) => setError(String(e instanceof Error ? e.message : e)))
+                        }
+                      >
+                        ↩ Restore
+                      </button>
+                    ) : null}
+                  </td>
+                ) : null}
               </tr>
             ))}
           </tbody>

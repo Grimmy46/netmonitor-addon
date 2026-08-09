@@ -8,7 +8,14 @@ const TYPE_LABEL: Record<string, string> = {
   gateway: "Gateway",
 };
 
-export function DeviceTable({ devices }: { devices: Device[] }) {
+export function DeviceTable({
+  devices,
+  onSetDormant,
+}: {
+  devices: Device[];
+  /** Admin-only: passed by the page when the signed-in user may park/restore. */
+  onSetDormant?: (d: Device, dormant: boolean) => void;
+}) {
   if (devices.length === 0) return <p className="hint">No devices match.</p>;
   return (
     <table className="devices">
@@ -20,6 +27,7 @@ export function DeviceTable({ devices }: { devices: Device[] }) {
           <th>Model</th>
           <th>IP</th>
           <th>Status</th>
+          {onSetDormant ? <th></th> : null}
         </tr>
       </thead>
       <tbody>
@@ -72,7 +80,35 @@ export function DeviceTable({ devices }: { devices: Device[] }) {
                     · LAN {localMs}
                   </span>
                 ) : null}
+                {d.manual_dormant ? (
+                  <span className="sub" style={{ marginLeft: 6, fontSize: 12, color: "var(--ink-muted)" }}>
+                    · parked
+                  </span>
+                ) : null}
               </td>
+              {onSetDormant ? (
+                <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                  {d.manual_dormant ? (
+                    <button
+                      className="btn"
+                      style={{ fontSize: 12, padding: "3px 8px" }}
+                      title="Bring this device back into the active views"
+                      onClick={() => onSetDormant(d, false)}
+                    >
+                      ↩ Restore
+                    </button>
+                  ) : !d.dormant ? (
+                    <button
+                      className="btn"
+                      style={{ fontSize: 12, padding: "3px 8px" }}
+                      title="Park this device in the Dormant tab (packed up / spare) — it stops counting as down and never alerts"
+                      onClick={() => onSetDormant(d, true)}
+                    >
+                      ⏾ Dormant
+                    </button>
+                  ) : null}
+                </td>
+              ) : null}
             </tr>
           );
         })}

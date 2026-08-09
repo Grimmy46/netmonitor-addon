@@ -3,11 +3,12 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from pydantic import BaseModel
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.auth import current_user
+from app.core.auth import current_user, require_admin
 from app.core.db import get_db
 from app.models import Device, IspMetric, Site
 from app.schemas import DeviceOut, DormantDeviceOut, MetricPoint, SiteOut
@@ -22,6 +23,14 @@ def _now() -> datetime:
 def _dormant_cutoff() -> datetime:
     """A device whose offline_since is at or before this is dormant."""
     return _now() - timedelta(days=get_settings().dormant_after_days)
+
+
+def _dormant_sql(cutoff: datetime):
+    """SQL predicate for effective dormancy: manually parked OR auto-aged out."""
+    return or_(
+        Device.manual_dormant.is_(True),
+        and_(Device.offline_since.is_not(None), Device.offline_since <= cutoff),
+    )
 
 
 async def _latest_metrics_by_site(db: AsyncSession) -> dict:
@@ -66,7 +75,9 @@ def _device_out(dev: Device, now: datetime, cutoff: datetime) -> DeviceOut:
     down_seconds = (
         int((now - dev.offline_since).total_seconds()) if dev.offline_since else None
     )
-    dormant = dev.offline_since is not None and dev.offline_since <= cutoff
+    dormant = dev.manual_dormant or (
+        dev.offline_since is not None and dev.offline_since <= cutoff
+    )
     return DeviceOut(
         id=dev.id,
         name=dev.name,
@@ -79,6 +90,7 @@ def _device_out(dev: Device, now: datetime, cutoff: datetime) -> DeviceOut:
         last_online_at=dev.last_online_at,
         down_seconds=down_seconds,
         dormant=dormant,
+        manual_dormant=dev.manual_dormant,
         local_reachable=dev.local_reachable,
         local_rtt_ms=dev.local_rtt_ms,
         local_checked_at=dev.local_checked_at,
@@ -90,9 +102,7 @@ async def list_sites(db: AsyncSession = Depends(get_db), _user=Depends(current_u
     cutoff = _dormant_cutoff()
     total = func.count(Device.id)
     online = func.count(Device.id).filter(Device.is_online.is_(True))
-    dormant = func.count(Device.id).filter(
-        Device.offline_since.is_not(None), Device.offline_since <= cutoff
-    )
+    dormant = func.count(Device.id).filter(_dormant_sql(cutoff))
     stmt = (
         select(Site, total, online, dormant)
         .outerjoin(Device, Device.site_id == Site.id)
@@ -116,8 +126,8 @@ async def dormant_devices(db: AsyncSession = Depends(get_db), _user=Depends(curr
     stmt = (
         select(Device, Site.name)
         .join(Site, Site.id == Device.site_id)
-        .where(Device.offline_since.is_not(None), Device.offline_since <= cutoff)
-        .order_by(Device.offline_since.asc())
+        .where(_dormant_sql(cutoff))
+        .order_by(Device.offline_since.asc().nulls_last(), Device.name)
     )
     rows = (await db.execute(stmt)).all()
     return [
@@ -132,9 +142,35 @@ async def dormant_devices(db: AsyncSession = Depends(get_db), _user=Depends(curr
             site_name=site_name,
             offline_since=d.offline_since,
             down_seconds=int((now - d.offline_since).total_seconds()) if d.offline_since else None,
+            is_online=d.is_online,
+            manual_dormant=d.manual_dormant,
         )
         for d, site_name in rows
     ]
+
+
+class SetDormantIn(BaseModel):
+    dormant: bool
+
+
+@router.post("/{site_id}/devices/{device_id}/dormant", response_model=DeviceOut)
+async def set_device_dormant(
+    site_id: uuid.UUID,
+    device_id: uuid.UUID,
+    body: SetDormantIn,
+    db: AsyncSession = Depends(get_db),
+    _admin=Depends(require_admin),
+) -> DeviceOut:
+    """Manually park a device in Dormant (or bring it back). Parking overrides
+    the age rule; restoring only clears the manual flag — a device offline past
+    the threshold stays dormant until it reports in again."""
+    dev = await db.get(Device, device_id)
+    if dev is None or dev.site_id != site_id:
+        raise HTTPException(status_code=404, detail="Device not found")
+    dev.manual_dormant = body.dormant
+    await db.commit()
+    await db.refresh(dev)
+    return _device_out(dev, _now(), _dormant_cutoff())
 
 
 @router.get("/{site_id}", response_model=SiteOut)
@@ -145,9 +181,7 @@ async def get_site(site_id: uuid.UUID, db: AsyncSession = Depends(get_db), _user
     cutoff = _dormant_cutoff()
     total = func.count(Device.id)
     online = func.count(Device.id).filter(Device.is_online.is_(True))
-    dormant = func.count(Device.id).filter(
-        Device.offline_since.is_not(None), Device.offline_since <= cutoff
-    )
+    dormant = func.count(Device.id).filter(_dormant_sql(cutoff))
     row = (
         await db.execute(
             select(total, online, dormant).where(Device.site_id == site_id)

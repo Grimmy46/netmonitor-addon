@@ -13,7 +13,20 @@ export function NotifyBell() {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const [popStyle, setPopStyle] = useState<React.CSSProperties>({});
   const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  function togglePop() {
+    // On phones the bell can sit anywhere after the header wraps, so an
+    // anchored popover can hang off-screen — pin it to the viewport instead.
+    const r = wrapRef.current?.getBoundingClientRect();
+    if (window.innerWidth <= 760 && r) {
+      setPopStyle({ position: "fixed", left: 12, right: 12, top: r.bottom + 10, width: "auto" });
+    } else {
+      setPopStyle({ position: "absolute", right: 0, top: "calc(100% + 8px)", width: 280 });
+    }
+    setOpen((v) => !v);
+  }
 
   useEffect(() => {
     pushEnabled().then(setOn);
@@ -72,7 +85,7 @@ export function NotifyBell() {
       <button
         className="btn"
         title={on ? "Offline alerts: ON for this device" : "Enable offline alerts on this device"}
-        onClick={() => setOpen((v) => !v)}
+        onClick={togglePop}
       >
         {on ? "🔔" : "🔕"}
       </button>
@@ -80,13 +93,10 @@ export function NotifyBell() {
         <div
           className="panel"
           style={{
-            position: "absolute",
-            right: 0,
-            top: "calc(100% + 8px)",
-            width: "min(280px, calc(100vw - 24px))",
             padding: 14,
             zIndex: 60,
             boxShadow: "var(--shadow)",
+            ...popStyle,
           }}
         >
           <div style={{ fontWeight: 600, marginBottom: 6 }}>Offline alerts</div>

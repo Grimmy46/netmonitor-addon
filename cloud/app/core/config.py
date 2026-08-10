@@ -60,6 +60,18 @@ class Settings(BaseSettings):
     # VAPID "sub" claim sent to the push services.
     vapid_subject: str = "mailto:dawidrcs@gmail.com"
 
+    # ── Live landing page probes ───────────────────────────────────────────
+    # Server-vantage prober cadence (always on; keeps charts alive overnight).
+    live_server_probe_interval_seconds: float = 5.0
+    # Designated kiosk cadences (sent to the agent via /agents/live-config).
+    live_agent_ping_interval_seconds: float = 2.0
+    live_agent_http_interval_seconds: float = 10.0
+    live_agent_post_interval_seconds: float = 10.0
+    # Samples older than this are pruned.
+    live_retention_hours: int = 48
+    # A local (kiosk) sample newer than this makes "local" the preferred vantage.
+    live_local_fresh_seconds: int = 45
+
     @property
     def database_url(self) -> str:
         return (

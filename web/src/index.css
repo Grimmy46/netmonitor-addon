@@ -347,3 +347,9 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
   .devices-toolbar .search { flex-basis: 100%; }
   .tiles { gap: 8px; }
 }
+
+/* Live page: status-banner heartbeat dot */
+@keyframes nm-pulse {
+  0%, 100% { box-shadow: 0 0 4px var(--good); }
+  50% { box-shadow: 0 0 14px var(--good); }
+}

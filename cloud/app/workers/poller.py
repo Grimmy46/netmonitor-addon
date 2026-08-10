@@ -58,10 +58,12 @@ async def run_unifi_poller() -> None:
 @contextlib.asynccontextmanager
 async def poller_lifespan(_app):
     from app.workers.alerts import run_alert_sweeper  # local import: no cycle
+    from app.workers.liveprobe import run_live_prober
 
     tasks = [
         asyncio.create_task(run_unifi_poller()),
         asyncio.create_task(run_alert_sweeper()),
+        asyncio.create_task(run_live_prober()),
     ]
     try:
         yield

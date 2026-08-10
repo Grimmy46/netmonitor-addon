@@ -683,3 +683,81 @@ async def enroll_add(body: EnrollAddIn, db: AsyncSession = Depends(get_db)) -> E
     db.add(agent)
     await db.commit()
     return EnrollResult(token=token, name=agent.name)
+
+
+# ── Live landing-page probes (designated kiosk only) ─────────────────────────
+# The payload asks every ~60s whether IT is the designated Live probe. Only the
+# designated kiosk gets a target list; everyone else gets enabled=false and
+# changes nothing about its behavior.
+
+@router.get("/live-config")
+async def live_config(
+    db: AsyncSession = Depends(get_db),
+    x_agent_token: str | None = Header(default=None),
+) -> dict:
+    from app.api.routes.live import ensure_default_targets
+
+    from app.models import ProbeTarget
+
+    agent = await _agent_from_token(db, x_agent_token)
+    account = await ensure_default_targets(db)  # seeds the classic set once
+    st = get_settings()
+    if account.probe_agent_id != agent.id:
+        return {"enabled": False}
+    targets = (
+        await db.execute(
+            select(ProbeTarget)
+            .where(ProbeTarget.account_id == account.id, ProbeTarget.enabled.is_(True))
+            .order_by(ProbeTarget.sort)
+        )
+    ).scalars()
+    return {
+        "enabled": True,
+        "targets": [
+            {"id": str(t.id), "kind": t.kind, "target": t.target} for t in targets
+        ],
+        "ping_interval": st.live_agent_ping_interval_seconds,
+        "http_interval": st.live_agent_http_interval_seconds,
+        "post_interval": st.live_agent_post_interval_seconds,
+    }
+
+
+@router.post("/probe-report")
+async def probe_report(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    x_agent_token: str | None = Header(default=None),
+) -> dict:
+    """Bulk-ingest the designated kiosk's probe samples.
+    Body: {"samples": [{"target_id": "...", "ts": epoch_s, "ms": 1.2|null}, …]}"""
+    from app.models import ProbeSample, ProbeTarget
+
+    agent = await _agent_from_token(db, x_agent_token)
+    samples = (body or {}).get("samples") or []
+    if not isinstance(samples, list):
+        raise HTTPException(status_code=422, detail="samples must be a list")
+    samples = samples[:2000]
+    # Only accept samples for THIS account's real targets.
+    valid_ids = {
+        str(t.id)
+        for t in (
+            await db.execute(
+                select(ProbeTarget).where(ProbeTarget.account_id == agent.account_id)
+            )
+        ).scalars()
+    }
+    accepted = 0
+    for s in samples:
+        try:
+            tid = str(s["target_id"])
+            if tid not in valid_ids:
+                continue
+            ts = datetime.fromtimestamp(float(s["ts"]), tz=timezone.utc)
+            ms = s.get("ms")
+            ms = float(ms) if ms is not None else None
+        except (KeyError, TypeError, ValueError):
+            continue
+        db.add(ProbeSample(target_id=uuid.UUID(tid), agent_id=agent.id, ts=ts, ms=ms))
+        accepted += 1
+    await db.commit()
+    return {"accepted": accepted}

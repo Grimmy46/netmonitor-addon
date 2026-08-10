@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type Agent, type AuthUser, type UnifiConsole, type UnifiStatus } from "../api/client";
+import { api, type Agent, type AuthUser, type LiveTarget, type UnifiConsole, type UnifiStatus } from "../api/client";
 
 export function SettingsModal({
   status,
@@ -29,6 +29,73 @@ export function SettingsModal({
   const [aBusy, setABusy] = useState(false);
   const [pin, setPin] = useState<string | null>(null);
   const [pinShown, setPinShown] = useState(false);
+
+  // ── Live page (probe kiosk + targets) ───────────────────────────────────
+  const [liveTargets, setLiveTargets] = useState<LiveTarget[]>([]);
+  const [probeAgentId, setProbeAgentId] = useState<string>("");
+  const [ltKind, setLtKind] = useState("ping");
+  const [ltLabel, setLtLabel] = useState("");
+  const [ltTarget, setLtTarget] = useState("");
+  const [ltBusy, setLtBusy] = useState(false);
+  const [ltMsg, setLtMsg] = useState("");
+
+  const loadLive = () =>
+    Promise.all([api.liveTargets(), api.liveFeed(1)])
+      .then(([ts, f]) => {
+        setLiveTargets(ts);
+        setProbeAgentId(f.probe_agent?.id ?? "");
+      })
+      .catch(() => {});
+
+  async function pickProbeAgent(id: string) {
+    setLtBusy(true);
+    setLtMsg("");
+    try {
+      await api.setProbeAgent(id || null);
+      setProbeAgentId(id);
+      setLtMsg(id ? "Probe kiosk set — live data within ~1 min." : "Probe kiosk cleared (cloud vantage only).");
+    } catch (e) {
+      setLtMsg(String(e instanceof Error ? e.message : e));
+    } finally {
+      setLtBusy(false);
+    }
+  }
+
+  async function addLiveTarget() {
+    if (!ltTarget.trim()) return;
+    setLtBusy(true);
+    setLtMsg("");
+    try {
+      await api.addLiveTarget({ kind: ltKind, label: ltLabel.trim(), target: ltTarget.trim() });
+      setLtLabel("");
+      setLtTarget("");
+      await loadLive();
+    } catch (e) {
+      setLtMsg(String(e instanceof Error ? e.message : e));
+    } finally {
+      setLtBusy(false);
+    }
+  }
+
+  async function toggleLiveTarget(t: LiveTarget) {
+    setLtBusy(true);
+    try {
+      await api.updateLiveTarget(t.id, { enabled: !t.enabled });
+      await loadLive();
+    } finally {
+      setLtBusy(false);
+    }
+  }
+
+  async function removeLiveTarget(id: string) {
+    setLtBusy(true);
+    try {
+      await api.deleteLiveTarget(id);
+      await loadLive();
+    } finally {
+      setLtBusy(false);
+    }
+  }
 
   // ── Users (accounts & roles) ────────────────────────────────────────────--
   const [users, setUsers] = useState<AuthUser[]>([]);
@@ -97,6 +164,8 @@ export function SettingsModal({
     api.agents().then(setAgents).catch(() => {});
     api.enrollmentPin().then((r) => setPin(r.pin)).catch(() => {});
     loadUsers();
+    loadLive();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function regenPin() {
@@ -166,6 +235,56 @@ export function SettingsModal({
     <div className="overlay" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h2>Settings</h2>
+
+        {/* ── Live page ───────────────────────────────────────────────────── */}
+        <h3 style={{ margin: "4px 0 6px", fontSize: 15 }}>Live page</h3>
+        <p style={{ marginTop: 0 }}>
+          The Live tab probes these targets continuously. The <strong>probe kiosk</strong> is
+          the on-lot vantage; while it sleeps the server's cloud vantage takes over.
+        </p>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+          <span className="sub" style={{ fontSize: 13 }}>Probe kiosk:</span>
+          <select
+            value={probeAgentId}
+            onChange={(e) => pickProbeAgent(e.target.value)}
+            disabled={ltBusy}
+            style={{ padding: "6px", flex: 1 }}
+          >
+            <option value="">— none (cloud vantage only) —</option>
+            {agents.filter((a) => a.claimed || a.last_seen_at).map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}{a.online ? "" : " (offline)"}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div style={{ marginBottom: 8 }}>
+          {liveTargets.map((t) => (
+            <div key={t.id} className="banner" style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, opacity: t.enabled ? 1 : 0.55 }}>
+              <span className="sub" style={{ fontSize: 11, width: 34 }}>{t.kind}</span>
+              <strong>{t.label}</strong>
+              <span className="sub" style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{t.target}</span>
+              <button className="btn" style={{ fontSize: 12, padding: "3px 8px" }} disabled={ltBusy} onClick={() => toggleLiveTarget(t)}>
+                {t.enabled ? "Disable" : "Enable"}
+              </button>
+              <button className="btn" style={{ fontSize: 12, padding: "3px 8px" }} disabled={ltBusy} onClick={() => removeLiveTarget(t.id)}>
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 6 }}>
+          <select value={ltKind} onChange={(e) => setLtKind(e.target.value)} style={{ padding: "6px" }}>
+            <option value="ping">ping</option>
+            <option value="http">https</option>
+          </select>
+          <input placeholder="label" value={ltLabel} onChange={(e) => setLtLabel(e.target.value)} style={{ width: 140 }} />
+          <input placeholder={ltKind === "http" ? "https://…" : "host / IP"} value={ltTarget}
+            onChange={(e) => setLtTarget(e.target.value)} style={{ flex: 1, minWidth: 160 }} />
+          <button className="btn" onClick={addLiveTarget} disabled={ltBusy || !ltTarget.trim()}>Add target</button>
+        </div>
+        {ltMsg ? <p className="sub" style={{ fontSize: 12 }}>{ltMsg}</p> : null}
+        <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "14px 0" }} />
 
         {/* ── Users & roles ───────────────────────────────────────────────── */}
         <h3 style={{ margin: "4px 0 6px", fontSize: 15 }}>Users</h3>

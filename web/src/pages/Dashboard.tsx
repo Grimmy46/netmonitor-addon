@@ -4,6 +4,7 @@ import { PlannerView } from "../components/PlannerView";
 import { PulseLogo } from "../components/PulseLogo";
 import { AgentsView } from "../components/AgentsView";
 import { DormantView } from "../components/DormantView";
+import { LiveView } from "../components/LiveView";
 import { NotifyBell } from "../components/NotifyBell";
 import { SettingsModal } from "../components/SettingsModal";
 import { SiteCard } from "../components/SiteCard";
@@ -43,7 +44,7 @@ export function Dashboard() {
     window.dispatchEvent(new Event("nm-unauthorized"));
   }
   const [syncing, setSyncing] = useState(false);
-  const [view, setView] = useState<"fleet" | "map" | "dormant" | "kiosks" | "planner">("fleet");
+  const [view, setView] = useState<"live" | "fleet" | "map" | "dormant" | "kiosks" | "planner">("live");
   const [fleetFilter, setFleetFilter] = useState<FleetFilter>("all");
   const [siteRoute, setSiteRoute] = useState<string | null>(siteIdFromHash());
 
@@ -121,6 +122,7 @@ export function Dashboard() {
         <span className="sub hide-sm">2.0{version && ` · cloud v${version}`}</span>
         {configured && !siteRoute ? (
           <nav className="map-tabs" style={{ marginLeft: 12 }}>
+            <button className={`tab ${view === "live" ? "active" : ""}`} onClick={() => setView("live")}>Live</button>
             <button className={`tab ${view === "fleet" ? "active" : ""}`} onClick={() => setView("fleet")}>Fleet</button>
             <button className={`tab ${view === "map" ? "active" : ""}`} onClick={() => setView("map")}>Map</button>
             <button className={`tab ${view === "dormant" ? "active" : ""}`} onClick={() => setView("dormant")}>Dormant</button>
@@ -160,7 +162,9 @@ export function Dashboard() {
 
         {error ? <div className="banner err">{error}</div> : null}
 
-        {!configured ? (
+        {view === "live" ? (
+          <LiveView onOpenSettings={isAdmin() ? openSettings : undefined} />
+        ) : !configured ? (
           <div className="empty">
             <p style={{ fontSize: 16, color: "var(--ink-secondary)" }}>
               Connect a UniFi console (or Site Manager account) to see your fleet.

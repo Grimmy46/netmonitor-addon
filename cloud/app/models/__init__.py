@@ -4,6 +4,7 @@ from app.models.agent import Agent
 from app.models.device import Device
 from app.models.isp_metric import IspMetric
 from app.models.ping_sample import PingSample
+from app.models.probe import ProbeSample, ProbeTarget
 from app.models.push_subscription import PushSubscription
 from app.models.site import Site
 from app.models.site_plan import SitePlan
@@ -17,6 +18,8 @@ __all__ = [
     "Device",
     "IspMetric",
     "PingSample",
+    "ProbeSample",
+    "ProbeTarget",
     "PushSubscription",
     "Site",
     "SitePlan",

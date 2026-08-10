@@ -248,6 +248,20 @@ export const api = {
   regenerateEnrollmentPin: () =>
     req<{ pin: string }>("/agents/enrollment/regenerate", { method: "POST" }),
 
+  // Live landing page.
+  liveFeed: (minutes = 10) => req<LiveFeed>(`/live/feed?minutes=${minutes}`),
+  liveTargets: () => req<LiveTarget[]>("/live/targets"),
+  addLiveTarget: (t: { kind: string; label: string; target: string }) =>
+    req<LiveTarget>("/live/targets", { method: "POST", body: JSON.stringify(t) }),
+  updateLiveTarget: (id: string, patch: Partial<Pick<LiveTarget, "kind" | "label" | "target" | "enabled" | "sort">>) =>
+    req<LiveTarget>(`/live/targets/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  deleteLiveTarget: (id: string) => req<void>(`/live/targets/${id}`, { method: "DELETE" }),
+  setProbeAgent: (agentId: string | null) =>
+    req<{ probe_agent_id: string | null }>("/live/probe-agent", {
+      method: "POST",
+      body: JSON.stringify({ agent_id: agentId }),
+    }),
+
   // Push notifications.
   vapidKey: () => req<{ public_key: string }>("/notifications/vapid"),
   pushStatus: (endpoint?: string) =>
@@ -283,6 +297,35 @@ export const api = {
   setUserRole: (id: string, role: string) =>
     req<AuthUser>(`/auth/users/${id}/role`, { method: "POST", body: JSON.stringify({ role }) }),
 };
+
+export interface LiveTarget {
+  id: string;
+  kind: "ping" | "http";
+  label: string;
+  target: string;
+  enabled: boolean;
+  sort: number;
+}
+
+export interface LiveSample {
+  ts: number; // epoch seconds
+  ms: number | null;
+}
+
+export interface LiveFeedTarget extends LiveTarget {
+  vantage: "local" | "cloud" | "none";
+  ok: boolean | null;
+  last_ms: number | null;
+  loss_pct: number;
+  samples: LiveSample[];
+}
+
+export interface LiveFeed {
+  generated_at: string;
+  window_minutes: number;
+  probe_agent: { id: string; name: string; online: boolean } | null;
+  targets: LiveFeedTarget[];
+}
 
 export interface AuthUser {
   id: string;

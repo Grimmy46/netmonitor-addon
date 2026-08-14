@@ -30,7 +30,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.08.06.1"
+PAYLOAD_VERSION = "2026.08.10.1"
 
 SYSTEM = platform.system()
 _TIME_RE = re.compile(r"time[=<]\s*([\d.,]+)\s*ms", re.IGNORECASE)
@@ -240,6 +240,117 @@ def _probe_sweep(ctx, timeout_s):
     return info.get("interval")
 
 
+# ── Live landing-page probe (designated kiosk only) ─────────────────────────
+# Every agent asks /agents/live-config every ~60s. Only the ONE kiosk the
+# dashboard designates gets enabled=true + a target list; for everyone else
+# this whole feature is a single tiny GET per minute and nothing more.
+
+def _fetch_live_config(ctx):
+    req = urllib.request.Request(
+        ctx["server_url"].rstrip("/") + "/agents/live-config",
+        headers={"X-Agent-Token": ctx["token"]})
+    with urllib.request.urlopen(req, timeout=15, context=SSL_CTX) as resp:
+        return json.loads(resp.read().decode("utf-8", "ignore"))
+
+
+def _post_probe_report(ctx, samples):
+    data = json.dumps({"samples": samples}).encode("utf-8")
+    req = urllib.request.Request(
+        ctx["server_url"].rstrip("/") + "/agents/probe-report",
+        data=data, method="POST",
+        headers={"Content-Type": "application/json", "X-Agent-Token": ctx["token"]})
+    with urllib.request.urlopen(req, timeout=20, context=SSL_CTX) as resp:
+        resp.read()
+
+
+def _http_time_once(url, timeout_s):
+    """Time an HTTPS GET. ANY http response (even 4xx/5xx) counts as reachable —
+    we're measuring 'is the service there and how fast', not correctness."""
+    t0 = time.time()
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "NetMonitorAgent"})
+        with urllib.request.urlopen(req, timeout=timeout_s, context=SSL_CTX) as resp:
+            resp.read(1024)
+        return round((time.time() - t0) * 1000.0, 2)
+    except urllib.error.HTTPError:
+        return round((time.time() - t0) * 1000.0, 2)  # server answered — it's up
+    except Exception:
+        return None
+
+
+def _live_probe_worker(ctx, stop):
+    """Runs as a daemon thread. Pings ping-targets every ~2s, times http
+    targets every ~10s, posts batches every ~10s — only while this kiosk is
+    the designated Live probe. `stop` is set when the payload hands over to a
+    newer version, so old workers never linger."""
+    info = None
+    buffer = []
+    last_cfg = 0.0
+    last_http = 0.0
+    last_post = time.time()
+    gw = {"ip": "", "at": 0.0}
+    while not stop.is_set():
+        now = time.time()
+        if info is None or now - last_cfg >= 60.0:
+            last_cfg = now
+            try:
+                info = _fetch_live_config(ctx)
+            except Exception:
+                info = info or {"enabled": False}
+        if not info.get("enabled"):
+            stop.wait(30.0)
+            continue
+
+        targets = info.get("targets") or []
+        ping_iv = max(1.0, float(info.get("ping_interval", 2.0)))
+        http_iv = max(5.0, float(info.get("http_interval", 10.0)))
+        post_iv = max(5.0, float(info.get("post_interval", 10.0)))
+
+        t0 = time.time()
+        do_http = t0 - last_http >= http_iv
+        if do_http:
+            last_http = t0
+
+        lock = threading.Lock()
+
+        def _probe(t):
+            kind = t.get("kind") or "ping"
+            tgt = (t.get("target") or "").strip()
+            if kind == "http":
+                ms = _http_time_once(tgt, 8.0)
+            else:
+                host = tgt
+                if host.lower() == "gateway":
+                    if not gw["ip"] or time.time() - gw["at"] > 300.0:
+                        gw["ip"], gw["at"] = detect_gateway(), time.time()
+                    host = gw["ip"]
+                ms = ping_once(host, 2.0) if host else None
+            with lock:
+                buffer.append({"target_id": t.get("id"), "ts": round(time.time(), 3), "ms": ms})
+
+        threads = []
+        for t in targets:
+            if (t.get("kind") or "ping") == "http" and not do_http:
+                continue
+            th = threading.Thread(target=_probe, args=(t,), daemon=True)
+            th.start()
+            threads.append(th)
+        for th in threads:
+            th.join(12.0)
+
+        if time.time() - last_post >= post_iv and buffer:
+            try:
+                _post_probe_report(ctx, buffer[:2000])
+                buffer = []
+            except Exception as e:
+                print(f"[netmon-payload] probe-report failed, buffering {len(buffer)}: {e}", flush=True)
+                buffer = buffer[-4000:]
+            last_post = time.time()
+
+        elapsed = time.time() - t0
+        stop.wait(max(0.2, ping_iv - elapsed))
+
+
 def _server_version(ctx):
     try:
         req = urllib.request.Request(
@@ -267,6 +378,12 @@ def main(cfg, ctx):
     print(f"[netmon-payload v{PAYLOAD_VERSION}] {hostname} target={cfg['target']} "
           f"gateway={gw_ip or 'none'} lan_probe={'on' if probe_lan else 'off'} "
           f"-> {ctx['server_url']}", flush=True)
+
+    # Live landing-page probe: daemon thread, active ONLY if the server says
+    # this kiosk is the designated probe. Stopped explicitly on payload
+    # handover so an old worker never outlives its version.
+    live_stop = threading.Event()
+    threading.Thread(target=_live_probe_worker, args=(ctx, live_stop), daemon=True).start()
 
     buffer = []
     last_post = time.time()
@@ -306,6 +423,7 @@ def main(cfg, ctx):
             sv = _server_version(ctx)
             if sv and sv != ctx.get("running_version"):
                 print(f"[netmon-payload] newer version {sv} available — updating", flush=True)
+                live_stop.set()
                 return
 
         remaining = interval - (time.time() - t)

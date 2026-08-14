@@ -122,9 +122,10 @@ export function NotifyBell() {
           ) : (
             <>
               <p className="sub" style={{ fontSize: 13, marginBottom: 6 }}>
-                Get a push on this device when a kiosk stops reporting or a Main-site
-                device goes down or unreachable — and when it comes back. Mass
-                power-downs arrive as one summary, not a storm.
+                Get a push on this device when a <strong>whole site goes down</strong>,
+                a kiosk stops reporting, or a Main-site device goes down or
+                unreachable — and when each comes back. Mass power-downs arrive
+                as one summary, not a storm.
               </p>
               <p className="sub" style={{ fontSize: 12, marginBottom: 10 }}>
                 This device: <strong>{on ? "registered ✓" : "not registered"}</strong>

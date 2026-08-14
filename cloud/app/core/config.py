@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     # Which site's devices can alert (empty = same as default_probe_site_name).
     # Kiosk agents alert regardless of site.
     alert_site_name: str = ""
+    # Whole-site outages alert for EVERY site (not just Main): a site that was
+    # seen online and then reports offline for this long pushes "SITE DOWN".
+    # (UniFi refreshes site status ~every 5 min, so detection is ~5-10 min.)
+    alert_site_confirm_seconds: int = 240
     # VAPID "sub" claim sent to the push services.
     vapid_subject: str = "mailto:dawidrcs@gmail.com"
 

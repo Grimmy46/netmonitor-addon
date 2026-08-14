@@ -1,7 +1,8 @@
 """A monitored site, mirrored from UniFi Site Manager (/sites)."""
 import uuid
+from datetime import datetime
 
-from sqlalchemy import ForeignKey
+from sqlalchemy import DateTime, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -30,6 +31,15 @@ class Site(Base, UUIDPk, Timestamps):
     device_total: Mapped[int] = mapped_column(default=0)
     device_offline: Mapped[int] = mapped_column(default=0)
     wan_uptime_pct: Mapped[float | None] = mapped_column(default=None)
+
+    # Site-down alerting state machine (see workers/alerts.py): None (never
+    # seen online — dark/retired sites can't alert), "ok" (last seen online),
+    # "pending" (offline, confirmation window running), "notified" (down push
+    # sent — recovery push fires when it returns).
+    alert_state: Mapped[str | None] = mapped_column(default=None)
+    alert_state_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
 
     # Position on the fleet site map (pixels). Null until the user drags it.
     map_x: Mapped[float | None] = mapped_column(default=None)

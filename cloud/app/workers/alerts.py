@@ -177,8 +177,47 @@ async def sweep(db: AsyncSession) -> dict:
                     ))
                 d.alert_state, d.alert_state_at = None, None
 
+    # ── Whole sites: witnessed online→offline transitions (EVERY site) ─────
+    # A site that has never been seen online (packed-up / retired venues stay
+    # dark in UniFi for months) can never alert. Site-down pushes are NEVER
+    # mass-suppressed — a full site outage is the single loudest thing this
+    # system knows how to say.
+    site_faults: list[_Fault] = []
+    for s in (await db.execute(select(Site))).scalars():
+        if s.status == "online":
+            if s.alert_state == "notified":
+                recoveries.append(_Fault(
+                    entity=s,
+                    title=f"🟢 Site {s.name} is back online",
+                    body="UniFi reports the site up again",
+                    tag=f"site-{s.id}", url=f"/#/site/{s.id}",
+                ))
+            s.alert_state, s.alert_state_at = "ok", now
+        elif s.status == "offline":
+            if s.alert_state == "ok":
+                s.alert_state, s.alert_state_at = "pending", now
+            elif (
+                s.alert_state == "pending"
+                and s.alert_state_at is not None
+                and (now - s.alert_state_at).total_seconds() >= st.alert_site_confirm_seconds
+            ):
+                site_faults.append(_Fault(
+                    entity=s,
+                    title=f"🔴 SITE DOWN: {s.name}",
+                    body=f"Whole site offline since ~{_fmt_time(s.alert_state_at)} — "
+                         "WAN or gateway outage",
+                    tag=f"site-{s.id}", url=f"/#/site/{s.id}",
+                ))
+        # degraded/unknown: leave the state alone — degraded is still up,
+        # unknown carries no information either way.
+
     # ── Deliver ────────────────────────────────────────────────────────────
     pushed = 0
+    for f in site_faults:
+        f.entity.alert_state, f.entity.alert_state_at = "notified", now
+        pushed += await send_push(db, {
+            "title": f.title, "body": f.body, "tag": f.tag, "url": f.url,
+        })
     if len(faults) >= st.alert_mass_threshold:
         # Mass event: one summary instead of a storm. Sounds like a power-down
         # at close — or a site-wide outage, which is exactly one push too.
@@ -204,12 +243,17 @@ async def sweep(db: AsyncSession) -> dict:
             "title": r.title, "body": r.body, "tag": r.tag, "url": r.url,
         })
     await db.commit()
-    if faults or recoveries:
+    if faults or site_faults or recoveries:
         logger.info(
-            "Alert sweep: %d fault(s), %d recovery(ies), %d push(es) sent",
-            len(faults), len(recoveries), pushed,
+            "Alert sweep: %d fault(s), %d site outage(s), %d recovery(ies), %d push(es) sent",
+            len(faults), len(site_faults), len(recoveries), pushed,
         )
-    return {"faults": len(faults), "recoveries": len(recoveries), "pushed": pushed}
+    return {
+        "faults": len(faults),
+        "site_faults": len(site_faults),
+        "recoveries": len(recoveries),
+        "pushed": pushed,
+    }
 
 
 async def run_alert_sweeper() -> None:

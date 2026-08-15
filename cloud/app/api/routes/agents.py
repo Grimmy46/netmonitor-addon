@@ -163,6 +163,10 @@ def _agent_out(a: Agent, site_name: str | None, latest_rtt: float | None) -> Age
         last_target=a.last_target,
         last_seen_at=a.last_seen_at,
         latest_rtt_ms=latest_rtt,
+        printer_status=a.printer_status,
+        printer_status_at=a.printer_status_at,
+        printer_detail=a.printer_detail,
+        printer_raw=a.printer_raw,
     )
 
 
@@ -520,6 +524,14 @@ async def agent_report(
         agent.os = report.os
     if report.target:
         agent.last_target = report.target
+    if report.printer is not None:
+        p = report.printer
+        # A printer that's present reports a state; when absent we clear the
+        # stored status so a removed/unplugged printer stops showing/alerting.
+        agent.printer_status = (p.state or "unknown") if p.present else None
+        agent.printer_status_at = now.isoformat()
+        agent.printer_raw = p.raw if p.present else None
+        agent.printer_detail = p.detail if p.present else None
     client_ip = _client_ip(request)
     if client_ip:
         agent.last_ip = client_ip

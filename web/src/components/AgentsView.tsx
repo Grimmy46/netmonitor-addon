@@ -17,6 +17,30 @@ function timeAgo(iso: string | null): string {
   return `${Math.floor(secs / 86400)}d ago`;
 }
 
+const PRINTER_CHIP: Record<string, { label: string; color: string; bg: string }> = {
+  ok: { label: "🖨️ Paper OK", color: "var(--good)", bg: "rgba(74,222,128,0.12)" },
+  paper_out: { label: "🧻 Paper OUT", color: "var(--critical)", bg: "rgba(248,113,113,0.14)" },
+  cover_open: { label: "🔧 Cover open", color: "var(--critical)", bg: "rgba(248,113,113,0.14)" },
+  error: { label: "⚠️ Printer error", color: "var(--critical)", bg: "rgba(248,113,113,0.14)" },
+  unknown: { label: "🖨️ No reply", color: "var(--ink-muted)", bg: "rgba(127,127,127,0.10)" },
+};
+
+function PrinterChip({ agent }: { agent: Agent }) {
+  if (!agent.printer_status) return null;
+  const c = PRINTER_CHIP[agent.printer_status] ?? PRINTER_CHIP.unknown;
+  return (
+    <span
+      title={agent.printer_detail ?? undefined}
+      style={{
+        display: "inline-block", fontSize: 11, fontWeight: 600, lineHeight: 1.6,
+        padding: "1px 8px", borderRadius: 999, color: c.color, background: c.bg,
+      }}
+    >
+      {c.label}
+    </span>
+  );
+}
+
 function AgentCard({
   agent,
   spark,
@@ -66,6 +90,9 @@ function AgentCard({
             {agent.os ? ` · ${agent.os}` : ""}
             {agent.site_name ? ` · ${agent.site_name}` : ""}
           </div>
+          {agent.printer_status ? (
+            <div style={{ marginTop: 4 }}><PrinterChip agent={agent} /></div>
+          ) : null}
         </div>
         <div className="spacer" />
         <StatusPill status={agent.online ? "online" : agent.last_seen_at ? "offline" : "unknown"} />

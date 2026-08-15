@@ -28,6 +28,11 @@ class AgentOut(BaseModel):
     last_target: str | None = None
     last_seen_at: str | None = None
     latest_rtt_ms: float | None = None
+    # Ticket-printer status (present only when a printer is detected & polled).
+    printer_status: str | None = None  # ok | paper_out | cover_open | error | unknown
+    printer_status_at: str | None = None
+    printer_detail: str | None = None
+    printer_raw: str | None = None
 
 
 # ── enrollment (kiosk first-run station picker, PIN-gated) ───────────────────
@@ -81,6 +86,14 @@ class PingSampleIn(BaseModel):
     gw: float | None = None       # optional gateway control ping (ms)
 
 
+class PrinterStatusIn(BaseModel):
+    """The agent's latest ticket-printer reading, attached to each report."""
+    present: bool = False                # a USB printer interface was found
+    state: str | None = None             # ok | paper_out | cover_open | error | unknown
+    raw: str | None = None               # raw status byte(s) as hex
+    detail: str | None = None            # human-readable decode
+
+
 class AgentReport(BaseModel):
     target: str = ""
     gateway: str = ""
@@ -88,6 +101,7 @@ class AgentReport(BaseModel):
     os: str | None = None
     agent_version: str | None = None
     bootstrap_version: str | None = None
+    printer: PrinterStatusIn | None = None
     samples: list[PingSampleIn] = []
 
 

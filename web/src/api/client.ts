@@ -70,6 +70,10 @@ export interface Agent {
   last_target: string | null;
   last_seen_at: string | null;
   latest_rtt_ms: number | null;
+  printer_status: "ok" | "paper_out" | "cover_open" | "error" | "unknown" | null;
+  printer_status_at: string | null;
+  printer_detail: string | null;
+  printer_raw: string | null;
 }
 
 export interface PingPoint {

@@ -49,6 +49,23 @@ def _fmt_time(ts: datetime | None) -> str:
     return ts.astimezone(timezone.utc).strftime("%H:%M UTC") if ts else "?"
 
 
+_PRINTER_FAULTS = ("paper_out", "cover_open", "error")
+_PRINTER_ICON = {"paper_out": "🧻", "cover_open": "🔧", "error": "⚠️"}
+_PRINTER_BODY = {
+    "paper_out": "Ticket printer is OUT OF PAPER — reload the roll",
+    "cover_open": "Printer cover / paper door is open",
+    "error": "Printer reports an error",
+}
+
+
+def _printer_title(name: str, state: str) -> str:
+    return f"{_PRINTER_ICON.get(state, '🖨️')} {name} printer: {state.replace('_', ' ')}"
+
+
+def _printer_body(a, state: str) -> str:
+    return _PRINTER_BODY.get(state, "Printer fault") + (f" · {a.hostname}" if a.hostname else "")
+
+
 @dataclass
 class _Fault:
     """A newly-confirmed fault eligible for a push this sweep."""
@@ -79,6 +96,7 @@ async def sweep(db: AsyncSession) -> dict:
     fresh = st.alert_fresh_window_seconds
     faults: list[_Fault] = []
     recoveries: list[_Fault] = []
+    printer_faults: list[_Fault] = []  # per-station, never mass-suppressed
 
     # ── Kiosk agents: claimed stations that stopped checking in ───────────
     agents = (
@@ -113,6 +131,39 @@ async def sweep(db: AsyncSession) -> dict:
                     url="/",
                 ))
             a.alert_state, a.alert_state_at = None, None
+
+        # ── Ticket printer: paper out / cover open / error ────────────────
+        # Only trust a FRESH reading from an agent that's currently up; a stale
+        # status (agent offline / stopped polling) never alerts on its own —
+        # the kiosk-offline push already covers that case.
+        p_state = a.printer_status
+        p_at = _parse_iso(a.printer_status_at)
+        p_fresh = p_at is not None and (now - p_at).total_seconds() <= st.alert_printer_fresh_seconds
+        if down or p_state is None or p_state == "unknown" or not p_fresh:
+            pass  # no trustworthy signal this sweep — leave alert state untouched
+        elif p_state in _PRINTER_FAULTS:
+            if a.printer_alert_state is None:
+                a.printer_alert_state, a.printer_alert_state_at = "pending", now
+            elif (
+                a.printer_alert_state == "pending"
+                and a.printer_alert_state_at is not None
+                and (now - a.printer_alert_state_at).total_seconds() >= st.alert_printer_confirm_seconds
+            ):
+                printer_faults.append(_Fault(
+                    entity=a,
+                    title=_printer_title(a.name, p_state),
+                    body=_printer_body(a, p_state),
+                    tag=f"printer-{a.id}", url="/",
+                ))
+        else:  # "ok" — healthy
+            if a.printer_alert_state == "notified":
+                recoveries.append(_Fault(
+                    entity=a,
+                    title=f"🟢 {a.name} printer OK",
+                    body="Ticket printer recovered (paper/cover restored)",
+                    tag=f"printer-{a.id}", url="/",
+                ))
+            a.printer_alert_state, a.printer_alert_state_at = None, None
 
     # ── Devices on the alert site (Main): offline or LAN-unreachable ───────
     site_ids = await _alert_site_ids(db)
@@ -218,6 +269,13 @@ async def sweep(db: AsyncSession) -> dict:
         pushed += await send_push(db, {
             "title": f.title, "body": f.body, "tag": f.tag, "url": f.url,
         })
+    # Printer faults are per-station and always sent (a full-site power-down
+    # takes the agents offline, so those printers are skipped above, not here).
+    for f in printer_faults:
+        f.entity.printer_alert_state, f.entity.printer_alert_state_at = "notified", now
+        pushed += await send_push(db, {
+            "title": f.title, "body": f.body, "tag": f.tag, "url": f.url,
+        })
     if len(faults) >= st.alert_mass_threshold:
         # Mass event: one summary instead of a storm. Sounds like a power-down
         # at close — or a site-wide outage, which is exactly one push too.
@@ -243,14 +301,16 @@ async def sweep(db: AsyncSession) -> dict:
             "title": r.title, "body": r.body, "tag": r.tag, "url": r.url,
         })
     await db.commit()
-    if faults or site_faults or recoveries:
+    if faults or site_faults or recoveries or printer_faults:
         logger.info(
-            "Alert sweep: %d fault(s), %d site outage(s), %d recovery(ies), %d push(es) sent",
-            len(faults), len(site_faults), len(recoveries), pushed,
+            "Alert sweep: %d fault(s), %d site outage(s), %d printer fault(s), "
+            "%d recovery(ies), %d push(es) sent",
+            len(faults), len(site_faults), len(printer_faults), len(recoveries), pushed,
         )
     return {
         "faults": len(faults),
         "site_faults": len(site_faults),
+        "printer_faults": len(printer_faults),
         "recoveries": len(recoveries),
         "pushed": pushed,
     }

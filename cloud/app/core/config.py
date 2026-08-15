@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     # seen online and then reports offline for this long pushes "SITE DOWN".
     # (UniFi refreshes site status ~every 5 min, so detection is ~5-10 min.)
     alert_site_confirm_seconds: int = 240
+    # A ticket-printer fault (paper out / cover open / error) must persist this
+    # long before it pushes — rides out a quick paper reload without flapping.
+    alert_printer_confirm_seconds: int = 120
+    # Ignore a printer reading older than this (agent offline / stopped polling);
+    # a stale status must never alert on its own — the kiosk-offline push covers it.
+    alert_printer_fresh_seconds: int = 300
     # VAPID "sub" claim sent to the push services.
     vapid_subject: str = "mailto:dawidrcs@gmail.com"
 

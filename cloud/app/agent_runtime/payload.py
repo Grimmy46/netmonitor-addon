@@ -32,10 +32,11 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.08.15.6"
+PAYLOAD_VERSION = "2026.08.15.7"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
+_PRINTER_STATUS = None  # latest ticket-printer reading, attached to each report
 _TIME_RE = re.compile(r"time[=<]\s*([\d.,]+)\s*ms", re.IGNORECASE)
 _MS_RE = re.compile(r"([\d.,]+)\s*ms", re.IGNORECASE)
 
@@ -177,6 +178,7 @@ def _post(ctx, cfg, gw_ip, hostname, os_str, samples):
         "os": os_str,
         "agent_version": PAYLOAD_VERSION,
         "bootstrap_version": _CTX.get("bootstrap_version") if _CTX else None,
+        "printer": _PRINTER_STATUS,
         "samples": samples,
     }).encode("utf-8")
     req = urllib.request.Request(
@@ -561,16 +563,49 @@ def _cmd_printer_raw(args):
     return {"error": f"unrecognized target {target!r} (use COMx, SPOOL:<name>, or usb)"}
 
 
+def _cmd_printer_monitor(args):
+    """Auto-find the USB ticket printer and read its real-time status (DLE EOT 2,
+    the 'offline cause' byte, calibrated on the KPM180H: 0x12 healthy, 0x72 paper
+    out). Returns a normalized {present, state, raw, detail} for the agent's
+    background poller. Runs in the crash-isolated worker (native USB I/O)."""
+    if SYSTEM != "Windows":
+        return {"present": False, "note": f"not windows ({SYSTEM})"}
+    try:
+        paths = _usbprint_paths()
+    except Exception as e:  # noqa: BLE001 — a bad enumerate must not raise
+        return {"present": False, "error": f"enumerate failed: {e}"}
+    if not paths:
+        return {"present": False}
+    # Prefer the Custom S.p.A. KPM180H (VID 0DD4); else the only USB printer iface.
+    path = next((p for p in paths if re.search(r"(?i)vid_0dd4|kpm|custom", p)), paths[0])
+    res = _usb_txn(path, b"\x10\x04\x02", 600, 8)  # DLE EOT 2
+    raw = (res or {}).get("read_hex") or ""
+    if not raw:
+        return {"present": True, "state": "unknown", "raw": "",
+                "detail": (res or {}).get("error") or "no reply"}
+    b = bytes.fromhex(raw)[0]
+    if b & 0x20:            # bit5 — roll-paper end (paper out)
+        state, detail = "paper_out", "out of paper"
+    elif b & 0x04:         # bit2 — cover / paper-door open
+        state, detail = "cover_open", "cover / paper door open"
+    elif b & 0x40:         # bit6 — printer error
+        state, detail = "error", "printer error"
+    else:
+        state, detail = "ok", "paper present, cover closed"
+    return {"present": True, "state": state, "raw": f"{b:02x}", "detail": detail}
+
+
 _COMMAND_HANDLERS = {
     "printer-status": _cmd_printer_status,
     "printer-probe": _cmd_printer_probe,
     "printer-raw": _cmd_printer_raw,
+    "printer-monitor": _cmd_printer_monitor,
 }
 
 # Kinds whose native device I/O could crash the process — run them in a SEPARATE
 # worker process (the exe re-launched in NETMON_DEVIO mode) so a crash can never
 # take the agent down. Requires bootstrap ≥ 2.5 (the server gates delivery).
-_ISOLATED_KINDS = {"printer-probe", "printer-raw"}
+_ISOLATED_KINDS = {"printer-probe", "printer-raw", "printer-monitor"}
 
 
 def device_exec(kind, args):
@@ -852,6 +887,41 @@ def _server_version(ctx):
         return None
 
 
+def _supports_worker(ctx):
+    """True only if the running .exe (bootstrapper) can execute a crash-isolated
+    device worker (bootstrap ≥ 2.5). On an older exe, re-launching it with
+    NETMON_DEVIO would spawn a SECOND full agent, so the poller must stay off."""
+    bv = (ctx or {}).get("bootstrap_version")
+    if not bv:
+        return False
+    try:
+        parts = [int(x) for x in str(bv).split(".")[:2]]
+    except (ValueError, AttributeError):
+        return False
+    return parts >= [2, 5]
+
+
+def _printer_monitor_worker(ctx, stop):
+    """Poll the ticket printer's status in the crash-isolated worker and stash the
+    latest reading for the next report. Polls often when a printer is present,
+    backs off to ~10 min when none is found. Windows-only; requires worker mode."""
+    global _PRINTER_STATUS
+    if SYSTEM != "Windows" or not _supports_worker(ctx):
+        return
+    if stop.wait(20):  # let enrollment + first ping settle
+        return
+    while not stop.is_set():
+        try:
+            res = _spawn_device_worker("printer-monitor", {}, timeout=30)
+        except Exception as e:  # noqa: BLE001 — a poll must never kill the loop
+            res = {"present": False, "error": str(e)}
+        if isinstance(res, dict) and "present" in res:
+            _PRINTER_STATUS = res
+        present = isinstance(res, dict) and res.get("present")
+        if stop.wait(90.0 if present else 600.0):
+            return
+
+
 def main(cfg, ctx):
     global _CTX
     _CTX = ctx  # carries bootstrap_version + worker_exe for reporting/spawning
@@ -876,6 +946,11 @@ def main(cfg, ctx):
     # handover so an old worker never outlives its version.
     live_stop = threading.Event()
     threading.Thread(target=_live_probe_worker, args=(ctx, live_stop), daemon=True).start()
+
+    # Ticket-printer status poller: crash-isolated USB read, reported each cycle.
+    # Gated on worker-capable exes so it can never spawn a rogue second agent.
+    printer_stop = threading.Event()
+    threading.Thread(target=_printer_monitor_worker, args=(ctx, printer_stop), daemon=True).start()
 
     buffer = []
     last_post = time.time()
@@ -917,6 +992,7 @@ def main(cfg, ctx):
             if sv and sv != ctx.get("running_version"):
                 print(f"[netmon-payload] newer version {sv} available — updating", flush=True)
                 live_stop.set()
+                printer_stop.set()
                 return
 
         remaining = interval - (time.time() - t)

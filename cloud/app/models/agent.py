@@ -44,3 +44,15 @@ class Agent(Base, UUIDPk, Timestamps):
     alert_state_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
+
+    # Ticket-printer (KPM180H) monitoring: the agent polls the printer's
+    # real-time status and reports a normalized state; the server keeps the
+    # latest reading and runs its own debounced fault alert.
+    printer_status: Mapped[str | None] = mapped_column(default=None)  # ok|paper_out|cover_open|error|unknown
+    printer_status_at: Mapped[str | None] = mapped_column(default=None)  # ISO ts of last reading
+    printer_raw: Mapped[str | None] = mapped_column(default=None)  # raw status byte(s) hex
+    printer_detail: Mapped[str | None] = mapped_column(default=None)  # human decode
+    printer_alert_state: Mapped[str | None] = mapped_column(default=None)  # None|pending|notified
+    printer_alert_state_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )

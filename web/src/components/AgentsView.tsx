@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, isAdmin, type Agent, type MetricPoint, type PingPoint, type SparkPoint } from "../api/client";
 import { PrinterCheck } from "./PrinterCheck";
+import { PrinterDeep } from "./PrinterDeep";
 import { downloadKioskReport } from "../lib/kioskReport";
 import { LatencyChart } from "./LatencyChart";
 import { Sparkline } from "./Sparkline";
@@ -99,6 +100,7 @@ function AgentCard({
           </div>
           {pings === null ? <p className="hint">Loading…</p> : <LatencyChart data={pings} />}
           {isAdmin() ? <PrinterCheck agentId={agent.id} /> : null}
+          {isAdmin() ? <PrinterDeep agentId={agent.id} /> : null}
           <div style={{ marginTop: 12, textAlign: "right" }}>
             <button className="btn" onClick={(e) => { e.stopPropagation(); onToggle(); }}>
               Collapse

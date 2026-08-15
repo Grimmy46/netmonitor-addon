@@ -30,7 +30,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.08.14.1"
+PAYLOAD_VERSION = "2026.08.15.1"
 
 SYSTEM = platform.system()
 _TIME_RE = re.compile(r"time[=<]\s*([\d.,]+)\s*ms", re.IGNORECASE)
@@ -215,8 +215,125 @@ def _cmd_printer_status(_args):
     return {"printers": data}
 
 
+def _cmd_printer_probe(_args):
+    """Read-only reconnaissance: how is the KPM180H addressable on THIS kiosk?
+    Enumerates installed printers (name/driver/port), active serial COM ports
+    (registry SERIALCOMM — the reliable source), and any Custom/POS/printer PnP
+    devices. This tells us which rung of the plan we're on: a COM port means a
+    clean bidirectional status channel; USB-only means the harder path."""
+    if SYSTEM != "Windows":
+        return {"note": f"not windows ({SYSTEM})"}
+    ps = r'''
+$out = [ordered]@{}
+try { $out.printers = Get-CimInstance Win32_Printer |
+    Select-Object Name,DriverName,PortName,Default,Local } catch { $out.printers=@() }
+try {
+  $sc = Get-ItemProperty 'HKLM:\HARDWARE\DEVICEMAP\SERIALCOMM' -ErrorAction Stop
+  $out.serial_ports = $sc.PSObject.Properties |
+    Where-Object { $_.Name -notlike 'PS*' } |
+    ForEach-Object { [pscustomobject]@{ device=$_.Name; port=$_.Value } }
+} catch { $out.serial_ports=@() }
+try { $out.serial_named = Get-CimInstance Win32_SerialPort |
+    Select-Object DeviceID,Name,Description } catch { $out.serial_named=@() }
+try { $out.pnp = Get-PnpDevice -PresentOnly |
+    Where-Object { $_.FriendlyName -match 'Custom|KPM|POS|Printer|Receipt|Ticket' } |
+    Select-Object Class,FriendlyName,InstanceId,Status } catch { $out.pnp=@() }
+$out | ConvertTo-Json -Depth 4
+'''
+    proc = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=40, **_no_window_kwargs())
+    out = proc.stdout.decode("utf-8", "ignore").strip()
+    if not out:
+        return {"error": proc.stderr.decode("utf-8", "ignore")[:500] or "no output"}
+    try:
+        return json.loads(out)
+    except Exception:
+        return {"raw": out[:4000]}
+
+
+def _cmd_printer_raw(args):
+    """Bidirectional transaction with a serial (COM) device: write the given
+    bytes, read the reply. This is how we speak the KPM180H's native status
+    protocol (DLE EOT, GS Ex, …) with NO driver and NO admin — the bytes come
+    from the server so all protocol work happens from the dashboard.
+
+    args: {"target": "COM3", "write_hex": "1004 01", "read_timeout_ms": 500,
+           "read_max": 64, "mode": "baud=115200 parity=N data=8 stop=1"(optional)}
+    Only COM targets are accepted here — a serial channel gives reliable read
+    timeouts and never fights the print spooler for an exclusive USB handle."""
+    if SYSTEM != "Windows":
+        return {"note": f"not windows ({SYSTEM})"}
+    import ctypes
+    from ctypes import wintypes
+
+    target = str(args.get("target") or "").strip()
+    if not re.fullmatch(r"(?i)COM\d+", target):
+        return {"error": f"target must be a COM port (got {target!r})"}
+    write_hex = re.sub(r"[^0-9a-fA-F]", "", str(args.get("write_hex") or ""))
+    if len(write_hex) % 2 != 0:
+        return {"error": "write_hex must be whole bytes"}
+    data = bytes.fromhex(write_hex)
+    read_max = min(int(args.get("read_max") or 64), 1024)
+    read_to = min(int(args.get("read_timeout_ms") or 500), 5000)
+    mode = args.get("mode")
+
+    k32 = ctypes.windll.kernel32
+    GENERIC_RW = 0xC0000000
+    OPEN_EXISTING = 3
+    path = "\\\\.\\" + target
+    h = k32.CreateFileW(path, GENERIC_RW, 0, None, OPEN_EXISTING, 0, None)
+    if h == wintypes.HANDLE(-1).value or h == -1:
+        return {"error": f"could not open {target} (err {ctypes.get_last_error()}) — "
+                         "port busy or wrong number?"}
+    try:
+        if mode:
+            class DCB(ctypes.Structure):
+                _fields_ = [("DCBlength", wintypes.DWORD), ("BaudRate", wintypes.DWORD),
+                            ("fFlags", wintypes.DWORD), ("wReserved", wintypes.WORD),
+                            ("XonLim", wintypes.WORD), ("XoffLim", wintypes.WORD),
+                            ("ByteSize", ctypes.c_byte), ("Parity", ctypes.c_byte),
+                            ("StopBits", ctypes.c_byte), ("XonChar", ctypes.c_char),
+                            ("XoffChar", ctypes.c_char), ("ErrorChar", ctypes.c_char),
+                            ("EofChar", ctypes.c_char), ("EvtChar", ctypes.c_char),
+                            ("wReserved1", wintypes.WORD)]
+            dcb = DCB()
+            dcb.DCBlength = ctypes.sizeof(DCB)
+            if k32.BuildCommDCBW(str(mode), ctypes.byref(dcb)):
+                k32.SetCommState(h, ctypes.byref(dcb))
+
+        class COMMTIMEOUTS(ctypes.Structure):
+            _fields_ = [("ReadIntervalTimeout", wintypes.DWORD),
+                        ("ReadTotalTimeoutMultiplier", wintypes.DWORD),
+                        ("ReadTotalTimeoutConstant", wintypes.DWORD),
+                        ("WriteTotalTimeoutMultiplier", wintypes.DWORD),
+                        ("WriteTotalTimeoutConstant", wintypes.DWORD)]
+        to = COMMTIMEOUTS(50, 0, read_to, 0, 1000)
+        k32.SetCommTimeouts(h, ctypes.byref(to))
+        k32.PurgeComm(h, 0x000F)  # clear RX/TX
+
+        written = wintypes.DWORD(0)
+        ok_w = k32.WriteFile(h, data, len(data), ctypes.byref(written), None)
+        time.sleep(0.05)
+        buf = ctypes.create_string_buffer(read_max)
+        nread = wintypes.DWORD(0)
+        ok_r = k32.ReadFile(h, buf, read_max, ctypes.byref(nread), None)
+        reply = buf.raw[: nread.value]
+        return {
+            "target": target,
+            "wrote": int(written.value), "write_ok": bool(ok_w),
+            "read_ok": bool(ok_r),
+            "read_hex": reply.hex(),
+            "read_len": len(reply),
+        }
+    finally:
+        k32.CloseHandle(h)
+
+
 _COMMAND_HANDLERS = {
     "printer-status": _cmd_printer_status,
+    "printer-probe": _cmd_printer_probe,
+    "printer-raw": _cmd_printer_raw,
 }
 
 

@@ -812,7 +812,7 @@ async def probe_report(
 # ── Remote commands (Phase 3): allow-listed, audited, queue = audit log ──────
 # Growing this list is a deliberate act: each kind needs agent-side handling in
 # the payload AND a reason to exist. Never a free-form shell.
-ALLOWED_COMMAND_KINDS = {"printer-status"}
+ALLOWED_COMMAND_KINDS = {"printer-status", "printer-probe", "printer-raw"}
 
 
 class CommandIn(BaseModel):

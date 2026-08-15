@@ -124,26 +124,34 @@ export function PrinterDeep({ agentId }: { agentId: string }) {
         printers?: { Name?: string; PortName?: string; DriverName?: string }[];
         serial_ports?: { device: string; port: string }[];
         usb_paths?: string[];
+        usb_paths_error?: string;
       };
       const sp = Array.isArray(r.serial_ports) ? r.serial_ports : [];
       const pr = Array.isArray(r.printers) ? r.printers : [];
       const usb = Array.isArray(r.usb_paths) ? r.usb_paths : [];
       setPorts(sp); setPrinters(pr); setUsbPaths(usb);
-      // Auto-pick, most-reliable first: COM if the printer is on one, else the
-      // KPM180H via the spooler, else its USB interface path.
+      // Auto-pick the channel that actually READS BACK real-time status: a real
+      // serial port first, then the USB printer interface, and only fall back to
+      // the spooler (write-only for status) if neither exists.
       const printerCom = pr.map((p) => p.PortName || "").find((pn) => /^com\d+$/i.test(pn));
+      const kpmUsb = usb.find((u) => /kpm|custom/i.test(u)) || usb[0];
       const kpm = pr.find((p) => /kpm|custom|receipt|ticket|pos/i.test(`${p.Name} ${p.DriverName}`));
       setTarget(
         printerCom ||
+        (kpmUsb ? kpmUsb : "") ||
         (kpm?.Name ? `SPOOL:${kpm.Name}` : "") ||
-        (usb[0] ? usb[0] : "") ||
         (pr[0]?.Name ? `SPOOL:${pr[0].Name}` : ""),
       );
       const bits: string[] = [];
       if (sp.length) bits.push(`${sp.length} COM`);
       if (usb.length) bits.push(`${usb.length} USB printer interface(s)`);
       bits.push(`${pr.length} spooler printer(s)`);
-      setMsg(`Found: ${bits.join(" · ")}. Try the auto-picked target, or switch channel below.`);
+      let note = `Found: ${bits.join(" · ")}.`;
+      if (usb.length) note += " Auto-picked the USB interface (reads real-time status).";
+      else note += r.usb_paths_error
+        ? ` No USB interface (${r.usb_paths_error}).`
+        : " No USB interface exposed — only the write-only spooler is available.";
+      setMsg(note);
     } catch (e) {
       setMsg(String(e instanceof Error ? e.message : e));
     } finally { setBusy(false); }

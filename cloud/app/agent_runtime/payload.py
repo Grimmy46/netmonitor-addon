@@ -30,7 +30,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.08.15.2"
+PAYLOAD_VERSION = "2026.08.15.3"
 
 SYSTEM = platform.system()
 _TIME_RE = re.compile(r"time[=<]\s*([\d.,]+)\s*ms", re.IGNORECASE)
@@ -272,19 +272,34 @@ def _usbprint_paths():
         _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
                     ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
 
+    class SP_DID(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("InterfaceClassGuid", GUID),
+                    ("Flags", wintypes.DWORD), ("Reserved", ctypes.POINTER(ctypes.c_ulong))]
+
+    # Declare arg/return types so the 64-bit HDEVINFO handle is passed full-width
+    # (ctypes defaults an untyped handle arg to 32-bit int → truncation → the
+    # enumeration silently fails and finds nothing).
+    setup.SetupDiGetClassDevsW.restype = wintypes.HANDLE
+    setup.SetupDiGetClassDevsW.argtypes = [ctypes.POINTER(GUID), wintypes.LPCWSTR,
+                                           wintypes.HWND, wintypes.DWORD]
+    setup.SetupDiEnumDeviceInterfaces.argtypes = [
+        wintypes.HANDLE, ctypes.c_void_p, ctypes.POINTER(GUID), wintypes.DWORD,
+        ctypes.POINTER(SP_DID)]
+    setup.SetupDiEnumDeviceInterfaces.restype = wintypes.BOOL
+    setup.SetupDiGetDeviceInterfaceDetailW.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(SP_DID), ctypes.c_void_p, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+    setup.SetupDiGetDeviceInterfaceDetailW.restype = wintypes.BOOL
+    setup.SetupDiDestroyDeviceInfoList.argtypes = [wintypes.HANDLE]
+
     # GUID_DEVINTERFACE_USBPRINT
     g = GUID(0x28D78FAD, 0x5A12, 0x11D1,
              (ctypes.c_ubyte * 8)(0xAE, 0x5B, 0x00, 0x00, 0xF8, 0x03, 0xA8, 0xC2))
     DIGCF_PRESENT, DIGCF_DEVICEINTERFACE = 0x2, 0x10
-    setup.SetupDiGetClassDevsW.restype = wintypes.HANDLE
     hdev = setup.SetupDiGetClassDevsW(ctypes.byref(g), None, None,
                                       DIGCF_PRESENT | DIGCF_DEVICEINTERFACE)
-    if hdev == wintypes.HANDLE(-1).value:
+    if not hdev or hdev == wintypes.HANDLE(-1).value:
         return []
-
-    class SP_DID(ctypes.Structure):
-        _fields_ = [("cbSize", wintypes.DWORD), ("InterfaceClassGuid", GUID),
-                    ("Flags", wintypes.DWORD), ("Reserved", ctypes.POINTER(ctypes.c_ulong))]
 
     paths, i = [], 0
     try:
@@ -313,9 +328,14 @@ def _serial_txn(target, data, read_to, read_max, mode):
     from ctypes import wintypes
     k32 = ctypes.windll.kernel32
     k32.CreateFileW.restype = wintypes.HANDLE
-    h = k32.CreateFileW("\\\\.\\" + target, 0xC0000000, 0, None, 3, 0, None)
-    if h == wintypes.HANDLE(-1).value:
+    k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    raw = k32.CreateFileW("\\\\.\\" + target, 0xC0000000, 0, None, 3, 0, None)
+    if not raw or raw == wintypes.HANDLE(-1).value:
         return {"error": f"could not open {target} (err {ctypes.get_last_error()})"}
+    # Wrap as a HANDLE instance so every subsequent (untyped) call passes it
+    # full-width instead of ctypes truncating it to a 32-bit int.
+    h = wintypes.HANDLE(raw)
     try:
         if mode:
             class DCB(ctypes.Structure):
@@ -360,9 +380,10 @@ def _usb_txn(path, data, read_to, read_max):
     k32 = ctypes.windll.kernel32
     for fn in ("CreateFileW", "CreateEventW"):
         getattr(k32, fn).restype = wintypes.HANDLE
-    h = k32.CreateFileW(path, 0xC0000000, 3, None, 3, 0x40000000, None)  # OVERLAPPED
-    if h == wintypes.HANDLE(-1).value:
+    raw = k32.CreateFileW(path, 0xC0000000, 3, None, 3, 0x40000000, None)  # OVERLAPPED
+    if not raw or raw == wintypes.HANDLE(-1).value:
         return {"error": f"could not open USB device (err {ctypes.get_last_error()})"}
+    h = wintypes.HANDLE(raw)  # full-width for every subsequent call
 
     class OVERLAPPED(ctypes.Structure):
         _fields_ = [("Internal", ctypes.c_void_p), ("InternalHigh", ctypes.c_void_p),
@@ -371,20 +392,22 @@ def _usb_txn(path, data, read_to, read_max):
 
     def io(func, buf, length):
         ov = OVERLAPPED()
-        ov.hEvent = k32.CreateEventW(None, True, False, None)
+        ev_raw = k32.CreateEventW(None, True, False, None)
+        ov.hEvent = ev_raw  # stored full-width in the c_void_p struct field
+        ev = wintypes.HANDLE(ev_raw)  # wrapped for the untyped Wait/Close calls
         n = wintypes.DWORD(0)
         try:
             ok = func(h, buf, length, ctypes.byref(n), ctypes.byref(ov))
             if not ok:
                 if ctypes.get_last_error() != 997:  # not ERROR_IO_PENDING
                     return 0
-                if k32.WaitForSingleObject(ov.hEvent, read_to) != 0:  # timeout
+                if k32.WaitForSingleObject(ev, read_to) != 0:  # timeout
                     k32.CancelIo(h)
                     return 0
                 k32.GetOverlappedResult(h, ctypes.byref(ov), ctypes.byref(n), False)
             return int(n.value)
         finally:
-            k32.CloseHandle(ov.hEvent)
+            k32.CloseHandle(ev)
 
     try:
         wrote = io(k32.WriteFile, data, len(data))

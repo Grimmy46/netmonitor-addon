@@ -34,12 +34,11 @@ function decodeEot1(b: number[]): string {
   return f.length ? f.join(", ") : "online";
 }
 function decodeGsr(b: number[]): string {
+  // GS r framing varies by model; on the KPM180H 0x1e reads back with paper
+  // present, so the generic bit map cries wolf. Show the raw byte only and
+  // trust DLE EOT 4 for paper — this stays a bench-calibration readout, no alarm.
   if (!b.length) return "no reply";
-  const s = b[0];
-  const f: string[] = [];
-  if (bit(s, 0) && bit(s, 1)) f.push("PAPER LOW (near-end)");
-  if (bit(s, 2) && bit(s, 3)) f.push("PAPER OUT");
-  return f.length ? f.join(", ") : "paper present";
+  return `sensor byte 0x${b[0].toString(16).padStart(2, "0")} (uncalibrated — use DLE EOT 4 for paper)`;
 }
 function decodeEot2(b: number[]): string {
   if (!b.length) return "no reply";

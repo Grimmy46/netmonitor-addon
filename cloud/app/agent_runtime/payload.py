@@ -32,7 +32,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.08.15.5"
+PAYLOAD_VERSION = "2026.08.15.6"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -442,7 +442,7 @@ def _usb_txn(path, data, read_to, read_max):
     h = wintypes.HANDLE(raw)  # full-width for every subsequent call
     _trace("usb: opened")
 
-    def io(func, name, buf, length):
+    def io(func, name, buf, length, timeout=read_to):
         ov = OVERLAPPED()
         ev_raw = k32.CreateEventW(None, True, False, None)
         ov.hEvent = ev_raw  # stored full-width in the HANDLE struct field
@@ -457,7 +457,7 @@ def _usb_txn(path, data, read_to, read_max):
                     _trace(f"usb: {name} failed err={err}")
                     return 0
                 _trace(f"usb: {name} pending")
-                if k32.WaitForSingleObject(ev, read_to) != 0:  # timeout / abandoned
+                if k32.WaitForSingleObject(ev, timeout) != 0:  # timeout / abandoned
                     k32.CancelIo(h)
                     _trace(f"usb: {name} timeout")
                     return 0
@@ -468,6 +468,14 @@ def _usb_txn(path, data, read_to, read_max):
             k32.CloseHandle(ev)
 
     try:
+        # Drain any stale bytes the endpoint still holds from a PRIOR transaction
+        # (e.g. a lifetime-cut-count string), so each read returns THIS command's
+        # reply, not a lagged/leftover one. Short per-read timeout; stop when empty.
+        _trace("usb: drain")
+        dbuf = ctypes.create_string_buffer(256)
+        for _ in range(8):
+            if io(k32.ReadFile, "drain", dbuf, 256, 60) <= 0:
+                break
         wrote = io(k32.WriteFile, "write", data, len(data))
         time.sleep(0.05)
         rbuf = ctypes.create_string_buffer(read_max)

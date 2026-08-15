@@ -32,7 +32,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.08.15.4"
+PAYLOAD_VERSION = "2026.08.15.5"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -375,49 +375,104 @@ def _serial_txn(target, data, read_to, read_max, mode):
         k32.CloseHandle(h)
 
 
+def _trace(step):
+    """Append a breadcrumb to the worker's trace file. If the NEXT native call
+    hard-crashes the worker process (a ctypes access violation Python can't
+    catch), the parent reads this file and reports exactly how far we got.
+    No-op outside the worker (NETMON_DEVIO unset) or on any error."""
+    p = os.environ.get("NETMON_DEVIO")
+    if not p:
+        return
+    try:
+        with open(p + ".trace", "a", encoding="utf-8") as f:
+            f.write(str(step) + "\n")
+            f.flush()
+    except Exception:
+        pass
+
+
 def _usb_txn(path, data, read_to, read_max):
     """Overlapped read/write to a USBPRINT device-interface path, with a real
     read timeout (usbprint has no COM-style timeouts, so we use OVERLAPPED I/O
-    + WaitForSingleObject + CancelIo)."""
+    + WaitForSingleObject + CancelIo).
+
+    Every native call is fully argtype/restype-declared: an untyped ctypes call
+    marshals a 64-bit handle/pointer as a 32-bit int, which either fails silently
+    or dereferences garbage (an access violation that kills the process). Typed
+    calls pass every pointer full-width. Each risky step drops a breadcrumb so a
+    hard crash is still localizable from the parent."""
     import ctypes
     from ctypes import wintypes
-    k32 = ctypes.windll.kernel32
-    for fn in ("CreateFileW", "CreateEventW"):
-        getattr(k32, fn).restype = wintypes.HANDLE
-    raw = k32.CreateFileW(path, 0xC0000000, 3, None, 3, 0x40000000, None)  # OVERLAPPED
-    if not raw or raw == wintypes.HANDLE(-1).value:
-        return {"error": f"could not open USB device (err {ctypes.get_last_error()})"}
-    h = wintypes.HANDLE(raw)  # full-width for every subsequent call
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
     class OVERLAPPED(ctypes.Structure):
         _fields_ = [("Internal", ctypes.c_void_p), ("InternalHigh", ctypes.c_void_p),
                     ("Offset", wintypes.DWORD), ("OffsetHigh", wintypes.DWORD),
                     ("hEvent", wintypes.HANDLE)]
+    LPOVERLAPPED = ctypes.POINTER(OVERLAPPED)
 
-    def io(func, buf, length):
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                wintypes.HANDLE]
+    k32.CreateEventW.restype = wintypes.HANDLE
+    k32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL,
+                                 wintypes.LPCWSTR]
+    k32.WriteFile.restype = wintypes.BOOL
+    k32.WriteFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                              ctypes.POINTER(wintypes.DWORD), LPOVERLAPPED]
+    k32.ReadFile.restype = wintypes.BOOL
+    k32.ReadFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                             ctypes.POINTER(wintypes.DWORD), LPOVERLAPPED]
+    k32.WaitForSingleObject.restype = wintypes.DWORD
+    k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    k32.GetOverlappedResult.restype = wintypes.BOOL
+    k32.GetOverlappedResult.argtypes = [wintypes.HANDLE, LPOVERLAPPED,
+                                        ctypes.POINTER(wintypes.DWORD), wintypes.BOOL]
+    k32.CancelIo.argtypes = [wintypes.HANDLE]
+    k32.CancelIo.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    k32.CloseHandle.restype = wintypes.BOOL
+
+    _trace(f"usb: CreateFileW {path[-40:]}")
+    INVALID = wintypes.HANDLE(-1).value
+    raw = k32.CreateFileW(path, 0xC0000000, 3, None, 3, 0x40000000, None)  # OVERLAPPED
+    if not raw or raw == INVALID:
+        return {"error": f"could not open USB device (err {ctypes.get_last_error()})"}
+    h = wintypes.HANDLE(raw)  # full-width for every subsequent call
+    _trace("usb: opened")
+
+    def io(func, name, buf, length):
         ov = OVERLAPPED()
         ev_raw = k32.CreateEventW(None, True, False, None)
-        ov.hEvent = ev_raw  # stored full-width in the c_void_p struct field
-        ev = wintypes.HANDLE(ev_raw)  # wrapped for the untyped Wait/Close calls
+        ov.hEvent = ev_raw  # stored full-width in the HANDLE struct field
+        ev = wintypes.HANDLE(ev_raw)
         n = wintypes.DWORD(0)
         try:
+            _trace(f"usb: {name} start len={length}")
             ok = func(h, buf, length, ctypes.byref(n), ctypes.byref(ov))
             if not ok:
-                if ctypes.get_last_error() != 997:  # not ERROR_IO_PENDING
+                err = ctypes.get_last_error()
+                if err != 997:  # not ERROR_IO_PENDING
+                    _trace(f"usb: {name} failed err={err}")
                     return 0
-                if k32.WaitForSingleObject(ev, read_to) != 0:  # timeout
+                _trace(f"usb: {name} pending")
+                if k32.WaitForSingleObject(ev, read_to) != 0:  # timeout / abandoned
                     k32.CancelIo(h)
+                    _trace(f"usb: {name} timeout")
                     return 0
                 k32.GetOverlappedResult(h, ctypes.byref(ov), ctypes.byref(n), False)
+            _trace(f"usb: {name} done n={int(n.value)}")
             return int(n.value)
         finally:
             k32.CloseHandle(ev)
 
     try:
-        wrote = io(k32.WriteFile, data, len(data))
+        wrote = io(k32.WriteFile, "write", data, len(data))
         time.sleep(0.05)
         rbuf = ctypes.create_string_buffer(read_max)
-        rn = io(k32.ReadFile, rbuf, read_max)
+        rn = io(k32.ReadFile, "read", rbuf, read_max)
+        _trace("usb: complete")
         return {"target": path[-48:], "transport": "usb", "wrote": wrote,
                 "read_hex": rbuf.raw[:rn].hex(), "read_len": rn}
     finally:
@@ -537,20 +592,31 @@ def _spawn_device_worker(kind, args, timeout=60):
                                     stderr=subprocess.DEVNULL, **_no_window_kwargs())
         except Exception as e:
             return {"error": f"could not launch device worker: {e}"}
+        def _last_step():
+            try:
+                with open(req + ".trace", encoding="utf-8") as f:
+                    steps = [ln.strip() for ln in f if ln.strip()]
+                return steps[-1] if steps else ""
+            except Exception:
+                return ""
         try:
             rc = proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
-            return {"error": f"device worker timed out ({timeout}s)"}
+            step = _last_step()
+            tail = f" — last step: {step}" if step else ""
+            return {"error": f"device worker timed out ({timeout}s){tail}"}
         if os.path.exists(out):
             try:
                 with open(out, encoding="utf-8") as f:
                     return json.load(f)
             except Exception as e:
                 return {"error": f"unreadable worker result: {e}"}
-        return {"error": f"device worker exited rc={rc} with no result (likely crashed)"}
+        step = _last_step()
+        tail = f" — crashed after: {step}" if step else " (likely crashed)"
+        return {"error": f"device worker exited rc={rc} with no result{tail}"}
     finally:
-        for f in (req, out):
+        for f in (req, out, req + ".trace"):
             try:
                 os.remove(f)
             except OSError:

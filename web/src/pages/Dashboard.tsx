@@ -44,7 +44,7 @@ export function Dashboard() {
     window.dispatchEvent(new Event("nm-unauthorized"));
   }
   const [syncing, setSyncing] = useState(false);
-  const [view, setView] = useState<"live" | "fleet" | "map" | "dormant" | "kiosks" | "planner">("live");
+  const [view, setView] = useState<"live" | "fleet" | "map" | "dormant" | "kiosks" | "ticketboxes" | "planner">("live");
   const [fleetFilter, setFleetFilter] = useState<FleetFilter>("all");
   const [siteRoute, setSiteRoute] = useState<string | null>(siteIdFromHash());
 
@@ -127,6 +127,7 @@ export function Dashboard() {
             <button className={`tab ${view === "map" ? "active" : ""}`} onClick={() => setView("map")}>Map</button>
             <button className={`tab ${view === "dormant" ? "active" : ""}`} onClick={() => setView("dormant")}>Dormant</button>
             <button className={`tab ${view === "kiosks" ? "active" : ""}`} onClick={() => setView("kiosks")}>Kiosks</button>
+            <button className={`tab ${view === "ticketboxes" ? "active" : ""}`} onClick={() => setView("ticketboxes")}>Ticket Boxes</button>
             <button className={`tab ${view === "planner" ? "active" : ""}`} onClick={() => setView("planner")}>Planner</button>
           </nav>
         ) : null}
@@ -185,7 +186,9 @@ export function Dashboard() {
         ) : view === "dormant" ? (
           <DormantView />
         ) : view === "kiosks" ? (
-          <AgentsView />
+          <AgentsView group="kiosk" />
+        ) : view === "ticketboxes" ? (
+          <AgentsView group="ticketbox" />
         ) : view === "planner" ? (
           <PlannerView />
         ) : (

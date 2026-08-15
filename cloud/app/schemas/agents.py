@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 class AgentCreate(BaseModel):
     name: str = Field(min_length=1, description="Human label, e.g. 'Main Kiosk 3'")
     site_id: uuid.UUID | None = None
+    station_group: str = "kiosk"  # kiosk | ticketbox
 
 
 class AgentOut(BaseModel):
@@ -15,6 +16,7 @@ class AgentOut(BaseModel):
     name: str
     site_id: uuid.UUID | None = None
     site_name: str | None = None
+    station_group: str = "kiosk"
     status: str = "pending"  # online | offline | pending
     online: bool = False
     claimed: bool = False       # a kiosk has enrolled as this station
@@ -64,6 +66,7 @@ class EnrollResult(BaseModel):
 
 class BulkStationsIn(BaseModel):
     names: list[str]
+    station_group: str = "kiosk"
 
 
 class BulkResult(BaseModel):

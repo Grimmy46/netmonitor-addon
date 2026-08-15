@@ -20,6 +20,8 @@ class Agent(Base, UUIDPk, Timestamps):
     site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id"), default=None)
 
     name: Mapped[str] = mapped_column(default="")
+    # Station category shown as its own dashboard tab: "kiosk" | "ticketbox".
+    station_group: Mapped[str] = mapped_column(default="kiosk")
     # Hash of the agent's auth token (never store the token itself).
     token_hash: Mapped[str] = mapped_column(index=True, default="")
     version: Mapped[str | None] = mapped_column(default=None)

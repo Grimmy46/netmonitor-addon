@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, isAdmin, type Agent, type MetricPoint, type PingPoint, type SparkPoint } from "../api/client";
+import { PrinterCheck } from "./PrinterCheck";
 import { downloadKioskReport } from "../lib/kioskReport";
 import { LatencyChart } from "./LatencyChart";
 import { Sparkline } from "./Sparkline";
@@ -97,6 +98,7 @@ function AgentCard({
             {agent.last_ip ? ` · ${agent.last_ip}` : ""}
           </div>
           {pings === null ? <p className="hint">Loading…</p> : <LatencyChart data={pings} />}
+          {isAdmin() ? <PrinterCheck agentId={agent.id} /> : null}
           <div style={{ marginTop: 12, textAlign: "right" }}>
             <button className="btn" onClick={(e) => { e.stopPropagation(); onToggle(); }}>
               Collapse
@@ -113,7 +115,9 @@ function AgentCard({
  * expands its whole VISUAL ROW — every kiosk in that row shows its detailed,
  * labeled chart together (no more one tall card dragging empty neighbors).
  */
-export function AgentsView() {
+export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" }) {
+  const noun = group === "ticketbox" ? "ticket box" : "kiosk";
+  const nounPlural = group === "ticketbox" ? "ticket boxes" : "kiosks";
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [sparks, setSparks] = useState<Record<string, SparkPoint[]>>({});
   const [error, setError] = useState("");
@@ -158,7 +162,7 @@ export function AgentsView() {
     return () => ro.disconnect();
   });
 
-  const live = (agents ?? []).filter((a) => a.claimed || a.last_seen_at);
+  const live = (agents ?? []).filter((a) => (a.claimed || a.last_seen_at) && a.station_group === group);
   const online = live.filter((a) => a.online).length;
 
   function toggleRow(row: number) {
@@ -191,7 +195,7 @@ export function AgentsView() {
     <>
       <div className="devices-toolbar" style={{ marginBottom: 14 }}>
         <div className="panel-title" style={{ margin: 0 }}>
-          {agents === null ? "Loading…" : `${live.length} kiosk${live.length === 1 ? "" : "s"} · ${online} online`}
+          {agents === null ? "Loading…" : `${live.length} ${live.length === 1 ? noun : nounPlural} · ${online} online`}
         </div>
         <div className="spacer" />
         <button
@@ -209,10 +213,11 @@ export function AgentsView() {
 
       {agents !== null && live.length === 0 ? (
         <div className="empty">
-          <p>No kiosks reporting yet.</p>
+          <p>No {nounPlural} reporting yet.</p>
           <p className="sub">
-            Add your stations under <strong>Manage stations</strong>, then run the agent
-            on a kiosk and pick its station. It appears here within a minute.
+            Add stations under <strong>Manage stations</strong> (set their group to
+            &ldquo;{noun}&rdquo;), then run the agent on the machine — it appears here
+            within a minute.
           </p>
         </div>
       ) : (

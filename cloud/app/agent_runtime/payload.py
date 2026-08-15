@@ -30,7 +30,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.08.10.1"
+PAYLOAD_VERSION = "2026.08.14.1"
 
 SYSTEM = platform.system()
 _TIME_RE = re.compile(r"time[=<]\s*([\d.,]+)\s*ms", re.IGNORECASE)
@@ -165,6 +165,8 @@ def ping_once(host, timeout_s):
 
 
 def _post(ctx, cfg, gw_ip, hostname, os_str, samples):
+    """Report samples; RETURNS the server's response dict (which may carry
+    pending remote commands for this agent)."""
     payload = json.dumps({
         "target": cfg["target"],
         "gateway": gw_ip,
@@ -178,7 +180,78 @@ def _post(ctx, cfg, gw_ip, hostname, os_str, samples):
         data=payload, method="POST",
         headers={"Content-Type": "application/json", "X-Agent-Token": ctx["token"]})
     with urllib.request.urlopen(req, timeout=15, context=SSL_CTX) as resp:
+        try:
+            return json.loads(resp.read().decode("utf-8", "ignore"))
+        except Exception:
+            return {}
+
+
+# ── Remote commands (Phase 3): closed allow-list, never a shell ──────────────
+# The server queues a command; it arrives in the report response; we execute
+# the ONE matching handler and post the result back. Unknown kinds are refused
+# loudly (reported as errors) — there is no generic execution path.
+
+def _cmd_printer_status(_args):
+    """Read-only: what does Windows say about every installed printer?
+    This is the KPM180H reconnaissance step — DetectedErrorState is where a
+    bidirectional driver reports paper-out / jam / door-open."""
+    if SYSTEM != "Windows":
+        return {"printers": [], "note": f"not windows ({SYSTEM})"}
+    ps = (
+        "Get-CimInstance Win32_Printer | Select-Object Name,DriverName,PortName,"
+        "Default,PrinterStatus,DetectedErrorState,ExtendedDetectedErrorState,"
+        "PrinterState,WorkOffline,Local | ConvertTo-Json -Depth 3"
+    )
+    proc = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+        **_no_window_kwargs())
+    out = proc.stdout.decode("utf-8", "ignore").strip()
+    if proc.returncode != 0 or not out:
+        return {"printers": [], "error": proc.stderr.decode("utf-8", "ignore")[:500]}
+    data = json.loads(out)
+    if isinstance(data, dict):
+        data = [data]  # single printer → PS emits an object, not a list
+    return {"printers": data}
+
+
+_COMMAND_HANDLERS = {
+    "printer-status": _cmd_printer_status,
+}
+
+
+def _post_command_result(ctx, cmd_id, ok, result):
+    data = json.dumps({"id": cmd_id, "ok": ok, "result": result}).encode("utf-8")
+    req = urllib.request.Request(
+        ctx["server_url"].rstrip("/") + "/agents/command-result",
+        data=data, method="POST",
+        headers={"Content-Type": "application/json", "X-Agent-Token": ctx["token"]})
+    with urllib.request.urlopen(req, timeout=20, context=SSL_CTX) as resp:
         resp.read()
+
+
+def _run_commands(ctx, commands):
+    """Execute delivered commands in a worker thread each (a slow printer query
+    must never stall the ping loop). Errors are reported, never raised."""
+    for cmd in commands or []:
+        def _one(c=cmd):
+            cid = str(c.get("id") or "")
+            kind = c.get("kind") or ""
+            handler = _COMMAND_HANDLERS.get(kind)
+            try:
+                if handler is None:
+                    _post_command_result(ctx, cid, False, {"error": f"unknown kind '{kind}'"})
+                    return
+                result = handler(c.get("args") or {})
+                _post_command_result(ctx, cid, True, result)
+                print(f"[netmon-payload] command {kind} done", flush=True)
+            except Exception as e:
+                try:
+                    _post_command_result(ctx, cid, False, {"error": str(e)[:500]})
+                except Exception:
+                    pass
+                print(f"[netmon-payload] command {kind} failed: {e}", flush=True)
+        threading.Thread(target=_one, daemon=True).start()
 
 
 def _fetch_targets(ctx):
@@ -400,8 +473,9 @@ def main(cfg, ctx):
 
         if time.time() - last_post >= post_every and buffer:
             try:
-                _post(ctx, cfg, gw_ip, hostname, os_str, buffer)
+                resp = _post(ctx, cfg, gw_ip, hostname, os_str, buffer)
                 buffer = []
+                _run_commands(ctx, (resp or {}).get("commands"))
             except Exception as e:
                 print(f"[netmon-payload] post failed, buffering {len(buffer)}: {e}", flush=True)
                 if len(buffer) > max_buffer:

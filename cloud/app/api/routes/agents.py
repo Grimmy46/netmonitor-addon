@@ -8,13 +8,14 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
 from sqlalchemy import and_, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.security import hash_token, make_agent_token
-from app.models import Account, Agent, Device, PingSample, Site
+from app.models import Account, Agent, AgentCommand, Device, PingSample, Site
 from app.schemas import (
     AgentCreate,
     AgentOut,
@@ -150,6 +151,7 @@ def _agent_out(a: Agent, site_name: str | None, latest_rtt: float | None) -> Age
         name=a.name,
         site_id=a.site_id,
         site_name=site_name,
+        station_group=a.station_group,
         status=("online" if online else ("offline" if a.last_seen_at else "pending")),
         online=online,
         claimed=bool(a.claimed_at),
@@ -176,10 +178,13 @@ async def create_agent(
     account = await get_or_create_account(db)
     if payload.site_id is not None and await db.get(Site, payload.site_id) is None:
         raise HTTPException(status_code=400, detail="Unknown site_id")
+    if payload.station_group not in ("kiosk", "ticketbox"):
+        raise HTTPException(status_code=422, detail="station_group must be kiosk or ticketbox")
     agent = Agent(
         account_id=account.id,
         site_id=payload.site_id,
         name=payload.name,
+        station_group=payload.station_group,
         token_hash="",  # unclaimed until a kiosk enrolls
         status="pending",
     )
@@ -210,7 +215,8 @@ async def bulk_create_stations(
         if name in existing:
             skipped += 1
             continue
-        db.add(Agent(account_id=account.id, name=name, token_hash="", status="pending"))
+        db.add(Agent(account_id=account.id, name=name, token_hash="", status="pending",
+                     station_group=body.station_group if body.station_group in ("kiosk", "ticketbox") else "kiosk"))
         existing.add(name)
         created += 1
     await db.commit()
@@ -230,6 +236,33 @@ async def release_agent(
     agent.claimed_at = None
     agent.machine_id = None
     agent.token_hash = ""
+    await db.commit()
+    await db.refresh(agent)
+    site_name = None
+    if agent.site_id:
+        s = await db.get(Site, agent.site_id)
+        site_name = s.name if s else None
+    return _agent_out(agent, site_name, None)
+
+
+class AgentGroupIn(BaseModel):
+    station_group: str
+
+
+@router.post("/{agent_id}/group", response_model=AgentOut)
+async def set_agent_group(
+    agent_id: uuid.UUID,
+    body: AgentGroupIn,
+    db: AsyncSession = Depends(get_db),
+    _admin=Depends(require_admin),
+) -> AgentOut:
+    """Move a station between dashboard tabs (kiosk | ticketbox)."""
+    if body.station_group not in ("kiosk", "ticketbox"):
+        raise HTTPException(status_code=422, detail="station_group must be kiosk or ticketbox")
+    agent = await db.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Station not found")
+    agent.station_group = body.station_group
     await db.commit()
     await db.refresh(agent)
     site_name = None
@@ -502,9 +535,22 @@ async def agent_report(
             )
         )
         stored += 1
+    # Deliver queued commands (Phase 3): mark them "sent" so each is delivered
+    # exactly once; the agent answers on /agents/command-result.
+    pending = list(
+        (await db.execute(
+            select(AgentCommand)
+            .where(AgentCommand.agent_id == agent.id, AgentCommand.status == "queued")
+            .order_by(AgentCommand.created_at)
+            .limit(5)
+        )).scalars()
+    )
+    commands = []
+    for c in pending:
+        c.status, c.sent_at = "sent", now
+        commands.append({"id": str(c.id), "kind": c.kind, "args": c.args or {}})
     await db.commit()
-    # Phase 3 will return pending commands here for the agent to execute.
-    return AgentReportResult(ok=True, stored=stored, commands=[])
+    return AgentReportResult(ok=True, stored=stored, commands=commands)
 
 
 # ── local LAN probing (agent pings the site's UniFi devices) ─────────────────
@@ -761,3 +807,96 @@ async def probe_report(
         accepted += 1
     await db.commit()
     return {"accepted": accepted}
+
+
+# ── Remote commands (Phase 3): allow-listed, audited, queue = audit log ──────
+# Growing this list is a deliberate act: each kind needs agent-side handling in
+# the payload AND a reason to exist. Never a free-form shell.
+ALLOWED_COMMAND_KINDS = {"printer-status"}
+
+
+class CommandIn(BaseModel):
+    kind: str
+    args: dict | None = None
+
+
+class CommandOut(BaseModel):
+    id: uuid.UUID
+    agent_id: uuid.UUID
+    kind: str
+    args: dict | None = None
+    status: str
+    requested_by: str
+    result: dict | None = None
+    created_at: datetime | None = None
+    sent_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+def _command_out(c: AgentCommand) -> CommandOut:
+    return CommandOut(
+        id=c.id, agent_id=c.agent_id, kind=c.kind, args=c.args, status=c.status,
+        requested_by=c.requested_by, result=c.result, created_at=c.created_at,
+        sent_at=c.sent_at, completed_at=c.completed_at,
+    )
+
+
+@router.post("/{agent_id}/commands", response_model=CommandOut)
+async def queue_command(
+    agent_id: uuid.UUID,
+    body: CommandIn,
+    db: AsyncSession = Depends(get_db),
+    admin=Depends(require_admin),
+) -> CommandOut:
+    if body.kind not in ALLOWED_COMMAND_KINDS:
+        raise HTTPException(status_code=422, detail=f"Unknown command kind '{body.kind}'")
+    agent = await db.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Station not found")
+    cmd = AgentCommand(agent_id=agent.id, kind=body.kind, args=body.args,
+                       status="queued", requested_by=getattr(admin, "email", ""))
+    db.add(cmd)
+    await db.commit()
+    await db.refresh(cmd)
+    return _command_out(cmd)
+
+
+@router.get("/{agent_id}/commands", response_model=list[CommandOut])
+async def list_commands(
+    agent_id: uuid.UUID,
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(current_user),
+) -> list[CommandOut]:
+    rows = (
+        await db.execute(
+            select(AgentCommand)
+            .where(AgentCommand.agent_id == agent_id)
+            .order_by(desc(AgentCommand.created_at))
+            .limit(limit)
+        )
+    ).scalars()
+    return [_command_out(c) for c in rows]
+
+
+@router.post("/command-result")
+async def command_result(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+    x_agent_token: str | None = Header(default=None),
+) -> dict:
+    """Agent answers a delivered command: {"id": ..., "ok": bool, "result": {...}}."""
+    agent = await _agent_from_token(db, x_agent_token)
+    try:
+        cmd_id = uuid.UUID(str(body.get("id")))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="Bad command id")
+    cmd = await db.get(AgentCommand, cmd_id)
+    if cmd is None or cmd.agent_id != agent.id:
+        raise HTTPException(status_code=404, detail="Command not found")
+    result = body.get("result")
+    cmd.result = result if isinstance(result, dict) else {"raw": result}
+    cmd.status = "done" if body.get("ok") else "error"
+    cmd.completed_at = datetime.now(tz=timezone.utc)
+    await db.commit()
+    return {"ok": True}

@@ -58,6 +58,7 @@ export interface Agent {
   name: string;
   site_id: string | null;
   site_name: string | null;
+  station_group: "kiosk" | "ticketbox";
   status: "online" | "offline" | "pending";
   online: boolean;
   claimed: boolean;
@@ -233,11 +234,23 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ site_id: siteId }),
     }),
-  bulkCreateStations: (names: string[]) =>
+  bulkCreateStations: (names: string[], stationGroup = "kiosk") =>
     req<{ created: number; skipped: number }>("/agents/bulk", {
       method: "POST",
-      body: JSON.stringify({ names }),
+      body: JSON.stringify({ names, station_group: stationGroup }),
     }),
+  setAgentGroup: (id: string, group: string) =>
+    req<Agent>(`/agents/${id}/group`, {
+      method: "POST",
+      body: JSON.stringify({ station_group: group }),
+    }),
+  queueCommand: (agentId: string, kind: string, args: object = {}) =>
+    req<AgentCommand>(`/agents/${agentId}/commands`, {
+      method: "POST",
+      body: JSON.stringify({ kind, args }),
+    }),
+  agentCommands: (agentId: string, limit = 10) =>
+    req<AgentCommand[]>(`/agents/${agentId}/commands?limit=${limit}`),
   agentPings: (id: string) => req<PingPoint[]>(`/agents/${id}/pings`),
   agentSparklines: (minutes = 45) =>
     req<Record<string, SparkPoint[]>>(`/agents/pings/recent?minutes=${minutes}`),
@@ -325,6 +338,19 @@ export interface LiveFeed {
   window_minutes: number;
   probe_agent: { id: string; name: string; online: boolean } | null;
   targets: LiveFeedTarget[];
+}
+
+export interface AgentCommand {
+  id: string;
+  agent_id: string;
+  kind: string;
+  args: object | null;
+  status: "queued" | "sent" | "done" | "error";
+  requested_by: string;
+  result: Record<string, unknown> | null;
+  created_at: string | null;
+  sent_at: string | null;
+  completed_at: string | null;
 }
 
 export interface AuthUser {

@@ -177,6 +177,16 @@ export function StationsPanel({ onClose, onChanged }: { onClose: () => void; onC
                 </span>
                 <div className="spacer" style={{ flex: 1 }} />
                 <select
+                  value={s.station_group}
+                  disabled={busy}
+                  onChange={(e) => run(async () => { await api.setAgentGroup(s.id, e.target.value); })}
+                  style={{ padding: "3px 6px" }}
+                  title="Which dashboard tab this station lives in"
+                >
+                  <option value="kiosk">kiosk</option>
+                  <option value="ticketbox">ticket box</option>
+                </select>
+                <select
                   className="search"
                   style={{ padding: "4px 6px", fontSize: 12, maxWidth: 160 }}
                   value={s.site_id ?? ""}

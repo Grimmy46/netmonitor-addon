@@ -547,6 +547,15 @@ async def agent_report(
     )
     commands = []
     for c in pending:
+        # SAFETY DRAIN: the device-I/O commands can crash the agent process on
+        # some kiosks (a native access violation Python can't catch). Until the
+        # payload runs that I/O crash-isolated, never hand these to a kiosk —
+        # cancel them server-side so a queued backlog can't crash-loop the agent.
+        if c.kind in _CRASH_ISOLATED_KINDS:
+            c.status = "error"
+            c.result = {"error": "temporarily disabled — crash-safe printer I/O in progress"}
+            c.completed_at = now
+            continue
         c.status, c.sent_at = "sent", now
         commands.append({"id": str(c.id), "kind": c.kind, "args": c.args or {}})
     await db.commit()
@@ -812,7 +821,11 @@ async def probe_report(
 # ── Remote commands (Phase 3): allow-listed, audited, queue = audit log ──────
 # Growing this list is a deliberate act: each kind needs agent-side handling in
 # the payload AND a reason to exist. Never a free-form shell.
-ALLOWED_COMMAND_KINDS = {"printer-status", "printer-probe", "printer-raw"}
+# printer-status = safe (WMI, no ctypes). printer-probe/printer-raw do native
+# device I/O and are temporarily gated off until the payload isolates them in a
+# child process so a crash can't take the agent down.
+ALLOWED_COMMAND_KINDS = {"printer-status"}
+_CRASH_ISOLATED_KINDS = {"printer-probe", "printer-raw"}
 
 
 class CommandIn(BaseModel):

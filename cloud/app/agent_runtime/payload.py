@@ -21,6 +21,8 @@ import re
 import socket
 import ssl
 import subprocess
+import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -30,9 +32,10 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.08.15.3"
+PAYLOAD_VERSION = "2026.08.15.4"
 
 SYSTEM = platform.system()
+_CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
 _TIME_RE = re.compile(r"time[=<]\s*([\d.,]+)\s*ms", re.IGNORECASE)
 _MS_RE = re.compile(r"([\d.,]+)\s*ms", re.IGNORECASE)
 
@@ -173,6 +176,7 @@ def _post(ctx, cfg, gw_ip, hostname, os_str, samples):
         "hostname": hostname,
         "os": os_str,
         "agent_version": PAYLOAD_VERSION,
+        "bootstrap_version": _CTX.get("bootstrap_version") if _CTX else None,
         "samples": samples,
     }).encode("utf-8")
     req = urllib.request.Request(
@@ -500,6 +504,58 @@ _COMMAND_HANDLERS = {
     "printer-raw": _cmd_printer_raw,
 }
 
+# Kinds whose native device I/O could crash the process — run them in a SEPARATE
+# worker process (the exe re-launched in NETMON_DEVIO mode) so a crash can never
+# take the agent down. Requires bootstrap ≥ 2.5 (the server gates delivery).
+_ISOLATED_KINDS = {"printer-probe", "printer-raw"}
+
+
+def device_exec(kind, args):
+    """Called INSIDE the crash-isolated worker process (see the bootstrapper's
+    _device_worker). Runs one command handler and returns its result dict."""
+    handler = _COMMAND_HANDLERS.get(kind)
+    if handler is None:
+        return {"error": f"unknown kind '{kind}'"}
+    return handler(args or {})
+
+
+def _spawn_device_worker(kind, args, timeout=60):
+    """Run a device command in a throwaway subprocess (the agent exe re-launched
+    as a worker). Returns the result dict; a crash/timeout becomes an error dict
+    instead of killing this process."""
+    exe = (_CTX or {}).get("worker_exe") or sys.executable
+    fd, req = tempfile.mkstemp(suffix=".nmdevio.json")
+    os.close(fd)
+    out = req + ".out"
+    try:
+        with open(req, "w", encoding="utf-8") as f:
+            json.dump({"kind": kind, "args": args}, f)
+        env = dict(os.environ)
+        env["NETMON_DEVIO"] = req
+        try:
+            proc = subprocess.Popen([exe], env=env, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, **_no_window_kwargs())
+        except Exception as e:
+            return {"error": f"could not launch device worker: {e}"}
+        try:
+            rc = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            return {"error": f"device worker timed out ({timeout}s)"}
+        if os.path.exists(out):
+            try:
+                with open(out, encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                return {"error": f"unreadable worker result: {e}"}
+        return {"error": f"device worker exited rc={rc} with no result (likely crashed)"}
+    finally:
+        for f in (req, out):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
 
 def _post_command_result(ctx, cmd_id, ok, result):
     data = json.dumps({"id": cmd_id, "ok": ok, "result": result}).encode("utf-8")
@@ -512,20 +568,26 @@ def _post_command_result(ctx, cmd_id, ok, result):
 
 
 def _run_commands(ctx, commands):
-    """Execute delivered commands in a worker thread each (a slow printer query
-    must never stall the ping loop). Errors are reported, never raised."""
+    """Execute delivered commands, each in its own thread (a slow printer query
+    must never stall the ping loop). Crash-isolated kinds run in a separate
+    process; everything is reported, never raised."""
     for cmd in commands or []:
         def _one(c=cmd):
             cid = str(c.get("id") or "")
             kind = c.get("kind") or ""
-            handler = _COMMAND_HANDLERS.get(kind)
+            args = c.get("args") or {}
             try:
-                if handler is None:
-                    _post_command_result(ctx, cid, False, {"error": f"unknown kind '{kind}'"})
-                    return
-                result = handler(c.get("args") or {})
-                _post_command_result(ctx, cid, True, result)
-                print(f"[netmon-payload] command {kind} done", flush=True)
+                if kind in _ISOLATED_KINDS:
+                    result = _spawn_device_worker(kind, args)
+                    ok = "error" not in result
+                else:
+                    handler = _COMMAND_HANDLERS.get(kind)
+                    if handler is None:
+                        _post_command_result(ctx, cid, False, {"error": f"unknown kind '{kind}'"})
+                        return
+                    result, ok = handler(args), True
+                _post_command_result(ctx, cid, ok, result)
+                print(f"[netmon-payload] command {kind} {'ok' if ok else 'error'}", flush=True)
             except Exception as e:
                 try:
                     _post_command_result(ctx, cid, False, {"error": str(e)[:500]})
@@ -717,6 +779,8 @@ def _server_version(ctx):
 
 
 def main(cfg, ctx):
+    global _CTX
+    _CTX = ctx  # carries bootstrap_version + worker_exe for reporting/spawning
     hostname = (os.environ.get("COMPUTERNAME") or socket.gethostname() or "unknown").strip()
     os_str = f"{platform.system()} {platform.release()}".strip()
     gw = cfg.get("gateway", "auto")

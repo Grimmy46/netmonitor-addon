@@ -87,6 +87,7 @@ class AgentReport(BaseModel):
     hostname: str | None = None
     os: str | None = None
     agent_version: str | None = None
+    bootstrap_version: str | None = None
     samples: list[PingSampleIn] = []
 
 

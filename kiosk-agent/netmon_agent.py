@@ -36,6 +36,7 @@ import ssl
 import socket
 import struct  # noqa: F401
 import subprocess  # noqa: F401
+import tempfile  # noqa: F401  (device-worker request/response files)
 import threading  # noqa: F401
 try:  # Windows-only extras for later phases (telemetry / control)
     import ctypes.wintypes  # noqa: F401
@@ -57,7 +58,39 @@ CONFIG_PATH = os.path.join(HERE, "netmon_agent.config.json")
 PAYLOAD_PATH = os.path.join(HERE, "agent_payload.py")
 LOG_PATH = os.path.join(HERE, "netmon_agent.log")
 _VER_RE = re.compile(r"""PAYLOAD_VERSION\s*=\s*["']([^"']+)["']""")
-BOOTSTRAP_VERSION = "2.4"
+BOOTSTRAP_VERSION = "2.5"
+
+# When this env var points at a request file, the exe runs as a one-shot
+# DEVICE WORKER instead of the normal agent: it loads the payload, runs one
+# device command (printer I/O), writes the JSON result to <reqfile>.out, and
+# exits. The agent launches this as a SEPARATE PROCESS so a native crash in
+# low-level device I/O can never take the agent itself down.
+DEVIO_ENV = "NETMON_DEVIO"
+
+
+def _device_worker(req_path):
+    """One-shot worker: {"kind","args"} in req_path → result JSON in req_path+'.out'."""
+    out_path = req_path + ".out"
+    result = {"error": "device worker did not run"}
+    try:
+        with open(req_path, encoding="utf-8") as f:
+            req = json.load(f)
+        with open(PAYLOAD_PATH, encoding="utf-8") as f:
+            source = f.read()
+        ns = {}
+        exec(compile(source, "agent_payload.py", "exec"), ns)  # noqa: S102 — trusted payload
+        fn = ns.get("device_exec")
+        if fn is None:
+            result = {"error": "payload has no device_exec()"}
+        else:
+            result = fn(req.get("kind"), req.get("args") or {})
+    except Exception as e:  # a clean error still gets reported; a hard crash is
+        result = {"error": f"worker exception: {e}"}  # caught by the parent via exit code
+    try:
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(result, f)
+    except Exception:
+        pass
 ADD_NEW_LABEL = "➕ Add a new station…"
 
 
@@ -505,7 +538,9 @@ def run():
                 time.sleep(15)
                 continue
             ctx = {"server_url": cfg["server_url"], "token": cfg["token"],
-                   "running_version": ns.get("PAYLOAD_VERSION")}
+                   "running_version": ns.get("PAYLOAD_VERSION"),
+                   "bootstrap_version": BOOTSTRAP_VERSION,
+                   "worker_exe": sys.executable}
             ns["main"](cfg, ctx)  # returns when a newer version is available
         except SystemExit:
             raise
@@ -517,6 +552,10 @@ def run():
 
 
 if __name__ == "__main__":
+    _devio = os.environ.get(DEVIO_ENV)
+    if _devio:
+        _device_worker(_devio)
+        sys.exit(0)
     try:
         run()
     except KeyboardInterrupt:

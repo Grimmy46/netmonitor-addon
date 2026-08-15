@@ -25,6 +25,7 @@ class Agent(Base, UUIDPk, Timestamps):
     # Hash of the agent's auth token (never store the token itself).
     token_hash: Mapped[str] = mapped_column(index=True, default="")
     version: Mapped[str | None] = mapped_column(default=None)
+    bootstrap_version: Mapped[str | None] = mapped_column(default=None)
     last_seen_at: Mapped[str | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(default="pending")  # pending | online | offline
 

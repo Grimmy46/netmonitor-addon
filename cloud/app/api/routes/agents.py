@@ -512,6 +512,8 @@ async def agent_report(
     agent.status = "online"
     if report.agent_version:
         agent.version = report.agent_version
+    if report.bootstrap_version:
+        agent.bootstrap_version = report.bootstrap_version
     if report.hostname:
         agent.hostname = report.hostname
     if report.os:
@@ -545,15 +547,18 @@ async def agent_report(
             .limit(5)
         )).scalars()
     )
+    supports_worker = _supports_crash_isolation(agent.bootstrap_version)
     commands = []
     for c in pending:
-        # SAFETY DRAIN: the device-I/O commands can crash the agent process on
-        # some kiosks (a native access violation Python can't catch). Until the
-        # payload runs that I/O crash-isolated, never hand these to a kiosk —
-        # cancel them server-side so a queued backlog can't crash-loop the agent.
-        if c.kind in _CRASH_ISOLATED_KINDS:
+        # Device-I/O commands can crash the agent process (a native access
+        # violation Python can't catch), so they run in a crash-isolated worker
+        # subprocess — only exes that support it (bootstrap ≥ 2.5) may receive
+        # them. Anything queued for an older exe is cancelled, never delivered,
+        # so a backlog can't crash-loop the agent.
+        if c.kind in _CRASH_ISOLATED_KINDS and not supports_worker:
             c.status = "error"
-            c.result = {"error": "temporarily disabled — crash-safe printer I/O in progress"}
+            c.result = {"error": "this kiosk's agent .exe is too old for isolated printer I/O "
+                                 "(needs bootstrap ≥ 2.5) — update the exe to use it"}
             c.completed_at = now
             continue
         c.status, c.sent_at = "sent", now
@@ -822,10 +827,21 @@ async def probe_report(
 # Growing this list is a deliberate act: each kind needs agent-side handling in
 # the payload AND a reason to exist. Never a free-form shell.
 # printer-status = safe (WMI, no ctypes). printer-probe/printer-raw do native
-# device I/O and are temporarily gated off until the payload isolates them in a
-# child process so a crash can't take the agent down.
-ALLOWED_COMMAND_KINDS = {"printer-status"}
+# device I/O — allowed to be queued, but delivered ONLY to agent exes that run
+# them crash-isolated (bootstrap ≥ 2.5); older exes get them cancelled.
+ALLOWED_COMMAND_KINDS = {"printer-status", "printer-probe", "printer-raw"}
 _CRASH_ISOLATED_KINDS = {"printer-probe", "printer-raw"}
+
+
+def _supports_crash_isolation(bootstrap_version: str | None) -> bool:
+    """True if the agent .exe can run device I/O in a worker subprocess."""
+    if not bootstrap_version:
+        return False
+    try:
+        parts = [int(x) for x in str(bootstrap_version).split(".")[:2]]
+    except ValueError:
+        return False
+    return parts >= [2, 5]
 
 
 class CommandIn(BaseModel):

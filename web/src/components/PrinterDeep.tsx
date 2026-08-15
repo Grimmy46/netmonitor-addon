@@ -24,6 +24,23 @@ interface Preset {
 const bit = (b: number, n: number) => (b & (1 << n)) !== 0;
 
 // Generic ESC/POS real-time status decode — a HINT; verify vs the KPM180H manual.
+function decodeEot1(b: number[]): string {
+  if (!b.length) return "no reply";
+  const s = b[0];
+  const f: string[] = [];
+  if (bit(s, 3)) f.push("OFFLINE");
+  if (bit(s, 5)) f.push("waiting for online recovery");
+  if (bit(s, 6)) f.push("paper feed by button");
+  return f.length ? f.join(", ") : "online";
+}
+function decodeGsr(b: number[]): string {
+  if (!b.length) return "no reply";
+  const s = b[0];
+  const f: string[] = [];
+  if (bit(s, 0) && bit(s, 1)) f.push("PAPER LOW (near-end)");
+  if (bit(s, 2) && bit(s, 3)) f.push("PAPER OUT");
+  return f.length ? f.join(", ") : "paper present";
+}
 function decodeEot2(b: number[]): string {
   if (!b.length) return "no reply";
   const s = b[0];
@@ -60,11 +77,11 @@ function decodeInt(b: number[]): string {
 }
 
 const PRESETS: Preset[] = [
-  { key: "eot1", label: "Printer status (DLE EOT 1)", hex: "10 04 01" },
+  { key: "eot1", label: "Printer status (DLE EOT 1)", hex: "10 04 01", decode: decodeEot1 },
   { key: "eot2", label: "Offline cause (DLE EOT 2)", hex: "10 04 02", decode: decodeEot2 },
   { key: "eot3", label: "Error cause (DLE EOT 3)", hex: "10 04 03", decode: decodeEot3 },
   { key: "eot4", label: "Paper sensor (DLE EOT 4)", hex: "10 04 04", decode: decodeEot4 },
-  { key: "gsr", label: "Paper sensor (GS r 1)", hex: "1D 72 01" },
+  { key: "gsr", label: "Paper sensor (GS r 1)", hex: "1D 72 01", decode: decodeGsr },
   { key: "gse1", label: "Paper remaining (GS E1)", hex: "1D E1", decode: decodeInt },
   { key: "gse2", label: "Lifetime cut count (GS E2)", hex: "1D E2", decode: decodeInt },
 ];
@@ -270,20 +287,30 @@ export function PrinterDeep({ agentId }: { agentId: string }) {
       {msg ? <p className="sub" style={{ fontSize: 12 }}>{msg}</p> : null}
 
       {rows.length ? (
-        <div className="table-scroll" style={{ marginTop: 6 }}>
-          <table className="devices" style={{ fontSize: 12 }}>
-            <thead><tr><th>Query</th><th>Sent</th><th>Reply (hex)</th><th>Decode (generic ESC/POS)</th></tr></thead>
-            <tbody>
-              {rows.map((r, i) => (
-                <tr key={i}>
-                  <td>{r.label}</td>
-                  <td className="mono">{r.hex}</td>
-                  <td className="mono" style={{ color: r.ok ? undefined : "var(--critical)" }}>{r.reply}</td>
-                  <td style={{ color: /OUT|OPEN|ERROR|END/.test(r.decode) ? "var(--critical)" : undefined }}>{r.decode || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
+          <div className="sub" style={{ fontSize: 10.5 }}>
+            The raw reply is the truth; the decode is a generic ESC/POS guess until
+            we calibrate it with a real fault (open the paper door and re-run).
+          </div>
+          {rows.map((r, i) => {
+            const alarm = /OUT|OPEN|ERROR|END|OFFLINE|LOW/.test(r.decode);
+            return (
+              <div key={i} style={{ padding: "6px 8px", borderRadius: 6, background: "rgba(127,127,127,0.08)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
+                  <span style={{ fontSize: 12 }}>{r.label}</span>
+                  <span className="mono sub" style={{ fontSize: 10.5 }}>{r.hex}</span>
+                </div>
+                <div className="mono" style={{ fontSize: 13, marginTop: 2, wordBreak: "break-all", color: r.ok ? "var(--good)" : "var(--critical)" }}>
+                  → {r.reply}
+                </div>
+                {r.decode ? (
+                  <div style={{ fontSize: 11.5, marginTop: 1, color: alarm ? "var(--critical)" : "var(--ink-muted)" }}>
+                    {r.decode}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
       ) : null}
     </div>

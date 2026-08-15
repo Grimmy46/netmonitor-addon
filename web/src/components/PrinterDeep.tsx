@@ -108,6 +108,7 @@ export function PrinterDeep({ agentId }: { agentId: string }) {
   const [msg, setMsg] = useState("");
   const [ports, setPorts] = useState<{ device: string; port: string }[]>([]);
   const [printers, setPrinters] = useState<{ Name?: string; PortName?: string; DriverName?: string }[]>([]);
+  const [usbPaths, setUsbPaths] = useState<string[]>([]);
   const [target, setTarget] = useState("");
   const [mode, setMode] = useState("");
   const [freeHex, setFreeHex] = useState("");
@@ -122,16 +123,27 @@ export function PrinterDeep({ agentId }: { agentId: string }) {
       const r = res.result as {
         printers?: { Name?: string; PortName?: string; DriverName?: string }[];
         serial_ports?: { device: string; port: string }[];
+        usb_paths?: string[];
       };
       const sp = Array.isArray(r.serial_ports) ? r.serial_ports : [];
-      setPorts(sp);
-      setPrinters(Array.isArray(r.printers) ? r.printers : []);
-      // Auto-pick: a printer PortName that looks like COMx, else first serial port.
-      const printerCom = (r.printers ?? [])
-        .map((p) => p.PortName || "")
-        .find((pn) => /^com\d+$/i.test(pn));
-      setTarget(printerCom || sp[0]?.port || "");
-      setMsg(sp.length ? `Found ${sp.length} COM port(s).` : "No COM ports — the printer may be USB-only (that's the harder path; tell me).");
+      const pr = Array.isArray(r.printers) ? r.printers : [];
+      const usb = Array.isArray(r.usb_paths) ? r.usb_paths : [];
+      setPorts(sp); setPrinters(pr); setUsbPaths(usb);
+      // Auto-pick, most-reliable first: COM if the printer is on one, else the
+      // KPM180H via the spooler, else its USB interface path.
+      const printerCom = pr.map((p) => p.PortName || "").find((pn) => /^com\d+$/i.test(pn));
+      const kpm = pr.find((p) => /kpm|custom|receipt|ticket|pos/i.test(`${p.Name} ${p.DriverName}`));
+      setTarget(
+        printerCom ||
+        (kpm?.Name ? `SPOOL:${kpm.Name}` : "") ||
+        (usb[0] ? usb[0] : "") ||
+        (pr[0]?.Name ? `SPOOL:${pr[0].Name}` : ""),
+      );
+      const bits: string[] = [];
+      if (sp.length) bits.push(`${sp.length} COM`);
+      if (usb.length) bits.push(`${usb.length} USB printer interface(s)`);
+      bits.push(`${pr.length} spooler printer(s)`);
+      setMsg(`Found: ${bits.join(" · ")}. Try the auto-picked target, or switch channel below.`);
     } catch (e) {
       setMsg(String(e instanceof Error ? e.message : e));
     } finally { setBusy(false); }
@@ -191,11 +203,20 @@ export function PrinterDeep({ agentId }: { agentId: string }) {
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
         <button className="btn" style={{ fontSize: 12 }} disabled={busy} onClick={detect}>1 · Detect ports</button>
-        <label className="sub" style={{ fontSize: 12 }}>Target:</label>
-        <select value={target} onChange={(e) => setTarget(e.target.value)} style={{ padding: "4px 6px" }}>
-          <option value="">— pick COM —</option>
-          {ports.map((p) => <option key={p.port} value={p.port}>{p.port} ({p.device})</option>)}
-          {target && !ports.some((p) => p.port === target) ? <option value={target}>{target}</option> : null}
+        <label className="sub" style={{ fontSize: 12 }}>Channel:</label>
+        <select value={target} onChange={(e) => setTarget(e.target.value)} style={{ padding: "4px 6px", maxWidth: 260 }}>
+          <option value="">— pick target —</option>
+          {ports.length ? <optgroup label="Serial (COM)">
+            {ports.map((p) => <option key={p.port} value={p.port}>{p.port} ({p.device})</option>)}
+          </optgroup> : null}
+          {printers.length ? <optgroup label="Spooler (RAW)">
+            {printers.map((p) => <option key={p.Name} value={`SPOOL:${p.Name}`}>Spooler: {p.Name}</option>)}
+          </optgroup> : null}
+          {usbPaths.length ? <optgroup label="USB printer interface">
+            {usbPaths.map((u, i) => <option key={u} value={u}>USB #{i + 1}: …{u.slice(-28)}</option>)}
+          </optgroup> : null}
+          {target && !ports.some((p) => p.port === target) && !printers.some((p) => `SPOOL:${p.Name}` === target) && !usbPaths.includes(target)
+            ? <option value={target}>{target}</option> : null}
         </select>
         <input
           placeholder="mode (optional) e.g. baud=115200 parity=N data=8 stop=1"

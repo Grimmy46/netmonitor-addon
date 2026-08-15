@@ -30,7 +30,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.08.15.1"
+PAYLOAD_VERSION = "2026.08.15.2"
 
 SYSTEM = platform.system()
 _TIME_RE = re.compile(r"time[=<]\s*([\d.,]+)\s*ms", re.IGNORECASE)
@@ -244,48 +244,78 @@ $out | ConvertTo-Json -Depth 4
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=40, **_no_window_kwargs())
     out = proc.stdout.decode("utf-8", "ignore").strip()
-    if not out:
-        return {"error": proc.stderr.decode("utf-8", "ignore")[:500] or "no output"}
+    result = {}
+    if out:
+        try:
+            result = json.loads(out)
+        except Exception:
+            result = {"raw": out[:4000]}
+    # USBPRINT device-interface paths (the real-time bidirectional channel for a
+    # USB-attached KPM180H — this is what USB001-port printers need).
     try:
-        return json.loads(out)
-    except Exception:
-        return {"raw": out[:4000]}
+        result["usb_paths"] = _usbprint_paths()
+    except Exception as e:
+        result["usb_paths_error"] = str(e)[:300]
+    return result
 
 
-def _cmd_printer_raw(args):
-    """Bidirectional transaction with a serial (COM) device: write the given
-    bytes, read the reply. This is how we speak the KPM180H's native status
-    protocol (DLE EOT, GS Ex, …) with NO driver and NO admin — the bytes come
-    from the server so all protocol work happens from the dashboard.
-
-    args: {"target": "COM3", "write_hex": "1004 01", "read_timeout_ms": 500,
-           "read_max": 64, "mode": "baud=115200 parity=N data=8 stop=1"(optional)}
-    Only COM targets are accepted here — a serial channel gives reliable read
-    timeouts and never fights the print spooler for an exclusive USB handle."""
-    if SYSTEM != "Windows":
-        return {"note": f"not windows ({SYSTEM})"}
+def _usbprint_paths():
+    """Enumerate USBPRINT device-interface paths (\\\\?\\usb#…#{guid}) via SetupAPI.
+    These can be opened with CreateFile for real-time bidirectional status on a
+    USB printer-class device — no driver change, no admin."""
     import ctypes
     from ctypes import wintypes
 
-    target = str(args.get("target") or "").strip()
-    if not re.fullmatch(r"(?i)COM\d+", target):
-        return {"error": f"target must be a COM port (got {target!r})"}
-    write_hex = re.sub(r"[^0-9a-fA-F]", "", str(args.get("write_hex") or ""))
-    if len(write_hex) % 2 != 0:
-        return {"error": "write_hex must be whole bytes"}
-    data = bytes.fromhex(write_hex)
-    read_max = min(int(args.get("read_max") or 64), 1024)
-    read_to = min(int(args.get("read_timeout_ms") or 500), 5000)
-    mode = args.get("mode")
+    setup = ctypes.windll.setupapi
 
+    class GUID(ctypes.Structure):
+        _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                    ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+    # GUID_DEVINTERFACE_USBPRINT
+    g = GUID(0x28D78FAD, 0x5A12, 0x11D1,
+             (ctypes.c_ubyte * 8)(0xAE, 0x5B, 0x00, 0x00, 0xF8, 0x03, 0xA8, 0xC2))
+    DIGCF_PRESENT, DIGCF_DEVICEINTERFACE = 0x2, 0x10
+    setup.SetupDiGetClassDevsW.restype = wintypes.HANDLE
+    hdev = setup.SetupDiGetClassDevsW(ctypes.byref(g), None, None,
+                                      DIGCF_PRESENT | DIGCF_DEVICEINTERFACE)
+    if hdev == wintypes.HANDLE(-1).value:
+        return []
+
+    class SP_DID(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("InterfaceClassGuid", GUID),
+                    ("Flags", wintypes.DWORD), ("Reserved", ctypes.POINTER(ctypes.c_ulong))]
+
+    paths, i = [], 0
+    try:
+        while True:
+            ifd = SP_DID()
+            ifd.cbSize = ctypes.sizeof(SP_DID)
+            if not setup.SetupDiEnumDeviceInterfaces(hdev, None, ctypes.byref(g), i, ctypes.byref(ifd)):
+                break
+            i += 1
+            req = wintypes.DWORD(0)
+            setup.SetupDiGetDeviceInterfaceDetailW(hdev, ctypes.byref(ifd), None, 0, ctypes.byref(req), None)
+            if not req.value:
+                continue
+            buf = ctypes.create_string_buffer(req.value)
+            cb = 8 if ctypes.sizeof(ctypes.c_void_p) == 8 else 6  # documented cbSize quirk
+            ctypes.memmove(buf, ctypes.byref(wintypes.DWORD(cb)), 4)
+            if setup.SetupDiGetDeviceInterfaceDetailW(hdev, ctypes.byref(ifd), buf, req.value, None, None):
+                paths.append(ctypes.wstring_at(ctypes.addressof(buf) + 4))
+    finally:
+        setup.SetupDiDestroyDeviceInfoList(hdev)
+    return paths
+
+
+def _serial_txn(target, data, read_to, read_max, mode):
+    import ctypes
+    from ctypes import wintypes
     k32 = ctypes.windll.kernel32
-    GENERIC_RW = 0xC0000000
-    OPEN_EXISTING = 3
-    path = "\\\\.\\" + target
-    h = k32.CreateFileW(path, GENERIC_RW, 0, None, OPEN_EXISTING, 0, None)
-    if h == wintypes.HANDLE(-1).value or h == -1:
-        return {"error": f"could not open {target} (err {ctypes.get_last_error()}) — "
-                         "port busy or wrong number?"}
+    k32.CreateFileW.restype = wintypes.HANDLE
+    h = k32.CreateFileW("\\\\.\\" + target, 0xC0000000, 0, None, 3, 0, None)
+    if h == wintypes.HANDLE(-1).value:
+        return {"error": f"could not open {target} (err {ctypes.get_last_error()})"}
     try:
         if mode:
             class DCB(ctypes.Structure):
@@ -297,8 +327,7 @@ def _cmd_printer_raw(args):
                             ("XoffChar", ctypes.c_char), ("ErrorChar", ctypes.c_char),
                             ("EofChar", ctypes.c_char), ("EvtChar", ctypes.c_char),
                             ("wReserved1", wintypes.WORD)]
-            dcb = DCB()
-            dcb.DCBlength = ctypes.sizeof(DCB)
+            dcb = DCB(); dcb.DCBlength = ctypes.sizeof(DCB)
             if k32.BuildCommDCBW(str(mode), ctypes.byref(dcb)):
                 k32.SetCommState(h, ctypes.byref(dcb))
 
@@ -308,26 +337,138 @@ def _cmd_printer_raw(args):
                         ("ReadTotalTimeoutConstant", wintypes.DWORD),
                         ("WriteTotalTimeoutMultiplier", wintypes.DWORD),
                         ("WriteTotalTimeoutConstant", wintypes.DWORD)]
-        to = COMMTIMEOUTS(50, 0, read_to, 0, 1000)
-        k32.SetCommTimeouts(h, ctypes.byref(to))
-        k32.PurgeComm(h, 0x000F)  # clear RX/TX
-
+        k32.SetCommTimeouts(h, ctypes.byref(COMMTIMEOUTS(50, 0, read_to, 0, 1000)))
+        k32.PurgeComm(h, 0x000F)
         written = wintypes.DWORD(0)
-        ok_w = k32.WriteFile(h, data, len(data), ctypes.byref(written), None)
+        k32.WriteFile(h, data, len(data), ctypes.byref(written), None)
         time.sleep(0.05)
         buf = ctypes.create_string_buffer(read_max)
         nread = wintypes.DWORD(0)
-        ok_r = k32.ReadFile(h, buf, read_max, ctypes.byref(nread), None)
-        reply = buf.raw[: nread.value]
-        return {
-            "target": target,
-            "wrote": int(written.value), "write_ok": bool(ok_w),
-            "read_ok": bool(ok_r),
-            "read_hex": reply.hex(),
-            "read_len": len(reply),
-        }
+        k32.ReadFile(h, buf, read_max, ctypes.byref(nread), None)
+        return {"target": target, "transport": "serial", "wrote": int(written.value),
+                "read_hex": buf.raw[: nread.value].hex(), "read_len": int(nread.value)}
     finally:
         k32.CloseHandle(h)
+
+
+def _usb_txn(path, data, read_to, read_max):
+    """Overlapped read/write to a USBPRINT device-interface path, with a real
+    read timeout (usbprint has no COM-style timeouts, so we use OVERLAPPED I/O
+    + WaitForSingleObject + CancelIo)."""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.windll.kernel32
+    for fn in ("CreateFileW", "CreateEventW"):
+        getattr(k32, fn).restype = wintypes.HANDLE
+    h = k32.CreateFileW(path, 0xC0000000, 3, None, 3, 0x40000000, None)  # OVERLAPPED
+    if h == wintypes.HANDLE(-1).value:
+        return {"error": f"could not open USB device (err {ctypes.get_last_error()})"}
+
+    class OVERLAPPED(ctypes.Structure):
+        _fields_ = [("Internal", ctypes.c_void_p), ("InternalHigh", ctypes.c_void_p),
+                    ("Offset", wintypes.DWORD), ("OffsetHigh", wintypes.DWORD),
+                    ("hEvent", wintypes.HANDLE)]
+
+    def io(func, buf, length):
+        ov = OVERLAPPED()
+        ov.hEvent = k32.CreateEventW(None, True, False, None)
+        n = wintypes.DWORD(0)
+        try:
+            ok = func(h, buf, length, ctypes.byref(n), ctypes.byref(ov))
+            if not ok:
+                if ctypes.get_last_error() != 997:  # not ERROR_IO_PENDING
+                    return 0
+                if k32.WaitForSingleObject(ov.hEvent, read_to) != 0:  # timeout
+                    k32.CancelIo(h)
+                    return 0
+                k32.GetOverlappedResult(h, ctypes.byref(ov), ctypes.byref(n), False)
+            return int(n.value)
+        finally:
+            k32.CloseHandle(ov.hEvent)
+
+    try:
+        wrote = io(k32.WriteFile, data, len(data))
+        time.sleep(0.05)
+        rbuf = ctypes.create_string_buffer(read_max)
+        rn = io(k32.ReadFile, rbuf, read_max)
+        return {"target": path[-48:], "transport": "usb", "wrote": wrote,
+                "read_hex": rbuf.raw[:rn].hex(), "read_len": rn}
+    finally:
+        k32.CloseHandle(h)
+
+
+def _spool_txn(printer_name, data, read_max):
+    """Write RAW to a printer via the spooler and ReadPrinter the bidi reply.
+    Cooperates with the POS (both go through the spooler) — lowest-risk channel,
+    though the spooler may buffer, so real-time status can lag vs the USB path."""
+    import ctypes
+    from ctypes import wintypes
+    ws = ctypes.WinDLL("winspool.drv")
+    ws.OpenPrinterW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.HANDLE), ctypes.c_void_p]
+    h = wintypes.HANDLE()
+    if not ws.OpenPrinterW(printer_name, ctypes.byref(h), None):
+        return {"error": f"OpenPrinter('{printer_name}') failed ({ctypes.get_last_error()})"}
+
+    class DOC_INFO_1(ctypes.Structure):
+        _fields_ = [("pDocName", wintypes.LPWSTR), ("pOutputFile", wintypes.LPWSTR),
+                    ("pDatatype", wintypes.LPWSTR)]
+    try:
+        di = DOC_INFO_1("NetMonitor status", None, "RAW")
+        ws.StartDocPrinterW.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p]
+        ws.StartDocPrinterW(h, 1, ctypes.byref(di))
+        ws.StartPagePrinter(h)
+        written = wintypes.DWORD(0)
+        ws.WritePrinter.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        ws.WritePrinter(h, data, len(data), ctypes.byref(written))
+        ws.EndPagePrinter(h)
+        ws.EndDocPrinter(h)
+        time.sleep(0.1)
+        rbuf = ctypes.create_string_buffer(read_max)
+        rn = wintypes.DWORD(0)
+        ws.ReadPrinter.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        ok = ws.ReadPrinter(h, rbuf, read_max, ctypes.byref(rn))
+        reply = rbuf.raw[: rn.value] if ok else b""
+        return {"target": f"SPOOL:{printer_name}", "transport": "spool",
+                "wrote": int(written.value), "read_hex": reply.hex(), "read_len": len(reply)}
+    finally:
+        ws.ClosePrinter(h)
+
+
+def _cmd_printer_raw(args):
+    """Bidirectional transaction with the printer — the bytes AND the transport
+    both come from the server, so all protocol experimentation happens from the
+    dashboard with NO redeploys, NO driver, NO admin.
+
+    args: {"target": ..., "write_hex": "10 04 01", "read_timeout_ms": 600,
+           "read_max": 64, "mode": "baud=115200 …"(serial only)}
+    target forms:
+      "COM3"                → serial port
+      "SPOOL:<printer name>"→ via the Windows spooler (ReadPrinter/WritePrinter)
+      "usb"                 → the first enumerated USBPRINT interface
+      "\\\\?\\usb#…"        → a specific USBPRINT interface path
+    """
+    if SYSTEM != "Windows":
+        return {"note": f"not windows ({SYSTEM})"}
+    target = str(args.get("target") or "").strip()
+    write_hex = re.sub(r"[^0-9a-fA-F]", "", str(args.get("write_hex") or ""))
+    if len(write_hex) % 2 != 0:
+        return {"error": "write_hex must be whole bytes"}
+    data = bytes.fromhex(write_hex)
+    read_max = min(int(args.get("read_max") or 64), 1024)
+    read_to = min(int(args.get("read_timeout_ms") or 600), 5000)
+
+    if re.fullmatch(r"(?i)COM\d+", target):
+        return _serial_txn(target, data, read_to, read_max, args.get("mode"))
+    if target.upper().startswith("SPOOL:"):
+        return _spool_txn(target[6:], data, read_max)
+    if target.lower() == "usb":
+        paths = _usbprint_paths()
+        if not paths:
+            return {"error": "no USBPRINT interface found"}
+        return _usb_txn(paths[0], data, read_to, read_max)
+    if target.startswith("\\\\?\\") or target.lower().startswith("\\\\?\\usb"):
+        return _usb_txn(target, data, read_to, read_max)
+    return {"error": f"unrecognized target {target!r} (use COMx, SPOOL:<name>, or usb)"}
 
 
 _COMMAND_HANDLERS = {

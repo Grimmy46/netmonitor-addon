@@ -1,6 +1,7 @@
 """ORM models. Import all here so Alembic autogenerate sees them."""
 from app.models.account import Account
 from app.models.agent import Agent
+from app.models.agent_binary import AgentBinary
 from app.models.agent_command import AgentCommand
 from app.models.device import Device
 from app.models.isp_metric import IspMetric
@@ -16,6 +17,7 @@ from app.models.user import User
 __all__ = [
     "Account",
     "Agent",
+    "AgentBinary",
     "AgentCommand",
     "Device",
     "IspMetric",

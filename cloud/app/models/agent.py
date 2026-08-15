@@ -39,6 +39,11 @@ class Agent(Base, UUIDPk, Timestamps):
     claimed_at: Mapped[str | None] = mapped_column(default=None)
     machine_id: Mapped[str | None] = mapped_column(default=None)
 
+    # Staged exe self-update: when true, the agent is told to download + swap to
+    # the active AgentBinary on its next check-in. Off by default so a rollout is
+    # opt-in per station (flip 2 kiosks, watch, then the fleet).
+    exe_rollout: Mapped[bool] = mapped_column(default=False)
+
     # Alert sweep state machine (see Device.alert_state for the values).
     alert_state: Mapped[str | None] = mapped_column(default=None)
     alert_state_at: Mapped[datetime | None] = mapped_column(

@@ -28,6 +28,8 @@ class AgentOut(BaseModel):
     last_target: str | None = None
     last_seen_at: str | None = None
     latest_rtt_ms: float | None = None
+    bootstrap_version: str | None = None  # the .exe capability level (self-update target)
+    exe_rollout: bool = False             # is this station opted into the exe self-update?
     # Ticket-printer status (present only when a printer is detected & polled).
     printer_status: str | None = None  # ok | paper_out | cover_open | error | unknown
     printer_status_at: str | None = None
@@ -145,6 +147,36 @@ class DeviceProbeReport(BaseModel):
 
 class DeviceProbeResult(BaseModel):
     ok: bool = True
+    updated: int = 0
+
+
+# ── agent exe self-update (staged rollout) ───────────────────────────────────
+class AgentUpdateOut(BaseModel):
+    """Told to the agent on demand: whether to self-update its .exe, and to what."""
+    update: bool = False
+    version: str | None = None
+    sha256: str | None = None
+    size: int = 0
+
+
+class AgentExeMetaOut(BaseModel):
+    """The currently-stored agent exe (for the upload UI)."""
+    present: bool = False
+    version: str | None = None
+    sha256: str | None = None
+    size: int = 0
+    filename: str | None = None
+    uploaded_at: datetime | None = None
+    rollout_count: int = 0  # how many stations are opted into the rollout
+
+
+class ExeRolloutIn(BaseModel):
+    agent_ids: list[uuid.UUID] | None = None  # specific stations…
+    all: bool = False                          # …or every claimed station
+    enabled: bool = True
+
+
+class ExeRolloutResult(BaseModel):
     updated: int = 0
 
 

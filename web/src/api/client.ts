@@ -70,10 +70,22 @@ export interface Agent {
   last_target: string | null;
   last_seen_at: string | null;
   latest_rtt_ms: number | null;
+  bootstrap_version: string | null;
+  exe_rollout: boolean;
   printer_status: "ok" | "paper_out" | "cover_open" | "error" | "unknown" | null;
   printer_status_at: string | null;
   printer_detail: string | null;
   printer_raw: string | null;
+}
+
+export interface AgentExeMeta {
+  present: boolean;
+  version: string | null;
+  sha256: string | null;
+  size: number;
+  filename: string | null;
+  uploaded_at: string | null;
+  rollout_count: number;
 }
 
 export interface PingPoint {
@@ -264,6 +276,21 @@ export const api = {
   enrollmentPin: () => req<{ pin: string }>("/agents/enrollment"),
   regenerateEnrollmentPin: () =>
     req<{ pin: string }>("/agents/enrollment/regenerate", { method: "POST" }),
+
+  // Agent exe self-update (staged rollout)
+  agentExeMeta: () => req<AgentExeMeta>("/agents/agent-exe"),
+  uploadAgentExe: (file: File, version: string) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("version", version);
+    // NOTE: no Content-Type header — the browser sets the multipart boundary.
+    return req<AgentExeMeta>("/agents/agent-exe", { method: "POST", body: fd, headers: {} });
+  },
+  setExeRollout: (opts: { agentIds?: string[]; all?: boolean; enabled: boolean }) =>
+    req<{ updated: number }>("/agents/exe-rollout", {
+      method: "POST",
+      body: JSON.stringify({ agent_ids: opts.agentIds ?? null, all: !!opts.all, enabled: opts.enabled }),
+    }),
 
   // Live landing page.
   liveFeed: (minutes = 10) => req<LiveFeed>(`/live/feed?minutes=${minutes}`),

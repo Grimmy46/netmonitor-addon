@@ -1,27 +1,30 @@
 """Site agents: registration (token issuance), the push-ingest endpoint the
 agents report to, the self-update payload endpoints, and read views."""
+import hashlib
 import re
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel
-from sqlalchemy import and_, desc, func, select
+from sqlalchemy import and_, delete, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.security import hash_token, make_agent_token
-from app.models import Account, Agent, AgentCommand, Device, PingSample, Site
+from app.models import Account, Agent, AgentBinary, AgentCommand, Device, PingSample, Site
 from app.schemas import (
     AgentCreate,
+    AgentExeMetaOut,
     AgentOut,
     AgentReport,
     AgentReportResult,
     AgentSiteIn,
+    AgentUpdateOut,
     BulkResult,
     BulkStationsIn,
     DeviceProbeReport,
@@ -32,6 +35,8 @@ from app.schemas import (
     EnrollResult,
     EnrollStationOut,
     EnrollStationsIn,
+    ExeRolloutIn,
+    ExeRolloutResult,
     PingPoint,
     ProbeTarget,
     ProbeTargetsOut,
@@ -163,6 +168,8 @@ def _agent_out(a: Agent, site_name: str | None, latest_rtt: float | None) -> Age
         last_target=a.last_target,
         last_seen_at=a.last_seen_at,
         latest_rtt_ms=latest_rtt,
+        bootstrap_version=a.bootstrap_version,
+        exe_rollout=a.exe_rollout,
         printer_status=a.printer_status,
         printer_status_at=a.printer_status_at,
         printer_detail=a.printer_detail,
@@ -705,6 +712,112 @@ async def regenerate_enrollment_pin(
     await db.commit()
     await db.refresh(account)
     return EnrollmentPinOut(pin=account.enrollment_pin)
+
+
+# ── Agent exe self-update (staged rollout) ───────────────────────────────────
+async def _active_binary(db: AsyncSession) -> AgentBinary | None:
+    return (await db.execute(
+        select(AgentBinary).where(AgentBinary.active.is_(True))
+        .order_by(desc(AgentBinary.created_at)).limit(1)
+    )).scalar_one_or_none()
+
+
+async def _rollout_count(db: AsyncSession) -> int:
+    return int((await db.execute(
+        select(func.count()).select_from(Agent).where(Agent.exe_rollout.is_(True))
+    )).scalar_one())
+
+
+@router.post("/agent-exe", response_model=AgentExeMetaOut)
+async def upload_agent_exe(
+    file: UploadFile = File(...),
+    version: str = Form(...),
+    db: AsyncSession = Depends(get_db),
+    _admin=Depends(require_admin),
+) -> AgentExeMetaOut:
+    """Admin uploads the current NetMonAgent.exe; kiosks opted into the rollout
+    download it, verify the sha256, and swap. Replaces any previous binary."""
+    st = get_settings()
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty file")
+    if len(data) > st.agent_exe_max_mb * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"exe too large (> {st.agent_exe_max_mb} MB)")
+    ver = version.strip()
+    if not ver:
+        raise HTTPException(status_code=400, detail="version required")
+    sha = hashlib.sha256(data).hexdigest()
+    account = await get_or_create_account(db)
+    await db.execute(delete(AgentBinary))  # single active binary
+    row = AgentBinary(account_id=account.id, version=ver, sha256=sha, size=len(data),
+                      filename=(file.filename or "NetMonAgent.exe"), data=data, active=True)
+    db.add(row)
+    await db.commit(); await db.refresh(row)
+    return AgentExeMetaOut(present=True, version=row.version, sha256=row.sha256, size=row.size,
+                           filename=row.filename, uploaded_at=row.created_at,
+                           rollout_count=await _rollout_count(db))
+
+
+@router.get("/agent-exe", response_model=AgentExeMetaOut)
+async def get_agent_exe_meta(
+    db: AsyncSession = Depends(get_db), _admin=Depends(require_admin),
+) -> AgentExeMetaOut:
+    row = await _active_binary(db)
+    count = await _rollout_count(db)
+    if row is None:
+        return AgentExeMetaOut(present=False, rollout_count=count)
+    return AgentExeMetaOut(present=True, version=row.version, sha256=row.sha256, size=row.size,
+                           filename=row.filename, uploaded_at=row.created_at, rollout_count=count)
+
+
+@router.get("/agent-exe/download")
+async def download_agent_exe(
+    db: AsyncSession = Depends(get_db), x_agent_token: str | None = Header(default=None),
+):
+    """Agent-token download of the active exe (integrity is the agent's job — it
+    verifies X-Exe-Sha256 before swapping)."""
+    await _agent_from_token(db, x_agent_token)
+    row = await _active_binary(db)
+    if row is None:
+        raise HTTPException(status_code=404, detail="no agent exe uploaded")
+    return Response(content=row.data, media_type="application/octet-stream",
+                    headers={"X-Exe-Sha256": row.sha256, "X-Exe-Version": row.version,
+                             "Content-Disposition": f'attachment; filename="{row.filename}"'})
+
+
+@router.get("/agent-update", response_model=AgentUpdateOut)
+async def agent_update_descriptor(
+    db: AsyncSession = Depends(get_db), x_agent_token: str | None = Header(default=None),
+) -> AgentUpdateOut:
+    """The agent asks whether to self-update its exe. Yes only when THIS station is
+    opted into the rollout AND the stored exe differs from what it's running."""
+    agent = await _agent_from_token(db, x_agent_token)
+    row = await _active_binary(db)
+    if row is None or not agent.exe_rollout:
+        return AgentUpdateOut(update=False)
+    needs = (agent.bootstrap_version or "") != row.version
+    return AgentUpdateOut(update=needs, version=row.version, sha256=row.sha256, size=row.size)
+
+
+@router.post("/exe-rollout", response_model=ExeRolloutResult)
+async def set_exe_rollout(
+    body: ExeRolloutIn,
+    db: AsyncSession = Depends(get_db),
+    _admin=Depends(require_admin),
+) -> ExeRolloutResult:
+    """Opt stations into (or out of) the exe self-update. Staged: flip a couple,
+    watch a nightly power-cycle, then flip all."""
+    stmt = select(Agent)
+    if not body.all:
+        ids = body.agent_ids or []
+        if not ids:
+            return ExeRolloutResult(updated=0)
+        stmt = stmt.where(Agent.id.in_(ids))
+    agents = list((await db.execute(stmt)).scalars())
+    for a in agents:
+        a.exe_rollout = body.enabled
+    await db.commit()
+    return ExeRolloutResult(updated=len(agents))
 
 
 # ── enrollment (kiosk first-run station picker — PIN-gated, no token yet) ─────

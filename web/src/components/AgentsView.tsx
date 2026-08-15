@@ -6,6 +6,7 @@ import { downloadKioskReport } from "../lib/kioskReport";
 import { LatencyChart } from "./LatencyChart";
 import { Sparkline } from "./Sparkline";
 import { StationsPanel } from "./StationsPanel";
+import { AgentUpdatePanel } from "./AgentUpdatePanel";
 import { StatusPill } from "./StatusPill";
 
 function timeAgo(iso: string | null): string {
@@ -151,6 +152,7 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
   const [sparks, setSparks] = useState<Record<string, SparkPoint[]>>({});
   const [error, setError] = useState("");
   const [manage, setManage] = useState(false);
+  const [showUpdate, setShowUpdate] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [cols, setCols] = useState(1);
   const [openRows, setOpenRows] = useState<Set<number>>(new Set());
@@ -218,6 +220,8 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
 
   const panel = manage ? (
     <StationsPanel onClose={() => setManage(false)} onChanged={load} />
+  ) : showUpdate ? (
+    <AgentUpdatePanel onClose={() => setShowUpdate(false)} onChanged={load} />
   ) : null;
 
   return (
@@ -236,6 +240,7 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
           {pdfBusy ? "Building PDF…" : "⤓ PDF report"}
         </button>
         {isAdmin() ? <button className="btn" onClick={() => setManage(true)}>⚙ Manage stations</button> : null}
+        {isAdmin() ? <button className="btn" onClick={() => setShowUpdate(true)} title="Upload the agent exe and stage a rollout">⬆ Agent update</button> : null}
       </div>
 
       {error ? <div className="banner err">{error}</div> : null}

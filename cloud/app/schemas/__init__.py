@@ -1,10 +1,12 @@
 """Pydantic API schemas."""
 from app.schemas.agents import (
     AgentCreate,
+    AgentExeMetaOut,
     AgentOut,
     AgentReport,
     AgentReportResult,
     AgentSiteIn,
+    AgentUpdateOut,
     BulkResult,
     BulkStationsIn,
     DeviceProbeIn,
@@ -16,6 +18,8 @@ from app.schemas.agents import (
     EnrollResult,
     EnrollStationOut,
     EnrollStationsIn,
+    ExeRolloutIn,
+    ExeRolloutResult,
     PingPoint,
     PingSampleIn,
     ProbeTarget,
@@ -33,10 +37,14 @@ from app.schemas.network import DeviceOut, DormantDeviceOut, MetricPoint, SiteOu
 
 __all__ = [
     "AgentCreate",
+    "AgentExeMetaOut",
     "AgentOut",
     "AgentReport",
     "AgentReportResult",
     "AgentSiteIn",
+    "AgentUpdateOut",
+    "ExeRolloutIn",
+    "ExeRolloutResult",
     "BulkResult",
     "BulkStationsIn",
     "DeviceProbeIn",

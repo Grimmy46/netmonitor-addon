@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     # VAPID "sub" claim sent to the push services.
     vapid_subject: str = "mailto:dawidrcs@gmail.com"
 
+    # Largest agent .exe an admin may upload (served to kiosks on self-update).
+    agent_exe_max_mb: int = 80
+
     # ── Live landing page probes ───────────────────────────────────────────
     # Server-vantage prober cadence (always on; keeps charts alive overnight).
     live_server_probe_interval_seconds: float = 5.0

@@ -14,6 +14,7 @@ Rules for this file:
 `cfg`  = the kiosk's config file (server_url, token, target, gateway, intervals…).
 `ctx`  = {"server_url", "token", "running_version"} supplied by the bootstrapper.
 """
+import hashlib
 import json
 import os
 import platform
@@ -32,7 +33,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.08.15.7"
+PAYLOAD_VERSION = "2026.08.15.8"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -887,6 +888,184 @@ def _server_version(ctx):
         return None
 
 
+# ── resilience: heartbeat, watchdog, and hash-verified exe self-update ───────
+_HB_NAME = ".netmon_hb"
+_PROBATION_NAME = ".netmon_probation"
+_WATCHDOG_VBS = "netmon_watchdog.vbs"
+
+# WSH watchdog: relaunches the agent if its heartbeat goes stale, and rolls a
+# bad exe swap back to the backup. VBScript takes backslashes literally, so the
+# install dir is substituted as-is (no escaping). Payload-delivered → whole fleet.
+_WATCHDOG_TEMPLATE = r'''Option Explicit
+' NetMonAgent watchdog (installed by the agent payload). Keeps the agent alive
+' and rolls back a bad exe self-update. Runs hidden via wscript //B.
+Dim fso, sh, d, exe, hb, prob, bak, alive
+Set fso = CreateObject("Scripting.FileSystemObject")
+Set sh = CreateObject("WScript.Shell")
+d = "{{DIR}}\"
+exe = d & "{{EXE}}"
+hb = d & ".netmon_hb"
+prob = d & ".netmon_probation"
+bak = exe & ".bak"
+Do
+  alive = False
+  If fso.FileExists(hb) Then
+    If DateDiff("s", fso.GetFile(hb).DateLastModified, Now) < 120 Then alive = True
+  End If
+  If Not alive Then
+    ' A swap on probation whose new exe never heartbeat (>180s): restore backup.
+    If fso.FileExists(prob) And fso.FileExists(bak) Then
+      If DateDiff("s", fso.GetFile(prob).DateLastModified, Now) > 180 Then
+        On Error Resume Next
+        fso.MoveFile exe, exe & ".bad"
+        fso.MoveFile bak, exe
+        fso.DeleteFile prob, True
+        On Error Goto 0
+      End If
+    End If
+    If fso.FileExists(exe) Then sh.Run "cmd /c start """" """ & exe & """", 0, False
+  End If
+  WScript.Sleep 30000
+Loop
+'''
+
+
+def _install_dir():
+    try:
+        return os.path.dirname(os.path.abspath(sys.executable))
+    except Exception:
+        return None
+
+
+def _frozen():
+    return SYSTEM == "Windows" and getattr(sys, "frozen", False)
+
+
+def _touch_heartbeat():
+    """Bump the heartbeat file the watchdog polls (proof the agent is alive)."""
+    d = _install_dir()
+    if not d:
+        return
+    try:
+        with open(os.path.join(d, _HB_NAME), "w") as f:
+            f.write(str(int(time.time())))
+    except Exception:
+        pass
+
+
+def _commit_exe_update():
+    """We're running and posting → any exe swap took. Clear the probation marker
+    so the watchdog won't roll back."""
+    d = _install_dir()
+    if not d:
+        return
+    try:
+        os.remove(os.path.join(d, _PROBATION_NAME))
+    except OSError:
+        pass
+
+
+def _install_watchdog():
+    """Write the WSH watchdog next to the agent and register it at login (HKCU
+    Run). Idempotent, no admin. Delivered by the payload so every station gets
+    it — updated exe or not."""
+    if not _frozen():
+        return
+    d = _install_dir()
+    if not d:
+        return
+    vbs_path = os.path.join(d, _WATCHDOG_VBS)
+    vbs = _WATCHDOG_TEMPLATE.replace("{{DIR}}", d).replace(
+        "{{EXE}}", os.path.basename(sys.executable))
+    try:
+        old = ""
+        if os.path.exists(vbs_path):
+            with open(vbs_path, "r", encoding="utf-8", errors="ignore") as f:
+                old = f.read()
+        if old != vbs:
+            with open(vbs_path, "w", encoding="utf-8") as f:
+                f.write(vbs)
+    except Exception as e:
+        print(f"[watchdog] write failed: {e}", flush=True)
+        return
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                             r"Software\Microsoft\Windows\CurrentVersion\Run",
+                             0, winreg.KEY_SET_VALUE)
+        winreg.SetValueEx(key, "NetMonAgentWatchdog", 0, winreg.REG_SZ,
+                          f'wscript.exe //B //Nologo "{vbs_path}"')
+        winreg.CloseKey(key)
+    except Exception as e:
+        print(f"[watchdog] autostart registration failed: {e}", flush=True)
+
+
+def _self_update(ctx):
+    """If this station is opted into the rollout, download the target exe, verify
+    its sha256, back up the current exe, swap, relaunch the new one, and return
+    True (the caller then hard-exits this old process). ANY failure aborts the
+    swap and returns False — it must never brick. The watchdog + probation marker
+    recover a swap that doesn't come up."""
+    if not _frozen():
+        return False
+    my_ver = (ctx or {}).get("bootstrap_version")
+    try:
+        req = urllib.request.Request(ctx["server_url"].rstrip("/") + "/agents/agent-update",
+                                     headers={"X-Agent-Token": ctx["token"]})
+        with urllib.request.urlopen(req, timeout=15, context=SSL_CTX) as resp:
+            info = json.loads(resp.read().decode("utf-8", "ignore"))
+    except Exception:
+        return False
+    if not info or not info.get("update"):
+        return False
+    want_sha = (info.get("sha256") or "").lower()
+    ver = str(info.get("version") or "")
+    if not want_sha or not ver:
+        return False
+    if my_ver and str(my_ver) == ver:
+        return False  # already on the target — never re-swap (prevents a loop)
+    try:
+        req = urllib.request.Request(ctx["server_url"].rstrip("/") + "/agents/agent-exe/download",
+                                     headers={"X-Agent-Token": ctx["token"]})
+        with urllib.request.urlopen(req, timeout=180, context=SSL_CTX) as resp:
+            data = resp.read()
+    except Exception as e:
+        print(f"[self-update] download failed: {e}", flush=True)
+        return False
+    if hashlib.sha256(data).hexdigest() != want_sha:
+        print("[self-update] sha256 mismatch — aborting", flush=True)
+        return False
+    exe = os.path.abspath(sys.executable)
+    new, bak = exe + ".new", exe + ".bak"
+    prob = os.path.join(_install_dir() or ".", _PROBATION_NAME)
+    try:
+        with open(new, "wb") as f:
+            f.write(data)
+        if os.path.exists(bak):
+            try: os.remove(bak)
+            except OSError: pass
+        os.replace(exe, bak)   # rename the running exe out of the way (OK on Windows)
+        os.replace(new, exe)   # drop the verified new exe into place
+        with open(prob, "w") as f:
+            f.write(ver)        # probation: watchdog restores .bak if new never heartbeats
+        subprocess.Popen([exe], **_no_window_kwargs())
+        print(f"[self-update] swapped exe -> {ver}; relaunching", flush=True)
+        return True
+    except Exception as e:
+        print(f"[self-update] swap failed ({e}); restoring", flush=True)
+        try:
+            if not os.path.exists(exe) and os.path.exists(bak):
+                os.replace(bak, exe)
+        except Exception:
+            pass
+        try:
+            if os.path.exists(new):
+                os.remove(new)
+        except OSError:
+            pass
+        return False
+
+
 def _supports_worker(ctx):
     """True only if the running .exe (bootstrapper) can execute a crash-isolated
     device worker (bootstrap ≥ 2.5). On an older exe, re-launching it with
@@ -925,6 +1104,10 @@ def _printer_monitor_worker(ctx, stop):
 def main(cfg, ctx):
     global _CTX
     _CTX = ctx  # carries bootstrap_version + worker_exe for reporting/spawning
+    _touch_heartbeat()   # earliest possible, so the watchdog never double-launches us
+    _install_watchdog()  # resilience first — a bad self-update swap can still recover
+    if _self_update(ctx):  # opted-in kiosks swap their exe here, then hard-exit
+        os._exit(0)        # new exe is already launched; don't let the bootstrapper loop
     hostname = (os.environ.get("COMPUTERNAME") or socket.gethostname() or "unknown").strip()
     os_str = f"{platform.system()} {platform.release()}".strip()
     gw = cfg.get("gateway", "auto")
@@ -955,10 +1138,12 @@ def main(cfg, ctx):
     buffer = []
     last_post = time.time()
     last_ver_check = time.time()
+    committed = False  # clear the exe-swap probation marker after our first post
     # First LAN sweep ~15s after start so devices populate quickly.
     last_probe = time.time() - probe_every + 15.0
     while True:
         t = time.time()
+        _touch_heartbeat()  # every loop (~1s): the watchdog's proof we're alive
         rtt = ping_once(cfg["target"], to)
         sample = {"ts": round(t, 3), "rtt": rtt}
         if gw_ip:
@@ -969,6 +1154,8 @@ def main(cfg, ctx):
             try:
                 resp = _post(ctx, cfg, gw_ip, hostname, os_str, buffer)
                 buffer = []
+                if not committed:
+                    _commit_exe_update(); committed = True  # a good post = swap succeeded
                 _run_commands(ctx, (resp or {}).get("commands"))
             except Exception as e:
                 print(f"[netmon-payload] post failed, buffering {len(buffer)}: {e}", flush=True)
@@ -985,9 +1172,13 @@ def main(cfg, ctx):
                 probe_every = float(suggested)
 
         # Periodically ask the server if a newer payload exists; if so, hand back
-        # to the bootstrapper to fetch + run it.
+        # to the bootstrapper to fetch + run it. Also honour an exe rollout that
+        # was flipped on mid-run (swap + relaunch without waiting for a restart).
         if time.time() - last_ver_check >= ver_check_every:
             last_ver_check = time.time()
+            if _self_update(ctx):
+                live_stop.set(); printer_stop.set()
+                os._exit(0)  # new exe launched; hard-exit so we don't run twice
             sv = _server_version(ctx)
             if sv and sv != ctx.get("running_version"):
                 print(f"[netmon-payload] newer version {sv} available — updating", flush=True)

@@ -90,6 +90,7 @@ function AgentCard({
             {agent.hostname ?? "—"}
             {agent.os ? ` · ${agent.os}` : ""}
             {agent.site_name ? ` · ${agent.site_name}` : ""}
+            {` · agent ${agent.bootstrap_version ?? "—"}`}
           </div>
           {agent.printer_status ? (
             <div style={{ marginTop: 4 }}><PrinterChip agent={agent} /></div>
@@ -123,7 +124,8 @@ function AgentCard({
       {open ? (
         <div className="detail">
           <div style={{ fontSize: 12, color: "var(--ink-muted)", margin: "10px 0 6px" }}>
-            Ping latency {agent.version ? `· agent v${agent.version}` : ""}
+            Ping latency · agent {agent.bootstrap_version ?? "—"}
+            {agent.version ? ` · build ${agent.version}` : ""}
             {agent.last_ip ? ` · ${agent.last_ip}` : ""}
           </div>
           {pings === null ? <p className="hint">Loading…</p> : <LatencyChart data={pings} />}

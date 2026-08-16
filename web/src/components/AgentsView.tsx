@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { api, isAdmin, type Agent, type MetricPoint, type PingPoint, type PrinterEvent, type SparkPoint } from "../api/client";
+import { api, isAdmin, type Agent, type MetricPoint, type PingPoint, type PrinterEvent, type SparkPoint, type WanStatus } from "../api/client";
 import { PrinterCheck } from "./PrinterCheck";
 import { PrinterDeep } from "./PrinterDeep";
 import { downloadKioskReport } from "../lib/kioskReport";
@@ -8,6 +8,7 @@ import { Sparkline } from "./Sparkline";
 import { StationsPanel } from "./StationsPanel";
 import { AgentUpdatePanel } from "./AgentUpdatePanel";
 import { PrinterLogPanel } from "./PrinterLogPanel";
+import { WanPanel } from "./WanPanel";
 import { StatusPill } from "./StatusPill";
 
 function timeAgo(iso: string | null): string {
@@ -201,6 +202,8 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
   const [manage, setManage] = useState(false);
   const [showUpdate, setShowUpdate] = useState(false);
   const [showPrinterLog, setShowPrinterLog] = useState(false);
+  const [showWan, setShowWan] = useState(false);
+  const [wan, setWan] = useState<WanStatus | null>(null);
   const [notice, setNotice] = useState<{ notice: string | null; at: string | null } | null>(null);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [cols, setCols] = useState(1);
@@ -216,6 +219,7 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
       api.agents().then((a) => alive && setAgents(a)).catch(() => {});
       api.agentSparklines().then((s) => alive && setSparks(s)).catch(() => {});
       api.getNotice().then((n) => alive && setNotice(n.notice ? n : null)).catch(() => {});
+      api.wanStatus().then((w) => alive && setWan(w)).catch(() => {});
     };
     tick();
     const id = setInterval(tick, 15000);
@@ -275,10 +279,23 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
     <AgentUpdatePanel onClose={() => setShowUpdate(false)} onChanged={load} />
   ) : showPrinterLog ? (
     <PrinterLogPanel onClose={() => setShowPrinterLog(false)} />
+  ) : showWan ? (
+    <WanPanel onClose={() => setShowWan(false)} />
   ) : null;
 
   return (
     <>
+      {wan?.state === "brownout" ? (
+        <div className="banner" style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10, borderLeft: "3px solid var(--critical)", cursor: "pointer" }}
+          onClick={() => setShowWan(true)} title="Open WAN / ISP health">
+          <span style={{ fontSize: 18 }}>🌐</span>
+          <span style={{ flex: 1 }}>
+            <strong>WAN brownout in progress</strong> — the internet is degraded ({wan.incident?.worst_target ?? "external targets"}) while the LAN is healthy. Likely an ISP/Spectrum issue.
+            {wan.since ? <span className="sub" style={{ fontSize: 12 }}> · since {new Date(wan.since).toLocaleString(undefined, { hour: "numeric", minute: "2-digit" })}</span> : null}
+          </span>
+          <span className="sub" style={{ fontSize: 12 }}>View →</span>
+        </div>
+      ) : null}
       {notice?.notice ? (
         <div className="banner" style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10, borderLeft: "3px solid var(--accent)" }}>
           <span style={{ flex: 1 }}>
@@ -308,6 +325,10 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
         </button>
         <button className="btn" onClick={() => setShowPrinterLog(true)} title="View the ticket-printer status-change log">
           🖨 Printer log
+        </button>
+        <button className="btn" onClick={() => setShowWan(true)} title="WAN / ISP health — brownout detection + per-WAN metrics"
+          style={wan?.state === "brownout" ? { borderColor: "var(--critical)", color: "var(--critical)" } : undefined}>
+          🌐 WAN health
         </button>
         {isAdmin() ? <button className="btn" onClick={() => setManage(true)}>⚙ Manage stations</button> : null}
         {isAdmin() ? <button className="btn" onClick={() => setShowUpdate(true)} title="Upload the agent exe and stage a rollout">⬆ Agent update</button> : null}

@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Network Incident — Aug 15, 2026</title>
+<style>
+  :root{
+    --page:#0e0f0d; --surface:#171815; --line:#2a2b27; --grid:#232420;
+    --text:#f4f4ef; --muted:#a9a99f;
+    --gw:#1fbf86; --cf:#4a9bef; --gg:#9b8fef; --pay:#e06a37; --ks:#e06699;
+    --crit:#e0524f; --good:#22c55e; --warn:#f0b429;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--page);color:var(--text);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1000px;margin:0 auto;padding:28px 22px 40px}
+  .head{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap}
+  .badge{display:inline-flex;align-items:center;gap:7px;padding:5px 12px;border-radius:999px;
+    font-weight:600;font-size:12.5px;background:rgba(34,197,94,.13);color:var(--good);
+    border:1px solid rgba(34,197,94,.30)}
+  .dot{width:8px;height:8px;border-radius:50%;background:currentColor;display:inline-block}
+  h1{font-size:22px;margin:2px 0 4px;letter-spacing:-.01em}
+  .sub{color:var(--muted);font-size:13.5px;margin:0}
+  .spacer{flex:1}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:22px 0 8px}
+  .tile{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:13px 15px}
+  .tile .k{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+  .tile .v{font-size:22px;font-weight:700;margin-top:3px;letter-spacing:-.01em}
+  .tile .v small{font-size:13px;font-weight:600;color:var(--muted)}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 16px 8px;margin-top:16px}
+  .card h2{font-size:14px;margin:0 0 2px}
+  .card .cap{color:var(--muted);font-size:12.5px;margin:0 0 8px}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin:2px 0 6px;font-size:12.5px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .swatch{width:11px;height:3px;border-radius:2px;display:inline-block}
+  svg{display:block;width:100%;height:auto}
+  .diag{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--crit);
+    border-radius:12px;padding:15px 18px;margin-top:16px}
+  .diag h2{font-size:14px;margin:0 0 6px}
+  .diag p{margin:7px 0;color:#deded6}
+  .diag b{color:var(--text)}
+  .foot{color:var(--muted);font-size:11.5px;margin-top:18px;display:flex;gap:10px;flex-wrap:wrap}
+  .foot .spacer{flex:1}
+  .hl{color:var(--crit);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <div>
+      <h1>Network Incident — Saturday, Aug 15, 2026</h1>
+      <p class="sub">Upstream / WAN degradation · on-lot vantage K3-6017 · window ≈ 8:14–8:55 PM PT</p>
+    </div>
+    <div class="spacer"></div>
+    <span class="badge"><span class="dot"></span>Recovered</span>
+  </div>
+
+  <div class="tiles">
+    <div class="tile"><div class="k">Impact window</div><div class="v">~40 min <small>worst 8:19–8:40</small></div></div>
+    <div class="tile"><div class="k">Peak payment latency</div><div class="v" style="color:var(--pay)">7.8 s <small>norm ~0.9 s</small></div></div>
+    <div class="tile"><div class="k">Peak kiosk load</div><div class="v" style="color:var(--ks)">9.3 s <small>norm ~0.2 s</small></div></div>
+    <div class="tile"><div class="k">Fleet packet-loss peak</div><div class="v" style="color:var(--crit)">49<small> / 54 kiosks · 8:33</small></div></div>
+    <div class="tile"><div class="k">Site gateway</div><div class="v" style="color:var(--gw)">1 ms <small>0% loss · healthy</small></div></div>
+    <div class="tile"><div class="k">Root cause</div><div class="v" style="font-size:16px">Upstream ISP / WAN</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Response time by target — last 60 min <span style="color:var(--muted);font-weight:400">(log scale, ms)</span></h2>
+    <p class="cap">The <b style="color:var(--gw)">site gateway</b> holds flat at ~1 ms the whole hour — the local network never faltered. Everything off-site spikes together during the event.</p>
+    <div class="legend" id="legend"></div>
+    <svg id="lat" viewBox="0 0 1000 300" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Latency timeline"></svg>
+  </div>
+
+  <div class="card">
+    <h2>Fleet packet loss — kiosks dropping pings per minute</h2>
+    <p class="cap">Two sharp fleet-wide bursts — nearly the whole fleet lost packets at the same instant, the signature of an upstream hit (no kiosk actually went offline).</p>
+    <svg id="loss" viewBox="0 0 1000 150" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Fleet packet loss per minute"></svg>
+  </div>
+
+  <div class="diag">
+    <h2>What happened</h2>
+    <p>Starting ~<b>8:14 PM</b>, everything leaving the site degraded together while the <b>local gateway stayed perfect (1 ms, 0% loss)</b> — so this was an <b>upstream internet / WAN event, not a local outage</b>.</p>
+    <p>Two acute packet-loss bursts hit the fleet: <span class="hl">43 of 54 kiosks</span> lost pings in the same minute at <b>8:19 PM</b>, and <span class="hl">49 of 54</span> at <b>8:33 PM</b>. External DNS climbed from ~4 ms to <b>~100 ms</b>, and — the part guests felt — the <b>SignaPay payment gateway</b> jumped from ~0.9 s to a peak of <b>7.8 s</b> and the <b>Funcard kiosk URL</b> from ~0.2 s to <b>9.3 s</b>, worst between <b>8:19 and 8:40 PM</b>. During those spikes, card transactions and kiosk page loads would have been timing out.</p>
+    <p><b>Now recovered.</b> Loss tapered off after ~8:43 PM; gateway, DNS, payments and kiosks are all back to normal. Nothing in the local network needs fixing — if this recurs, it's one to raise with the site's ISP / uplink provider.</p>
+  </div>
+
+  <div class="foot">
+    <span>Source: NetMonitor 2.0 · rcs-fleet-mon</span>
+    <span class="spacer"></span>
+    <span id="gen"></span>
+  </div>
+</div>
+
+<script>
+const START = 1786849680000; // first minute (8:08 PM PT)
+const S = {
+  "Site gateway":[1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,16,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+  "Cloudflare DNS":[11,4,18,10,11,4,4,4,6,13,20,5,18,4,4,5,80,4,9,62,6,24,20,7,6,46,29,34,49,55,27,53,30,21,3,107,50,9,12,18,41,9,53,34,18,8,4,23,9,4,9,16,4,10,19,9,20,12,8,3],
+  "Google DNS":[11,6,15,14,16,6,61,7,5,68,18,24,9,5,10,5,21,5,10,53,7,16,11,65,6,49,34,32,37,98,27,66,36,30,14,51,57,7,52,12,16,17,15,12,25,24,5,11,16,5,20,22,5,24,6,5,22,25,36,4],
+  "SignaPay payments":[1031,907,1048,1003,953,896,969,962,926,1141,1016,7776,931,895,936,1053,875,1015,877,875,1869,1101,974,859,904,1269,1117,1220,1162,1593,998,2194,1143,1093,1065,951,964,1005,925,1125,919,985,868,924,875,901,874,945,952,886,873,963,924,954,969,910,985,1128,1090,null],
+  "Funcard kiosk":[184,172,203,199,172,184,211,203,172,178,300,7226,4071,222,311,167,219,496,186,203,178,156,182,170,195,344,249,266,234,422,9263,1243,284,202,172,167,219,234,156,344,192,188,183,188,231,250,1069,1404,186,183,235,203,223,172,172,200,274,345,187,187]
+};
+const FLEET=[0,0,1,0,1,0,0,0,0,0,1,43,0,0,0,0,0,0,1,0,0,0,1,1,3,49,6,1,4,12,8,9,12,0,0,2,0,0,0,0,0,0,0,1,0,0,0,0,0,0,3,0,0,0,0,0,0,1,0,0];
+const COL={"Site gateway":"--gw","Cloudflare DNS":"--cf","Google DNS":"--gg","SignaPay payments":"--pay","Funcard kiosk":"--ks"};
+const N=60, cs=getComputedStyle(document.documentElement);
+const c=k=>cs.getPropertyValue(k).trim();
+const NS="http://www.w3.org/2000/svg";
+const fmt=i=>new Date(START+i*60000).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
+function el(p,t,a){const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);p.appendChild(e);return e;}
+
+// ---- shared x geometry ----
+const ML=52,MR=16,W=1000;
+const px=i=>ML+(i/(N-1))*(W-ML-MR);
+
+// ---- latency chart (log scale 1..10000 ms) ----
+(function(){
+  const svg=document.getElementById('lat'), H=300, MT=14, MB=26, top=MT, ph=H-MT-MB;
+  const ly=v=>top+(1-Math.log10(Math.max(v,1))/4)*ph;
+  [1,10,100,1000,10000].forEach(g=>{
+    el(svg,'line',{x1:ML,x2:W-MR,y1:ly(g),y2:ly(g),stroke:c('--grid'),'stroke-width':1});
+    el(svg,'text',{x:ML-8,y:ly(g)+3.5,'text-anchor':'end',fill:c('--muted'),'font-size':10.5})
+      .textContent=(g>=1000?(g/1000)+'s':g+'ms');
+  });
+  // x ticks every 10 min
+  for(let i=0;i<N;i+=10){ el(svg,'text',{x:px(i),y:H-8,'text-anchor':'middle',fill:c('--muted'),'font-size':10.5}).textContent=fmt(i); }
+  // event guide lines
+  [11,25,30].forEach(i=>el(svg,'line',{x1:px(i),x2:px(i),y1:top,y2:top+ph,stroke:c('--crit'),'stroke-width':1,'stroke-dasharray':'3 4','opacity':.35}));
+  // series
+  for(const name in S){
+    const arr=S[name], col=c(COL[name]); let d='',pen=false;
+    arr.forEach((v,i)=>{ if(v==null){pen=false;return;} const X=px(i),Y=ly(v); d+=(pen?'L':'M')+X.toFixed(1)+' '+Y.toFixed(1)+' '; pen=true; });
+    const wgt = name==="Site gateway"?2.6:1.8;
+    el(svg,'path',{d,fill:'none',stroke:col,'stroke-width':wgt,'stroke-linejoin':'round','stroke-linecap':'round','opacity':name==="Site gateway"?1:.95});
+  }
+  // peak annotations
+  const ann=(i,v,txt,col,dy)=>{ const X=px(i),Y=ly(v);
+    el(svg,'circle',{cx:X,cy:Y,r:3,fill:c(col)});
+    const t=el(svg,'text',{x:X+ (i>45?-6:6),y:Y+dy,'text-anchor':i>45?'end':'start',fill:c(col),'font-size':11,'font-weight':600}); t.textContent=txt; };
+  ann(11,7776,'7.8s payment','--pay',-6);
+  ann(30,9263,'9.3s kiosk','--ks',-6);
+  ann(35,107,'DNS 107ms','--cf',14);
+})();
+
+// ---- fleet loss bars ----
+(function(){
+  const svg=document.getElementById('loss'), H=150, MT=12, MB=26, top=MT, ph=H-MT-MB, maxV=54;
+  [10,25,49].forEach(g=>{ const y=top+(1-g/maxV)*ph;
+    el(svg,'line',{x1:ML,x2:W-MR,y1:y,y2:y,stroke:c('--grid'),'stroke-width':1});
+    el(svg,'text',{x:ML-8,y:y+3.5,'text-anchor':'end',fill:c('--muted'),'font-size':10.5}).textContent=g;
+  });
+  const bw=(W-ML-MR)/N*0.72;
+  FLEET.forEach((v,i)=>{ if(!v)return; const h=(v/maxV)*ph, X=px(i)-bw/2, Y=top+ph-h;
+    el(svg,'rect',{x:X,y:Y,width:bw,height:h,rx:1.5,fill:c('--crit'),opacity:v>=20?1:.62});
+    if(v>=20){ el(svg,'text',{x:px(i),y:Y-4,'text-anchor':'middle',fill:c('--crit'),'font-size':11,'font-weight':700}).textContent=v; }
+  });
+  for(let i=0;i<N;i+=10){ el(svg,'text',{x:px(i),y:H-8,'text-anchor':'middle',fill:c('--muted'),'font-size':10.5}).textContent=fmt(i); }
+})();
+
+// legend
+const lg=document.getElementById('legend');
+for(const name in S){ const s=document.createElement('span');
+  s.innerHTML='<i class="swatch" style="background:'+c(COL[name])+'"></i>'+name; lg.appendChild(s); }
+
+document.getElementById('gen').textContent='Generated '+new Date().toLocaleString();
+</script>
+</body>
+</html>

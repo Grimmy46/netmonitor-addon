@@ -147,6 +147,33 @@ export interface MetricPoint {
   upload_mbps: number | null;
 }
 
+export interface WanIncident {
+  id: string;
+  kind: string;
+  started_at: string;
+  ended_at: string | null;
+  ongoing: boolean;
+  duration_seconds: number | null;
+  peak_loss_pct: number | null;
+  peak_latency_ms: number | null;
+  worst_target: string | null;
+  detail: string | null;
+}
+
+export interface WanStatus {
+  state: "clear" | "brownout" | "unknown";
+  since: string | null;
+  detail: string | null;
+  incident: WanIncident | null;
+}
+
+export interface WanMetricSeries {
+  wan: string;
+  label: string;
+  primary: boolean;
+  points: MetricPoint[];
+}
+
 export interface UnifiStatus {
   configured: boolean;
   label: string | null;
@@ -209,6 +236,11 @@ export const api = {
       body: JSON.stringify({ dormant }),
     }),
   metrics: (siteId: string) => req<MetricPoint[]>(`/sites/${siteId}/metrics`),
+  wanMetrics: (siteId: string) => req<WanMetricSeries[]>(`/sites/${siteId}/wan-metrics`),
+
+  // WAN brownout incident log (from our own on-lot probes).
+  wanIncidents: (days = 30) => req<WanIncident[]>(`/live/wan-incidents?days=${days}`),
+  wanStatus: () => req<WanStatus>("/live/wan-status"),
 
   unifiStatus: () => req<UnifiStatus>("/integrations/unifi/status"),
   setUnifiKey: (apiKey: string) =>

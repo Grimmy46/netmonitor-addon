@@ -42,5 +42,12 @@ class Account(Base, UUIDPk, Timestamps):
         DateTime(timezone=True), default=None
     )
 
+    # WAN brownout confirm timer: set when the internet first looks degraded
+    # (while the LAN is fine) and no incident is open yet; once it persists past
+    # the confirm window the alert sweep opens a WanIncident and clears this.
+    brownout_pending_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+
     users: Mapped[list["User"]] = relationship(back_populates="account")  # noqa: F821
     sites: Mapped[list["Site"]] = relationship(back_populates="account")  # noqa: F821

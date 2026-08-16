@@ -37,7 +37,15 @@ from app.schemas.integrations import (
     UnifiKeyStatus,
     UnifiSyncResult,
 )
-from app.schemas.network import DeviceOut, DormantDeviceOut, MetricPoint, SiteOut
+from app.schemas.network import (
+    DeviceOut,
+    DormantDeviceOut,
+    MetricPoint,
+    SiteOut,
+    WanIncidentOut,
+    WanMetricSeries,
+    WanStatusOut,
+)
 
 __all__ = [
     "AgentCreate",
@@ -72,6 +80,9 @@ __all__ = [
     "PingSampleIn",
     "MetricPoint",
     "SiteOut",
+    "WanIncidentOut",
+    "WanMetricSeries",
+    "WanStatusOut",
     "UnifiConsoleIn",
     "UnifiConsoleOut",
     "UnifiConsoleSyncResult",

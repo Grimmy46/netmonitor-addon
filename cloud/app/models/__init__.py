@@ -14,6 +14,7 @@ from app.models.site_plan import SitePlan
 from app.models.unifi_console import UnifiConsole
 from app.models.unifi_credential import UnifiCredential
 from app.models.user import User
+from app.models.wan_incident import WanIncident
 
 __all__ = [
     "Account",
@@ -32,4 +33,5 @@ __all__ = [
     "UnifiConsole",
     "UnifiCredential",
     "User",
+    "WanIncident",
 ]

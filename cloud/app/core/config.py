@@ -67,6 +67,29 @@ class Settings(BaseSettings):
     # Ignore a printer reading older than this (agent offline / stopped polling);
     # a stale status must never alert on its own — the kiosk-offline push covers it.
     alert_printer_fresh_seconds: int = 300
+    # ── WAN brownout detection (internet degraded while the LAN/gateway is fine) ─
+    # A brownout = external targets (payments/DNS/kiosk) show loss or high latency
+    # from the on-lot vantage while the local gateway ping stays healthy — i.e. the
+    # fault is upstream of the lot (the ISP/WAN). Detected from our own probe
+    # samples, so it needs no UniFi dependency.
+    # Look-back window over which on-lot samples are judged.
+    brownout_window_seconds: int = 180
+    # Minimum on-lot samples per target needed before we'll judge it.
+    brownout_min_samples: int = 3
+    # The local gateway ping is considered HEALTHY below these (a LAN ping is
+    # normally ~1 ms; generous ceilings avoid mistaking a slow ICMP for a fault).
+    brownout_gateway_max_loss_pct: float = 20.0
+    brownout_gateway_max_latency_ms: float = 250.0
+    # An external target counts as DEGRADED at/above either of these.
+    brownout_ext_loss_pct: float = 30.0
+    brownout_ext_latency_ms: float = 1500.0
+    # How many external targets must be degraded at once to call it a brownout.
+    brownout_min_degraded_targets: int = 1
+    # Degradation must persist this long before an incident opens (debounce).
+    brownout_confirm_seconds: int = 120
+    # The internet must look healthy again this long before an incident closes.
+    brownout_clear_seconds: int = 180
+
     # VAPID "sub" claim sent to the push services.
     vapid_subject: str = "mailto:dawidrcs@gmail.com"
 

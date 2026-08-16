@@ -19,14 +19,23 @@ import asyncio
 import contextlib
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.db import SessionLocal
-from app.models import Account, Agent, Device, PushSubscription, Site
+from app.models import (
+    Account,
+    Agent,
+    Device,
+    ProbeSample,
+    ProbeTarget,
+    PushSubscription,
+    Site,
+    WanIncident,
+)
 from app.services.notify import send_push
 
 logger = logging.getLogger("netmonitor.alerts")
@@ -47,6 +56,24 @@ def _parse_iso(value: str | None) -> datetime | None:
 
 def _fmt_time(ts: datetime | None) -> str:
     return ts.astimezone(timezone.utc).strftime("%H:%M UTC") if ts else "?"
+
+
+def _median(vals: list[float]) -> float | None:
+    if not vals:
+        return None
+    s = sorted(vals)
+    n = len(s)
+    mid = n // 2
+    return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2.0
+
+
+def _fmt_dur(seconds: float) -> str:
+    seconds = int(max(0, seconds))
+    if seconds < 90:
+        return f"{seconds}s"
+    if seconds < 5400:
+        return f"{round(seconds / 60)} min"
+    return f"{round(seconds / 3600, 1)} h"
 
 
 _PRINTER_FAULTS = ("paper_out", "cover_open", "error")
@@ -117,6 +144,184 @@ async def _maybe_fire_scheduled_rollout(db: AsyncSession, now: datetime) -> int:
     return len(newly)
 
 
+def _wan_signal(st, now: datetime, targets, by_target: dict) -> tuple[str, dict]:
+    """Classify the WAN health this sweep from the on-lot vantage only.
+
+    Returns (signal, info) where signal is:
+      "brownout" — local gateway healthy AND external targets degraded (ISP fault)
+      "clear"    — local gateway healthy AND external targets fine
+      "unknown"  — on-lot vantage asleep, too few samples, or the gateway itself
+                   looks unhealthy (that's a LAN/gateway problem, handled elsewhere)
+    info carries peak_loss_pct / peak_latency_ms / worst_target / detail.
+    """
+    gw = [t for t in targets if (t.target or "").strip().lower() == "gateway"]
+    ext = [t for t in targets if (t.target or "").strip().lower() != "gateway"]
+    if not gw or not ext:
+        return "unknown", {}
+
+    fresh_cut = now - timedelta(seconds=st.live_local_fresh_seconds)
+    g_samples: list = []
+    for t in gw:
+        g_samples += by_target.get(t.id, [])
+    g_fresh = any(s.ts >= fresh_cut for s in g_samples)
+    if len(g_samples) < st.brownout_min_samples or not g_fresh:
+        return "unknown", {}  # kiosk asleep / not enough on-lot data to judge
+
+    g_answered = [s.ms for s in g_samples if s.ms is not None]
+    g_loss = 100.0 * (len(g_samples) - len(g_answered)) / len(g_samples)
+    g_med = _median(g_answered)
+    gateway_healthy = (
+        g_loss <= st.brownout_gateway_max_loss_pct
+        and g_med is not None
+        and g_med <= st.brownout_gateway_max_latency_ms
+    )
+    if not gateway_healthy:
+        return "unknown", {}  # the LAN/gateway itself is bad — not a WAN brownout
+
+    degraded, peak_loss, peak_latency, worst = [], 0.0, 0.0, None
+    for t in ext:
+        ss = by_target.get(t.id, [])
+        if len(ss) < st.brownout_min_samples:
+            continue
+        answered = [s.ms for s in ss if s.ms is not None]
+        loss = 100.0 * (len(ss) - len(answered)) / len(ss)
+        mx = max(answered) if answered else 0.0
+        if loss >= st.brownout_ext_loss_pct or mx >= st.brownout_ext_latency_ms:
+            degraded.append(t)
+            if loss > peak_loss or (loss == peak_loss and mx > peak_latency):
+                worst = t.label
+            peak_loss = max(peak_loss, loss)
+            peak_latency = max(peak_latency, mx)
+
+    g_ref = f"gateway {round(g_med)} ms / {round(g_loss)}% loss" if g_med is not None else "gateway ok"
+    info = {
+        "peak_loss_pct": round(peak_loss, 1),
+        "peak_latency_ms": round(peak_latency, 1),
+        "worst_target": worst,
+        "detail": (
+            f"{g_ref}; worst {worst}: {round(peak_loss)}% loss / {round(peak_latency)} ms"
+            if worst else g_ref
+        ),
+    }
+    if len(degraded) >= st.brownout_min_degraded_targets:
+        return "brownout", info
+    return "clear", info
+
+
+async def _maybe_fire_wan_brownout(db: AsyncSession, now: datetime) -> int:
+    """Detect an internet (WAN/ISP) brownout from our own on-lot probes and keep
+    an incident log. A brownout = external targets degraded while the local
+    gateway is healthy, confirmed over a debounce window. Opens one WanIncident
+    per event (pushes an alert), tracks its peak, and closes it (pushes recovery)
+    once the internet stays healthy for the clear window. Returns 1 if an incident
+    opened this sweep, else 0. Runs regardless of push subscriptions so the log is
+    always built."""
+    st = get_settings()
+    account = (await db.execute(select(Account).limit(1))).scalar_one_or_none()
+    if account is None:
+        return 0
+    targets = (await db.execute(
+        select(ProbeTarget).where(
+            ProbeTarget.account_id == account.id, ProbeTarget.enabled.is_(True)
+        )
+    )).scalars().all()
+    if not targets:
+        return 0
+
+    window_start = now - timedelta(seconds=st.brownout_window_seconds)
+    rows = (await db.execute(
+        select(ProbeSample).where(
+            ProbeSample.ts >= window_start,
+            ProbeSample.agent_id.is_not(None),  # on-lot vantage only
+            ProbeSample.target_id.in_([t.id for t in targets]),
+        )
+    )).scalars()
+    by_target: dict = {}
+    for s in rows:
+        by_target.setdefault(s.target_id, []).append(s)
+
+    signal, info = _wan_signal(st, now, targets, by_target)
+
+    open_inc = (await db.execute(
+        select(WanIncident)
+        .where(WanIncident.account_id == account.id, WanIncident.ended_at.is_(None))
+        .order_by(WanIncident.started_at.desc())
+        .limit(1)
+    )).scalars().first()
+
+    opened = 0
+    if signal == "brownout":
+        if open_inc is not None:
+            # Ongoing — extend the peak and cancel any recovery timer.
+            open_inc.clearing_since = None
+            if info.get("peak_loss_pct") is not None:
+                open_inc.peak_loss_pct = max(open_inc.peak_loss_pct or 0.0, info["peak_loss_pct"])
+            if info.get("peak_latency_ms") is not None:
+                open_inc.peak_latency_ms = max(open_inc.peak_latency_ms or 0.0, info["peak_latency_ms"])
+            if info.get("worst_target"):
+                open_inc.worst_target = info["worst_target"]
+            if info.get("detail"):
+                open_inc.detail = info["detail"]
+        else:
+            if account.brownout_pending_at is None:
+                account.brownout_pending_at = now
+            elif (now - account.brownout_pending_at).total_seconds() >= st.brownout_confirm_seconds:
+                started = account.brownout_pending_at
+                inc = WanIncident(
+                    account_id=account.id, kind="brownout", started_at=started,
+                    peak_loss_pct=info.get("peak_loss_pct"),
+                    peak_latency_ms=info.get("peak_latency_ms"),
+                    worst_target=info.get("worst_target"), detail=info.get("detail"),
+                )
+                db.add(inc)
+                account.brownout_pending_at = None
+                opened = 1
+                await db.commit()
+                logger.info("WAN brownout opened: %s", info.get("detail"))
+                try:
+                    await send_push(db, {
+                        "title": "🌐 WAN brownout — internet degraded",
+                        "body": (
+                            f"{info.get('worst_target') or 'External targets'}: "
+                            f"{round(info.get('peak_loss_pct') or 0)}% loss / "
+                            f"{round(info.get('peak_latency_ms') or 0)} ms while the LAN is fine "
+                            "— likely an ISP/Spectrum issue."
+                        ),
+                        "tag": "wan-brownout", "url": "/",
+                    })
+                except Exception:  # noqa: BLE001 — push failure must not abort detection
+                    pass
+                return opened
+    elif signal == "clear":
+        account.brownout_pending_at = None
+        if open_inc is not None:
+            if open_inc.clearing_since is None:
+                open_inc.clearing_since = now
+            elif (now - open_inc.clearing_since).total_seconds() >= st.brownout_clear_seconds:
+                open_inc.ended_at = now
+                dur = (open_inc.ended_at - open_inc.started_at).total_seconds()
+                open_inc.clearing_since = None
+                await db.commit()
+                logger.info("WAN brownout closed after %s", _fmt_dur(dur))
+                try:
+                    await send_push(db, {
+                        "title": "🟢 WAN recovered",
+                        "body": (
+                            f"Internet back to normal after {_fmt_dur(dur)} "
+                            f"(peak {round(open_inc.peak_loss_pct or 0)}% loss / "
+                            f"{round(open_inc.peak_latency_ms or 0)} ms)."
+                        ),
+                        "tag": "wan-brownout", "url": "/",
+                    })
+                except Exception:  # noqa: BLE001
+                    pass
+                return 0
+    # signal == "unknown": leave all state untouched (can't tell this sweep).
+
+    await db.commit()
+    return opened
+
+
 async def sweep(db: AsyncSession) -> dict:
     """One pass. Returns counts (also handy for tests)."""
     st = get_settings()
@@ -124,6 +329,8 @@ async def sweep(db: AsyncSession) -> dict:
 
     # Armed scheduled rollout runs regardless of push subscriptions.
     await _maybe_fire_scheduled_rollout(db, now)
+    # WAN brownout detection + incident log — also independent of subscriptions.
+    await _maybe_fire_wan_brownout(db, now)
 
     # No ears, no alarms: skip all work until someone has enabled notifications.
     has_subs = (await db.execute(select(PushSubscription.id).limit(1))).first()

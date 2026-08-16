@@ -5,7 +5,7 @@ Identity is always UniFi's own id/MAC — never the IP — so DHCP churn is a no
 """
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decrypt
@@ -324,67 +324,75 @@ async def sync_all_consoles(db: AsyncSession) -> dict:
 
 async def _ingest_isp_metrics(db: AsyncSession, raw_metrics: list[dict], site_by_uid: dict) -> int:
     """Each entry is roughly {siteId|hostId, periods:[{metricTime, data:{...}}]}.
-    We insert one IspMetric row per period newer than what we already stored."""
+    We insert one IspMetric row per period PER WAN newer than what we already
+    stored for that (site, wan) — so a dual-WAN gateway keeps a full history for
+    both the primary and secondary uplink, not just the primary."""
     inserted = 0
     for entry in raw_metrics:
         uid = str(entry.get("siteId") or entry.get("hostId") or "")
         site = site_by_uid.get(uid)
         if site is None:
             continue
-        # Latest stored ts for this site, to avoid duplicate rows.
-        last = (
+        # Latest stored ts per WAN for this site, to avoid duplicate rows.
+        last_rows = (
             await db.execute(
-                select(IspMetric.ts)
+                select(IspMetric.wan, func.max(IspMetric.ts))
                 .where(IspMetric.site_id == site.id)
-                .order_by(IspMetric.ts.desc())
-                .limit(1)
+                .group_by(IspMetric.wan)
             )
-        ).scalars().first()
+        ).all()
+        last_by_wan = {w: t for w, t in last_rows}
 
         for period in entry.get("periods") or []:
             ts = _parse_ts(period.get("metricTime") or period.get("time"))
-            if ts is None or (last is not None and ts <= last):
+            if ts is None:
                 continue
             # Real shape: period.data.<wan-interface>.{avgLatency, packetLoss, ...}
             # The metric fields live one level under a WAN key (e.g. "wan",
-            # "wan2"), NOT directly under data. Pick the primary WAN, falling
-            # back to a flat layout if a future response ever provides one.
+            # "wan2"). Store every WAN we get; fall back to a flat layout if a
+            # future response ever provides one directly under data.
             body = period.get("data") or period
-            wan_key, d = _primary_wan(body)
-            db.add(
-                IspMetric(
-                    site_id=site.id,
-                    ts=ts,
-                    wan=wan_key,
-                    latency_ms=_num(d.get("avgLatency")),
-                    packet_loss_pct=_num(d.get("packetLoss")),
-                    download_mbps=_kbps_to_mbps(d.get("download_kbps")),
-                    upload_mbps=_kbps_to_mbps(d.get("upload_kbps")),
-                    uptime_pct=_num(d.get("uptime")),
+            for wan_key, d in _all_wans(body):
+                last = last_by_wan.get(wan_key)
+                if last is not None and ts <= last:
+                    continue
+                db.add(
+                    IspMetric(
+                        site_id=site.id,
+                        ts=ts,
+                        wan=wan_key,
+                        latency_ms=_num(d.get("avgLatency")),
+                        packet_loss_pct=_num(d.get("packetLoss")),
+                        download_mbps=_kbps_to_mbps(d.get("download_kbps")),
+                        upload_mbps=_kbps_to_mbps(d.get("upload_kbps")),
+                        uptime_pct=_num(d.get("uptime")),
+                    )
                 )
-            )
-            inserted += 1
+                inserted += 1
     return inserted
 
 
-def _primary_wan(body: dict) -> tuple[str, dict]:
+# WAN keys that represent the primary uplink (the number shown on the site card).
+PRIMARY_WAN_LABELS = {"primary", "wan", "wan1"}
+
+
+def is_primary_wan(label: str | None) -> bool:
+    return (label or "").strip().lower() in PRIMARY_WAN_LABELS
+
+
+def _all_wans(body: dict) -> list[tuple[str, dict]]:
     """UniFi nests ISP metrics under a WAN-interface key inside `data`
-    (e.g. {"wan": {...}, "wan2": {...}}). Return (label, metrics) for the
-    primary WAN. If the metrics look flat (already have avgLatency), use them
-    as-is so we stay resilient to response-shape changes."""
+    (e.g. {"wan": {...}, "wan2": {...}}). Return (label, metrics) for EVERY WAN
+    present. If the metrics look flat (already have avgLatency), treat the whole
+    body as a single primary WAN so we stay resilient to response-shape changes."""
     if not isinstance(body, dict):
-        return "primary", {}
+        return [("primary", {})]
     if "avgLatency" in body or "packetLoss" in body:
-        return "primary", body
+        return [("primary", body)]
     wan_dicts = {k: v for k, v in body.items() if isinstance(v, dict)}
     if not wan_dicts:
-        return "primary", {}
-    # Prefer a key literally named "wan"; otherwise take the first.
-    for pref in ("wan", "wan1", "WAN"):
-        if pref in wan_dicts:
-            return pref, wan_dicts[pref]
-    k = next(iter(wan_dicts))
-    return k, wan_dicts[k]
+        return [("primary", {})]
+    return list(wan_dicts.items())
 
 
 def _num(v) -> float | None:

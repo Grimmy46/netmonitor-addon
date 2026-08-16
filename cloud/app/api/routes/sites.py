@@ -11,7 +11,8 @@ from app.core.config import get_settings
 from app.core.auth import current_user, require_admin
 from app.core.db import get_db
 from app.models import Device, IspMetric, Site
-from app.schemas import DeviceOut, DormantDeviceOut, MetricPoint, SiteOut
+from app.schemas import DeviceOut, DormantDeviceOut, MetricPoint, SiteOut, WanMetricSeries
+from app.services.sync import PRIMARY_WAN_LABELS, is_primary_wan
 
 router = APIRouter(prefix="/sites", tags=["sites"])
 
@@ -34,14 +35,20 @@ def _dormant_sql(cutoff: datetime):
 
 
 async def _latest_metrics_by_site(db: AsyncSession) -> dict:
-    """Most-recent IspMetric per site (small fleet → fetch recent and reduce)."""
-    rows = (
-        await db.execute(select(IspMetric).order_by(IspMetric.ts.desc()).limit(2000))
-    ).scalars()
+    """Most-recent PRIMARY-WAN IspMetric per site — the number shown on the site
+    card. Now that secondary WANs are stored too, prefer a primary-WAN row and
+    only fall back to any WAN if a site has no primary reading."""
+    rows = list(
+        (await db.execute(select(IspMetric).order_by(IspMetric.ts.desc()).limit(4000))).scalars()
+    )
     latest: dict = {}
+    fallback: dict = {}
     for m in rows:
-        if m.site_id not in latest:
+        fallback.setdefault(m.site_id, m)
+        if is_primary_wan(m.wan) and m.site_id not in latest:
             latest[m.site_id] = m
+    for sid, m in fallback.items():
+        latest.setdefault(sid, m)
     return latest
 
 
@@ -218,13 +225,48 @@ async def list_site_devices(
     return outs
 
 
+def _metric_point(m: IspMetric) -> MetricPoint:
+    return MetricPoint(
+        ts=m.ts,
+        latency_ms=m.latency_ms,
+        packet_loss_pct=m.packet_loss_pct,
+        download_mbps=m.download_mbps,
+        upload_mbps=m.upload_mbps,
+    )
+
+
 @router.get("/{site_id}/metrics", response_model=list[MetricPoint])
 async def site_metrics(
     site_id: uuid.UUID,
     limit: int = Query(200, ge=1, le=2000),
+    wan: str | None = Query(None, description="WAN key; default = primary uplink only"),
     db: AsyncSession = Depends(get_db),
     _user=Depends(current_user),
 ) -> list[MetricPoint]:
+    if await db.get(Site, site_id) is None:
+        raise HTTPException(status_code=404, detail="Site not found")
+    stmt = select(IspMetric).where(IspMetric.site_id == site_id)
+    if wan:
+        stmt = stmt.where(func.lower(IspMetric.wan) == wan.strip().lower())
+    else:
+        # Default: the primary uplink only, so the classic single-line chart
+        # isn't polluted by secondary-WAN rows now that we store both.
+        stmt = stmt.where(func.lower(IspMetric.wan).in_(PRIMARY_WAN_LABELS))
+    stmt = stmt.order_by(IspMetric.ts.desc()).limit(limit)
+    rows = list((await db.execute(stmt)).scalars())
+    rows.reverse()  # chronological for charting
+    return [_metric_point(m) for m in rows]
+
+
+@router.get("/{site_id}/wan-metrics", response_model=list[WanMetricSeries])
+async def site_wan_metrics(
+    site_id: uuid.UUID,
+    limit: int = Query(500, ge=1, le=4000),
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(current_user),
+) -> list[WanMetricSeries]:
+    """Per-WAN latency/loss/throughput history for a site — one series per uplink
+    (primary + any secondary). Powers the dual-WAN panel and shows failover."""
     if await db.get(Site, site_id) is None:
         raise HTTPException(status_code=404, detail="Site not found")
     stmt = (
@@ -234,14 +276,29 @@ async def site_metrics(
         .limit(limit)
     )
     rows = list((await db.execute(stmt)).scalars())
-    rows.reverse()  # chronological for charting
+    rows.reverse()  # chronological
+    by_wan: dict[str, list[MetricPoint]] = {}
+    for m in rows:
+        by_wan.setdefault(m.wan or "primary", []).append(_metric_point(m))
+    # Primary uplink(s) first, then the rest alphabetically.
+    keys = sorted(by_wan, key=lambda w: (not is_primary_wan(w), w.lower()))
     return [
-        MetricPoint(
-            ts=m.ts,
-            latency_ms=m.latency_ms,
-            packet_loss_pct=m.packet_loss_pct,
-            download_mbps=m.download_mbps,
-            upload_mbps=m.upload_mbps,
+        WanMetricSeries(
+            wan=k,
+            label=_wan_label(k),
+            primary=is_primary_wan(k),
+            points=by_wan[k],
         )
-        for m in rows
+        for k in keys
     ]
+
+
+def _wan_label(wan: str) -> str:
+    w = (wan or "").strip().lower()
+    if w in ("wan", "wan1", "primary"):
+        return "Primary (WAN1)"
+    if w in ("wan2",):
+        return "Secondary (WAN2)"
+    if w.startswith("wan") and w[3:].isdigit():
+        return f"WAN{w[3:]}"
+    return wan or "WAN"

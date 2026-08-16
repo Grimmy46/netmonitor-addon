@@ -76,3 +76,33 @@ class MetricPoint(BaseModel):
     packet_loss_pct: float | None = None
     download_mbps: float | None = None
     upload_mbps: float | None = None
+
+
+class WanMetricSeries(BaseModel):
+    """One uplink's metric history (from UniFi ISP metrics)."""
+    wan: str                       # raw key, e.g. "wan" / "wan2"
+    label: str                     # human label, e.g. "Primary (WAN1)"
+    primary: bool = False
+    points: list[MetricPoint] = []
+
+
+class WanIncidentOut(BaseModel):
+    """A logged WAN/internet brownout (from our own on-lot probes)."""
+    id: uuid.UUID
+    kind: str = "brownout"
+    started_at: datetime
+    ended_at: datetime | None = None
+    ongoing: bool = False
+    duration_seconds: int | None = None
+    peak_loss_pct: float | None = None
+    peak_latency_ms: float | None = None
+    worst_target: str | None = None
+    detail: str | None = None
+
+
+class WanStatusOut(BaseModel):
+    """Current WAN health as the detector sees it right now."""
+    state: str = "clear"           # clear | brownout | unknown
+    since: datetime | None = None  # start of the ongoing incident, if any
+    detail: str | None = None
+    incident: WanIncidentOut | None = None

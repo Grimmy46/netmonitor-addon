@@ -17,7 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.auth import current_user, require_admin
 from app.core.config import get_settings
 from app.core.db import get_db
-from app.models import Agent, ProbeSample, ProbeTarget
+from app.models import Agent, ProbeSample, ProbeTarget, WanIncident
+from app.schemas import WanIncidentOut, WanStatusOut
 from app.services.sync import get_or_create_account
 
 router = APIRouter(prefix="/live", tags=["live"])
@@ -262,3 +263,57 @@ async def feed(
         ))
     return FeedOut(generated_at=now, window_minutes=minutes,
                    probe_agent=probe_agent, targets=out)
+
+
+def _incident_out(inc: WanIncident, now: datetime) -> WanIncidentOut:
+    ongoing = inc.ended_at is None
+    end = inc.ended_at or now
+    return WanIncidentOut(
+        id=inc.id, kind=inc.kind, started_at=inc.started_at, ended_at=inc.ended_at,
+        ongoing=ongoing,
+        duration_seconds=int((end - inc.started_at).total_seconds()),
+        peak_loss_pct=inc.peak_loss_pct, peak_latency_ms=inc.peak_latency_ms,
+        worst_target=inc.worst_target, detail=inc.detail,
+    )
+
+
+@router.get("/wan-incidents", response_model=list[WanIncidentOut])
+async def wan_incidents(
+    days: int = Query(30, ge=1, le=365),
+    limit: int = Query(200, ge=1, le=1000),
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(current_user),
+) -> list[WanIncidentOut]:
+    """Logged WAN/internet brownouts (external targets degraded while the LAN was
+    fine) — the evidence trail for the ISP. Newest first; ongoing ones included."""
+    now = _now()
+    account = await get_or_create_account(db)
+    since = now - timedelta(days=days)
+    rows = (await db.execute(
+        select(WanIncident)
+        .where(WanIncident.account_id == account.id, WanIncident.started_at >= since)
+        .order_by(WanIncident.started_at.desc())
+        .limit(limit)
+    )).scalars()
+    return [_incident_out(i, now) for i in rows]
+
+
+@router.get("/wan-status", response_model=WanStatusOut)
+async def wan_status(
+    db: AsyncSession = Depends(get_db), _user=Depends(current_user)
+) -> WanStatusOut:
+    """Current WAN health: a live brownout (open incident) or clear."""
+    now = _now()
+    account = await get_or_create_account(db)
+    open_inc = (await db.execute(
+        select(WanIncident)
+        .where(WanIncident.account_id == account.id, WanIncident.ended_at.is_(None))
+        .order_by(WanIncident.started_at.desc())
+        .limit(1)
+    )).scalars().first()
+    if open_inc is not None:
+        return WanStatusOut(
+            state="brownout", since=open_inc.started_at,
+            detail=open_inc.detail, incident=_incident_out(open_inc, now),
+        )
+    return WanStatusOut(state="clear", since=None, detail=None, incident=None)

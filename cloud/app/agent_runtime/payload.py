@@ -33,7 +33,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.08.15.9"
+PAYLOAD_VERSION = "2026.08.15.10"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -1110,7 +1110,7 @@ def _printer_monitor_worker(ctx, stop):
         if isinstance(res, dict) and "present" in res:
             _PRINTER_STATUS = res
         present = isinstance(res, dict) and res.get("present")
-        if stop.wait(90.0 if present else 600.0):
+        if stop.wait(60.0 if present else 600.0):
             return
 
 

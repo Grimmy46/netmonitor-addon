@@ -1048,11 +1048,13 @@ async def probe_report(
 # ── Remote commands (Phase 3): allow-listed, audited, queue = audit log ──────
 # Growing this list is a deliberate act: each kind needs agent-side handling in
 # the payload AND a reason to exist. Never a free-form shell.
-# printer-status = safe (WMI, no ctypes). printer-probe/printer-raw do native
-# device I/O — allowed to be queued, but delivered ONLY to agent exes that run
-# them crash-isolated (bootstrap ≥ 2.5); older exes get them cancelled.
-ALLOWED_COMMAND_KINDS = {"printer-status", "printer-probe", "printer-raw"}
-_CRASH_ISOLATED_KINDS = {"printer-probe", "printer-raw"}
+# printer-status = safe (WMI, no ctypes). printer-probe/printer-raw/printer-test do
+# native device I/O — allowed to be queued, but delivered ONLY to agent exes that
+# run them crash-isolated (bootstrap ≥ 2.5); older exes get them cancelled.
+# printer-test sends a small ESC/POS test ticket to the KPM180H and reports whether
+# the printer accepted it and is healthy afterwards.
+ALLOWED_COMMAND_KINDS = {"printer-status", "printer-probe", "printer-raw", "printer-test"}
+_CRASH_ISOLATED_KINDS = {"printer-probe", "printer-raw", "printer-test"}
 
 
 def _supports_crash_isolation(bootstrap_version: str | None) -> bool:

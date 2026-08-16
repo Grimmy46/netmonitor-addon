@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, isAdmin, type Agent, type MetricPoint, type PingPoint, type PrinterEvent, type SparkPoint, type WanStatus } from "../api/client";
 import { PrinterCheck } from "./PrinterCheck";
 import { PrinterDeep } from "./PrinterDeep";
+import { PrinterTestButton } from "./PrinterTestButton";
 import { downloadKioskReport } from "../lib/kioskReport";
 import { LatencyChart } from "./LatencyChart";
 import { Sparkline } from "./Sparkline";
@@ -176,6 +177,7 @@ function AgentCard({
             </div>
           ) : null}
           {isAdmin() ? <PrinterCheck agentId={agent.id} /> : null}
+          {isAdmin() ? <PrinterTestButton agentId={agent.id} label={agent.name} /> : null}
           {isAdmin() ? <PrinterDeep agentId={agent.id} /> : null}
           <div style={{ marginTop: 12, textAlign: "right" }}>
             <button className="btn" onClick={(e) => { e.stopPropagation(); onToggle(); }}>

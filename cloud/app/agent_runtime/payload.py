@@ -33,7 +33,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.08.16.1"
+PAYLOAD_VERSION = "2026.08.16.2"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -607,17 +607,91 @@ def _cmd_printer_monitor(args):
     return {"present": True, "state": state, "raw": f"{b:02x}", "detail": detail}
 
 
+def _build_test_ticket(label, cut="full"):
+    """ESC/POS test ticket for the KPM180H: a title, the station + local time, and
+    a feed + cut so it dispenses like a real ticket."""
+    ESC, GS = b"\x1b", b"\x1d"
+    parts = [
+        ESC + b"@",            # initialize
+        ESC + b"a\x01",        # center
+        ESC + b"!\x30",        # double width + height
+        b"NetMonitor\n",
+        ESC + b"!\x00",        # back to normal
+        b"TEST PRINT\n",
+        b"------------------------\n",
+    ]
+    if label:
+        parts.append(("Station: %s\n" % label).encode("ascii", "replace"))
+    parts.append(("Time: %s\n" % time.strftime("%Y-%m-%d %H:%M:%S")).encode("ascii", "replace"))
+    parts.append(b"If you can read this, the\n")
+    parts.append(b"ticket printer is working.\n")
+    parts.append(ESC + b"d\x04")  # feed 4 lines so text clears the cutter
+    if cut == "full":
+        parts.append(GS + b"V\x00")   # full cut
+    elif cut == "partial":
+        parts.append(GS + b"V\x01")   # partial cut
+    # cut == "none": leave the paper attached
+    return b"".join(parts)
+
+
+def _cmd_printer_test(args):
+    """Send a small ESC/POS test ticket to the KPM180H and confirm the printer
+    accepted the whole job AND is healthy right afterwards (DLE EOT status).
+    Runs in the crash-isolated worker (native USB I/O). args: {label, cut}."""
+    if SYSTEM != "Windows":
+        return {"ok": False, "note": f"not windows ({SYSTEM})"}
+    try:
+        paths = _usbprint_paths()
+    except Exception as e:  # noqa: BLE001 — a bad enumerate must not raise
+        return {"ok": False, "error": f"enumerate failed: {e}"}
+    if not paths:
+        return {"ok": False, "error": "no USB printer found"}
+    # Prefer the Custom S.p.A. KPM180H (VID 0DD4); else the only USB printer iface.
+    path = next((p for p in paths if re.search(r"(?i)vid_0dd4|kpm|custom", p)), paths[0])
+    cut = str(args.get("cut") or "full").lower()
+    data = _build_test_ticket(args.get("label"), cut)
+
+    res = _usb_txn(path, data, 800, 8) or {}
+    if res.get("error"):
+        return {"ok": False, "error": res["error"]}
+    wrote = int(res.get("wrote") or 0)
+    if wrote < len(data):
+        return {"ok": False, "printed_bytes": wrote, "expected_bytes": len(data),
+                "error": "printer did not accept the full job"}
+
+    # Confirm the printer is healthy right after printing.
+    time.sleep(0.3)
+    st = _usb_txn(path, b"\x10\x04\x02", 600, 8) or {}   # DLE EOT 2
+    raw = st.get("read_hex") or ""
+    state, detail = "ok", "printed; printer online"
+    if raw:
+        b = bytes.fromhex(raw)[0]
+        if b & 0x20:
+            state, detail = "paper_out", "ticket sent, but paper is now out"
+        elif b & 0x04:
+            state, detail = "cover_open", "ticket sent, but the cover / paper door is open"
+        elif b & 0x40:
+            state, detail = "error", "ticket sent, but the printer reports an error"
+        else:
+            state, detail = "ok", "ticket printed — paper present, cover closed"
+    else:
+        detail = "ticket sent; printer gave no status reply"
+    return {"ok": state == "ok", "printed_bytes": wrote, "state": state,
+            "raw": raw, "detail": detail, "cut": cut}
+
+
 _COMMAND_HANDLERS = {
     "printer-status": _cmd_printer_status,
     "printer-probe": _cmd_printer_probe,
     "printer-raw": _cmd_printer_raw,
     "printer-monitor": _cmd_printer_monitor,
+    "printer-test": _cmd_printer_test,
 }
 
 # Kinds whose native device I/O could crash the process — run them in a SEPARATE
 # worker process (the exe re-launched in NETMON_DEVIO mode) so a crash can never
 # take the agent down. Requires bootstrap ≥ 2.5 (the server gates delivery).
-_ISOLATED_KINDS = {"printer-probe", "printer-raw", "printer-monitor"}
+_ISOLATED_KINDS = {"printer-probe", "printer-raw", "printer-monitor", "printer-test"}
 
 
 def device_exec(kind, args):

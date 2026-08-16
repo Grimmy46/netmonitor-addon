@@ -16,7 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.security import hash_token, make_agent_token
-from app.models import Account, Agent, AgentBinary, AgentCommand, Device, PingSample, Site
+from app.models import (
+    Account, Agent, AgentBinary, AgentCommand, Device, PingSample, PrinterEvent, Site,
+)
 from app.schemas import (
     AgentCreate,
     AgentExeMetaOut,
@@ -38,6 +40,7 @@ from app.schemas import (
     ExeRolloutIn,
     ExeRolloutResult,
     PingPoint,
+    PrinterEventOut,
     ProbeTarget,
     ProbeTargetsOut,
 )
@@ -535,10 +538,20 @@ async def agent_report(
         p = report.printer
         # A printer that's present reports a state; when absent we clear the
         # stored status so a removed/unplugged printer stops showing/alerting.
-        agent.printer_status = (p.state or "unknown") if p.present else None
+        prev = agent.printer_status
+        new_state = (p.state or "unknown") if p.present else None
+        agent.printer_status = new_state
         agent.printer_status_at = now.isoformat()
         agent.printer_raw = p.raw if p.present else None
         agent.printer_detail = p.detail if p.present else None
+        # Log only transitions — the table is an event history, not a per-poll log.
+        if new_state != prev:
+            db.add(PrinterEvent(
+                account_id=agent.account_id, agent_id=agent.id,
+                state=new_state or "removed", prev_state=prev,
+                raw=(p.raw if p.present else None),
+                detail=(p.detail if p.present else "printer disconnected"),
+            ))
     client_ip = _client_ip(request)
     if client_ip:
         agent.last_ip = client_ip
@@ -818,6 +831,46 @@ async def set_exe_rollout(
         a.exe_rollout = body.enabled
     await db.commit()
     return ExeRolloutResult(updated=len(agents))
+
+
+# ── Printer status log (per-card history + fleet report) ─────────────────────
+def _printer_event_out(e: PrinterEvent, name: str | None = None) -> PrinterEventOut:
+    return PrinterEventOut(id=e.id, agent_id=e.agent_id, agent_name=name, state=e.state,
+                           prev_state=e.prev_state, detail=e.detail, raw=e.raw, at=e.created_at)
+
+
+@router.get("/printer-log", response_model=list[PrinterEventOut])
+async def fleet_printer_log(
+    hours: int = Query(168, ge=1, le=24 * 90),
+    limit: int = Query(2000, ge=1, le=10000),
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(current_user),
+) -> list[PrinterEventOut]:
+    """Every ticket-printer status change across the fleet in the window — the
+    printer log report. Newest first, with the station name."""
+    since = datetime.now(tz=timezone.utc) - timedelta(hours=hours)
+    rows = (await db.execute(
+        select(PrinterEvent, Agent.name)
+        .join(Agent, Agent.id == PrinterEvent.agent_id)
+        .where(PrinterEvent.created_at >= since)
+        .order_by(desc(PrinterEvent.created_at)).limit(limit)
+    )).all()
+    return [_printer_event_out(e, name) for e, name in rows]
+
+
+@router.get("/{agent_id}/printer-log", response_model=list[PrinterEventOut])
+async def agent_printer_log(
+    agent_id: uuid.UUID,
+    limit: int = Query(40, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(current_user),
+) -> list[PrinterEventOut]:
+    """This station's ticket-printer status changes, newest first (card history)."""
+    rows = (await db.execute(
+        select(PrinterEvent).where(PrinterEvent.agent_id == agent_id)
+        .order_by(desc(PrinterEvent.created_at)).limit(limit)
+    )).scalars().all()
+    return [_printer_event_out(e) for e in rows]
 
 
 # ── enrollment (kiosk first-run station picker — PIN-gated, no token yet) ─────

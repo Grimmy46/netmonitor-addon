@@ -180,6 +180,18 @@ class ExeRolloutResult(BaseModel):
     updated: int = 0
 
 
+class PrinterEventOut(BaseModel):
+    """One logged ticket-printer status change (for the card history + report)."""
+    id: uuid.UUID
+    agent_id: uuid.UUID
+    agent_name: str | None = None
+    state: str
+    prev_state: str | None = None
+    detail: str | None = None
+    raw: str | None = None
+    at: datetime
+
+
 class AgentSiteIn(BaseModel):
     """Link a station to the UniFi site it should probe (null to unlink)."""
     site_id: uuid.UUID | None = None

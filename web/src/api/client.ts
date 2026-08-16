@@ -78,6 +78,17 @@ export interface Agent {
   printer_raw: string | null;
 }
 
+export interface PrinterEvent {
+  id: string;
+  agent_id: string;
+  agent_name: string | null;
+  state: string;
+  prev_state: string | null;
+  detail: string | null;
+  raw: string | null;
+  at: string;
+}
+
 export interface AgentExeMeta {
   present: boolean;
   version: string | null;
@@ -267,6 +278,10 @@ export const api = {
     }),
   agentCommands: (agentId: string, limit = 10) =>
     req<AgentCommand[]>(`/agents/${agentId}/commands?limit=${limit}`),
+  agentPrinterLog: (id: string, limit = 40) =>
+    req<PrinterEvent[]>(`/agents/${id}/printer-log?limit=${limit}`),
+  fleetPrinterLog: (hours = 168, limit = 5000) =>
+    req<PrinterEvent[]>(`/agents/printer-log?hours=${hours}&limit=${limit}`),
   agentPings: (id: string) => req<PingPoint[]>(`/agents/${id}/pings`),
   agentSparklines: (minutes = 45) =>
     req<Record<string, SparkPoint[]>>(`/agents/pings/recent?minutes=${minutes}`),

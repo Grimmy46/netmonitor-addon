@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { api, isAdmin, type Agent, type MetricPoint, type PingPoint, type SparkPoint } from "../api/client";
+import { api, isAdmin, type Agent, type MetricPoint, type PingPoint, type PrinterEvent, type SparkPoint } from "../api/client";
 import { PrinterCheck } from "./PrinterCheck";
 import { PrinterDeep } from "./PrinterDeep";
 import { downloadKioskReport } from "../lib/kioskReport";
@@ -25,6 +25,21 @@ const PRINTER_CHIP: Record<string, { label: string; color: string; bg: string }>
   error: { label: "⚠️ Printer error", color: "var(--critical)", bg: "rgba(248,113,113,0.14)" },
   unknown: { label: "🖨️ No reply", color: "var(--ink-muted)", bg: "rgba(127,127,127,0.10)" },
 };
+
+const EVENT_LABEL: Record<string, { t: string; c: string }> = {
+  ok: { t: "🖨️ Paper OK", c: "var(--good)" },
+  paper_out: { t: "🧻 Paper OUT", c: "var(--critical)" },
+  cover_open: { t: "🔧 Cover open", c: "var(--critical)" },
+  error: { t: "⚠️ Printer error", c: "var(--critical)" },
+  unknown: { t: "🖨️ No reply", c: "var(--ink-muted)" },
+  removed: { t: "🔌 Printer disconnected", c: "var(--ink-muted)" },
+};
+
+function fmtStamp(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  });
+}
 
 function PrinterChip({ agent }: { agent: Agent }) {
   if (!agent.printer_status) return null;
@@ -54,6 +69,17 @@ function AgentCard({
   onToggle: () => void;
 }) {
   const [pings, setPings] = useState<MetricPoint[] | null>(null);
+  const [plog, setPlog] = useState<PrinterEvent[] | null>(null);
+
+  // Printer status-change history — loaded (and refreshed) only while expanded.
+  useEffect(() => {
+    if (!open) { setPlog(null); return; }
+    let alive = true;
+    const load = () => api.agentPrinterLog(agent.id).then((e) => alive && setPlog(e)).catch(() => {});
+    load();
+    const id = setInterval(load, 15000);
+    return () => { alive = false; clearInterval(id); };
+  }, [open, agent.id]);
 
   // Detailed history only loads while this card's row is expanded.
   useEffect(() => {
@@ -129,6 +155,24 @@ function AgentCard({
             {agent.last_ip ? ` · ${agent.last_ip}` : ""}
           </div>
           {pings === null ? <p className="hint">Loading…</p> : <LatencyChart data={pings} />}
+          {plog && plog.length > 0 ? (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 4 }}>
+                Printer log — status changes
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                {plog.slice(0, 12).map((e) => {
+                  const l = EVENT_LABEL[e.state] ?? EVENT_LABEL.unknown;
+                  return (
+                    <div key={e.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12 }}>
+                      <span style={{ color: l.c }} title={e.detail ?? undefined}>{l.t}</span>
+                      <span className="sub" style={{ fontSize: 11, whiteSpace: "nowrap" }}>{fmtStamp(e.at)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
           {isAdmin() ? <PrinterCheck agentId={agent.id} /> : null}
           {isAdmin() ? <PrinterDeep agentId={agent.id} /> : null}
           <div style={{ marginTop: 12, textAlign: "right" }}>
@@ -220,6 +264,25 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
     }
   }
 
+  async function printerLogCsv() {
+    setError("");
+    try {
+      const rows = await api.fleetPrinterLog(24 * 30, 10000); // last 30 days
+      const q = (v: string | null) => `"${(v ?? "").replace(/"/g, '""')}"`;
+      const csv = "time,station,state,previous,detail,raw\n" +
+        rows.map((e) => [q(new Date(e.at).toISOString()), q(e.agent_name), q(e.state),
+          q(e.prev_state), q(e.detail), q(e.raw)].join(",")).join("\n");
+      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `printer-log-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(`Printer log failed: ${String(e instanceof Error ? e.message : e)}`);
+    }
+  }
+
   const panel = manage ? (
     <StationsPanel onClose={() => setManage(false)} onChanged={load} />
   ) : showUpdate ? (
@@ -240,6 +303,9 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
           title="Download a 24-hour ping report (one page per kiosk)"
         >
           {pdfBusy ? "Building PDF…" : "⤓ PDF report"}
+        </button>
+        <button className="btn" onClick={printerLogCsv} title="Download the ticket-printer status-change log (last 30 days)">
+          🖨 Printer log
         </button>
         {isAdmin() ? <button className="btn" onClick={() => setManage(true)}>⚙ Manage stations</button> : null}
         {isAdmin() ? <button className="btn" onClick={() => setShowUpdate(true)} title="Upload the agent exe and stage a rollout">⬆ Agent update</button> : null}

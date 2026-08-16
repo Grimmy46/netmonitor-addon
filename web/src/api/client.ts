@@ -278,6 +278,13 @@ export const api = {
     }),
   agentCommands: (agentId: string, limit = 10) =>
     req<AgentCommand[]>(`/agents/${agentId}/commands?limit=${limit}`),
+  getNotice: () => req<{ notice: string | null; at: string | null }>("/agents/notice"),
+  dismissNotice: () => req<void>("/agents/notice/dismiss", { method: "POST" }),
+  scheduleRollout: (at: string | null) =>
+    req<{ at: string | null }>("/agents/exe-rollout/schedule", {
+      method: "POST",
+      body: JSON.stringify({ at }),
+    }),
   agentPrinterLog: (id: string, limit = 40) =>
     req<PrinterEvent[]>(`/agents/${id}/printer-log?limit=${limit}`),
   fleetPrinterLog: (hours = 168, limit = 5000) =>

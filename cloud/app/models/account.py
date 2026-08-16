@@ -1,7 +1,8 @@
 """An account is the top-level tenant (multi-tenant-ready from day one)."""
 import uuid
+from datetime import datetime
 
-from sqlalchemy import ForeignKey
+from sqlalchemy import DateTime, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -28,6 +29,18 @@ class Account(Base, UUIDPk, Timestamps):
     # The public key goes to browsers; the private key never leaves the server.
     vapid_public_key: Mapped[str | None] = mapped_column(default=None)
     vapid_private_key: Mapped[str | None] = mapped_column(default=None)
+
+    # Scheduled full agent-exe rollout: when set, the alert sweep flags ALL claimed
+    # stations for the exe self-update once this UTC time passes, then clears it and
+    # posts a dashboard notice. Lets a full push be armed for an off-hours window.
+    exe_rollout_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    # A dashboard banner (e.g. "full rollout started"); shown until dismissed.
+    rollout_notice: Mapped[str | None] = mapped_column(default=None)
+    rollout_notice_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
 
     users: Mapped[list["User"]] = relationship(back_populates="account")  # noqa: F821
     sites: Mapped[list["Site"]] = relationship(back_populates="account")  # noqa: F821

@@ -21,12 +21,12 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.db import SessionLocal
-from app.models import Agent, Device, PushSubscription, Site
+from app.models import Account, Agent, Device, PushSubscription, Site
 from app.services.notify import send_push
 
 logger = logging.getLogger("netmonitor.alerts")
@@ -83,10 +83,47 @@ async def _alert_site_ids(db: AsyncSession) -> set:
     return set(rows)
 
 
+async def _maybe_fire_scheduled_rollout(db: AsyncSession, now: datetime) -> int:
+    """If a full exe rollout is armed and its time has passed, flag every claimed
+    station for the self-update, post a dashboard notice, and push once. Returns
+    the number of stations newly flagged (0 if nothing armed / not yet time)."""
+    account = (await db.execute(select(Account).limit(1))).scalar_one_or_none()
+    if account is None or account.exe_rollout_at is None or now < account.exe_rollout_at:
+        return 0
+    newly = (await db.execute(
+        select(Agent).where(Agent.machine_id.is_not(None), Agent.exe_rollout.is_(False))
+    )).scalars().all()
+    for a in newly:
+        a.exe_rollout = True
+    total = int((await db.execute(
+        select(func.count()).select_from(Agent).where(Agent.machine_id.is_not(None))
+    )).scalar_one())
+    account.exe_rollout_at = None  # one-shot: disarm
+    account.rollout_notice = (
+        f"🚀 Scheduled fleet agent update started — {total} stations flagged; "
+        "each updates to the new agent (2.5) within ~10 minutes."
+    )
+    account.rollout_notice_at = now
+    await db.commit()
+    logger.info("Scheduled rollout fired: %d newly flagged, %d total claimed", len(newly), total)
+    try:
+        await send_push(db, {
+            "title": "🚀 Fleet agent update started",
+            "body": f"{total} kiosks flagged — updating to agent 2.5 over ~10 min.",
+            "tag": "rollout", "url": "/",
+        })
+    except Exception:  # noqa: BLE001 — a push failure must never abort the rollout
+        pass
+    return len(newly)
+
+
 async def sweep(db: AsyncSession) -> dict:
     """One pass. Returns counts (also handy for tests)."""
     st = get_settings()
     now = _now()
+
+    # Armed scheduled rollout runs regardless of push subscriptions.
+    await _maybe_fire_scheduled_rollout(db, now)
 
     # No ears, no alarms: skip all work until someone has enabled notifications.
     has_subs = (await db.execute(select(PushSubscription.id).limit(1))).first()

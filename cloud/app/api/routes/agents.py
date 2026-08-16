@@ -39,9 +39,12 @@ from app.schemas import (
     EnrollStationsIn,
     ExeRolloutIn,
     ExeRolloutResult,
+    NoticeOut,
     PingPoint,
     PrinterEventOut,
     ProbeTarget,
+    ScheduleRolloutIn,
+    ScheduleRolloutOut,
     ProbeTargetsOut,
 )
 from app.core.auth import current_user, require_admin
@@ -831,6 +834,47 @@ async def set_exe_rollout(
         a.exe_rollout = body.enabled
     await db.commit()
     return ExeRolloutResult(updated=len(agents))
+
+
+@router.post("/exe-rollout/schedule", response_model=ScheduleRolloutOut)
+async def schedule_exe_rollout(
+    body: ScheduleRolloutIn,
+    db: AsyncSession = Depends(get_db),
+    _admin=Depends(require_admin),
+) -> ScheduleRolloutOut:
+    """Arm (or cancel, with at=null) a full fleet rollout for a future UTC time.
+    The alert sweep flags every claimed station once that time passes."""
+    account = await get_or_create_account(db)
+    account.exe_rollout_at = body.at
+    await db.commit()
+    return ScheduleRolloutOut(at=account.exe_rollout_at)
+
+
+@router.get("/exe-rollout/schedule", response_model=ScheduleRolloutOut)
+async def get_scheduled_rollout(
+    db: AsyncSession = Depends(get_db), _admin=Depends(require_admin),
+) -> ScheduleRolloutOut:
+    account = await get_or_create_account(db)
+    return ScheduleRolloutOut(at=account.exe_rollout_at)
+
+
+@router.get("/notice", response_model=NoticeOut)
+async def get_dashboard_notice(
+    db: AsyncSession = Depends(get_db), _user=Depends(current_user),
+) -> NoticeOut:
+    """A dashboard banner (e.g. the scheduled rollout firing). Shown until dismissed."""
+    account = await get_or_create_account(db)
+    return NoticeOut(notice=account.rollout_notice, at=account.rollout_notice_at)
+
+
+@router.post("/notice/dismiss", status_code=204)
+async def dismiss_dashboard_notice(
+    db: AsyncSession = Depends(get_db), _admin=Depends(require_admin),
+) -> None:
+    account = await get_or_create_account(db)
+    account.rollout_notice = None
+    account.rollout_notice_at = None
+    await db.commit()
 
 
 # ── Printer status log (per-card history + fleet report) ─────────────────────

@@ -201,6 +201,7 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
   const [manage, setManage] = useState(false);
   const [showUpdate, setShowUpdate] = useState(false);
   const [showPrinterLog, setShowPrinterLog] = useState(false);
+  const [notice, setNotice] = useState<{ notice: string | null; at: string | null } | null>(null);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [cols, setCols] = useState(1);
   const [openRows, setOpenRows] = useState<Set<number>>(new Set());
@@ -214,6 +215,7 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
     const tick = () => {
       api.agents().then((a) => alive && setAgents(a)).catch(() => {});
       api.agentSparklines().then((s) => alive && setSparks(s)).catch(() => {});
+      api.getNotice().then((n) => alive && setNotice(n.notice ? n : null)).catch(() => {});
     };
     tick();
     const id = setInterval(tick, 15000);
@@ -277,6 +279,20 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
 
   return (
     <>
+      {notice?.notice ? (
+        <div className="banner" style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10, borderLeft: "3px solid var(--accent)" }}>
+          <span style={{ flex: 1 }}>
+            {notice.notice}
+            {notice.at ? <span className="sub" style={{ fontSize: 12 }}> · {new Date(notice.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span> : null}
+          </span>
+          {isAdmin() ? (
+            <button className="btn" style={{ fontSize: 12, padding: "3px 10px" }}
+              onClick={() => { api.dismissNotice().then(() => setNotice(null)).catch(() => {}); }}>
+              Dismiss
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       <div className="devices-toolbar" style={{ marginBottom: 14 }}>
         <div className="panel-title" style={{ margin: 0 }}>
           {agents === null ? "Loading…" : `${live.length} ${live.length === 1 ? noun : nounPlural} · ${online} online`}

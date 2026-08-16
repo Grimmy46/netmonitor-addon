@@ -180,6 +180,19 @@ class ExeRolloutResult(BaseModel):
     updated: int = 0
 
 
+class ScheduleRolloutIn(BaseModel):
+    at: datetime | None = None  # UTC time to fire the full rollout; null = cancel
+
+
+class ScheduleRolloutOut(BaseModel):
+    at: datetime | None = None
+
+
+class NoticeOut(BaseModel):
+    notice: str | None = None
+    at: datetime | None = None
+
+
 class PrinterEventOut(BaseModel):
     """One logged ticket-printer status change (for the card history + report)."""
     id: uuid.UUID

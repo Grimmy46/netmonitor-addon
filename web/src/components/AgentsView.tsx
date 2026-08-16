@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { api, isAdmin, type Agent, type MetricPoint, type PingPoint, type PrinterEvent, type SparkPoint, type WanStatus } from "../api/client";
+import { api, isAdmin, type Agent, type MetricPoint, type PingPoint, type SparkPoint, type WanStatus } from "../api/client";
 import { PrinterCheck } from "./PrinterCheck";
 import { PrinterDeep } from "./PrinterDeep";
 import { PrinterTestButton } from "./PrinterTestButton";
@@ -29,21 +29,6 @@ const PRINTER_CHIP: Record<string, { label: string; color: string; bg: string }>
   unknown: { label: "🖨️ No reply", color: "var(--ink-muted)", bg: "rgba(127,127,127,0.10)" },
 };
 
-const EVENT_LABEL: Record<string, { t: string; c: string }> = {
-  ok: { t: "🖨️ Paper OK", c: "var(--good)" },
-  paper_out: { t: "🧻 Paper OUT", c: "var(--critical)" },
-  cover_open: { t: "🔧 Cover open", c: "var(--critical)" },
-  error: { t: "⚠️ Printer error", c: "var(--critical)" },
-  unknown: { t: "🖨️ No reply", c: "var(--ink-muted)" },
-  removed: { t: "🔌 Printer disconnected", c: "var(--ink-muted)" },
-};
-
-function fmtStamp(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
-  });
-}
-
 function PrinterChip({ agent }: { agent: Agent }) {
   if (!agent.printer_status) return null;
   const c = PRINTER_CHIP[agent.printer_status] ?? PRINTER_CHIP.unknown;
@@ -72,17 +57,6 @@ function AgentCard({
   onToggle: () => void;
 }) {
   const [pings, setPings] = useState<MetricPoint[] | null>(null);
-  const [plog, setPlog] = useState<PrinterEvent[] | null>(null);
-
-  // Printer status-change history — loaded (and refreshed) only while expanded.
-  useEffect(() => {
-    if (!open) { setPlog(null); return; }
-    let alive = true;
-    const load = () => api.agentPrinterLog(agent.id).then((e) => alive && setPlog(e)).catch(() => {});
-    load();
-    const id = setInterval(load, 15000);
-    return () => { alive = false; clearInterval(id); };
-  }, [open, agent.id]);
 
   // Detailed history only loads while this card's row is expanded.
   useEffect(() => {
@@ -158,24 +132,6 @@ function AgentCard({
             {agent.last_ip ? ` · ${agent.last_ip}` : ""}
           </div>
           {pings === null ? <p className="hint">Loading…</p> : <LatencyChart data={pings} />}
-          {plog && plog.length > 0 ? (
-            <div style={{ marginTop: 12 }}>
-              <div style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 4 }}>
-                Printer log — status changes
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                {plog.slice(0, 12).map((e) => {
-                  const l = EVENT_LABEL[e.state] ?? EVENT_LABEL.unknown;
-                  return (
-                    <div key={e.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12 }}>
-                      <span style={{ color: l.c }} title={e.detail ?? undefined}>{l.t}</span>
-                      <span className="sub" style={{ fontSize: 11, whiteSpace: "nowrap" }}>{fmtStamp(e.at)}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
           {isAdmin() ? <PrinterCheck agentId={agent.id} /> : null}
           {isAdmin() ? <PrinterTestButton agentId={agent.id} label={agent.name} /> : null}
           {isAdmin() ? <PrinterDeep agentId={agent.id} /> : null}

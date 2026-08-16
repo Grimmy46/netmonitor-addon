@@ -7,6 +7,7 @@ import { LatencyChart } from "./LatencyChart";
 import { Sparkline } from "./Sparkline";
 import { StationsPanel } from "./StationsPanel";
 import { AgentUpdatePanel } from "./AgentUpdatePanel";
+import { PrinterLogPanel } from "./PrinterLogPanel";
 import { StatusPill } from "./StatusPill";
 
 function timeAgo(iso: string | null): string {
@@ -199,6 +200,7 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
   const [error, setError] = useState("");
   const [manage, setManage] = useState(false);
   const [showUpdate, setShowUpdate] = useState(false);
+  const [showPrinterLog, setShowPrinterLog] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [cols, setCols] = useState(1);
   const [openRows, setOpenRows] = useState<Set<number>>(new Set());
@@ -264,29 +266,13 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
     }
   }
 
-  async function printerLogCsv() {
-    setError("");
-    try {
-      const rows = await api.fleetPrinterLog(24 * 30, 10000); // last 30 days
-      const q = (v: string | null) => `"${(v ?? "").replace(/"/g, '""')}"`;
-      const csv = "time,station,state,previous,detail,raw\n" +
-        rows.map((e) => [q(new Date(e.at).toISOString()), q(e.agent_name), q(e.state),
-          q(e.prev_state), q(e.detail), q(e.raw)].join(",")).join("\n");
-      const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `printer-log-${new Date().toISOString().slice(0, 10)}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      setError(`Printer log failed: ${String(e instanceof Error ? e.message : e)}`);
-    }
-  }
 
   const panel = manage ? (
     <StationsPanel onClose={() => setManage(false)} onChanged={load} />
   ) : showUpdate ? (
     <AgentUpdatePanel onClose={() => setShowUpdate(false)} onChanged={load} />
+  ) : showPrinterLog ? (
+    <PrinterLogPanel onClose={() => setShowPrinterLog(false)} />
   ) : null;
 
   return (
@@ -304,7 +290,7 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
         >
           {pdfBusy ? "Building PDF…" : "⤓ PDF report"}
         </button>
-        <button className="btn" onClick={printerLogCsv} title="Download the ticket-printer status-change log (last 30 days)">
+        <button className="btn" onClick={() => setShowPrinterLog(true)} title="View the ticket-printer status-change log">
           🖨 Printer log
         </button>
         {isAdmin() ? <button className="btn" onClick={() => setManage(true)}>⚙ Manage stations</button> : null}

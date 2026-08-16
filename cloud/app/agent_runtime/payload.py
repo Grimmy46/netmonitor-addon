@@ -33,7 +33,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.08.15.10"
+PAYLOAD_VERSION = "2026.08.16.1"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -910,7 +910,7 @@ _WATCHDOG_VBS = "netmon_watchdog.vbs"
 _WATCHDOG_TEMPLATE = r'''Option Explicit
 ' NetMonAgent watchdog (installed by the agent payload). Keeps the agent alive
 ' and rolls back a bad exe self-update. Runs hidden via wscript //B.
-Dim fso, sh, d, exe, hb, prob, bak, alive
+Dim fso, sh, d, exe, hb, prob, bak, wdhb, alive, ts
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set sh = CreateObject("WScript.Shell")
 d = "{{DIR}}\"
@@ -918,7 +918,16 @@ exe = d & "{{EXE}}"
 hb = d & ".netmon_hb"
 prob = d & ".netmon_probation"
 bak = exe & ".bak"
+wdhb = d & ".netmon_wd_hb"
+' Single instance: if another watchdog is already heartbeating, exit quietly.
+If fso.FileExists(wdhb) Then
+  If DateDiff("s", fso.GetFile(wdhb).DateLastModified, Now) < 90 Then WScript.Quit
+End If
 Do
+  ' Stamp our own heartbeat so the agent doesn't spawn a duplicate watchdog.
+  On Error Resume Next
+  Set ts = fso.CreateTextFile(wdhb, True) : ts.WriteLine Now : ts.Close
+  On Error Goto 0
   alive = False
   If fso.FileExists(hb) Then
     If DateDiff("s", fso.GetFile(hb).DateLastModified, Now) < 120 Then alive = True
@@ -1009,6 +1018,21 @@ def _install_watchdog():
         winreg.CloseKey(key)
     except Exception as e:
         print(f"[watchdog] autostart registration failed: {e}", flush=True)
+    # Start it NOW (not just at next login) so a crash/bad-swap self-heals mid-day.
+    # Guard: only launch if no watchdog is currently heartbeating (the .vbs also
+    # self-dedups on start), so payload updates don't stack up watchdogs.
+    wd_hb = os.path.join(d, ".netmon_wd_hb")
+    try:
+        live = os.path.exists(wd_hb) and (time.time() - os.path.getmtime(wd_hb)) < 90
+    except OSError:
+        live = False
+    if not live:
+        try:
+            subprocess.Popen(["wscript.exe", "//B", "//Nologo", vbs_path],
+                             env=_clean_env(), **_no_window_kwargs())
+            print("[watchdog] started in-session", flush=True)
+        except Exception as e:
+            print(f"[watchdog] launch failed: {e}", flush=True)
 
 
 def _self_update(ctx):

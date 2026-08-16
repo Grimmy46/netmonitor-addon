@@ -33,7 +33,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.08.15.8"
+PAYLOAD_VERSION = "2026.08.15.9"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -116,6 +116,17 @@ def _no_window_kwargs():
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         return {"startupinfo": si, "creationflags": 0x08000000}
     return {}
+
+
+def _clean_env():
+    """A child environment WITHOUT PyInstaller's one-file bootloader variables
+    (_MEIPASS2 / _PYI_*). When our one-file exe launches a copy of itself — as a
+    self-update relaunch or a device worker — inheriting these points the child's
+    bootloader at OUR unpacked temp dir instead of extracting its own, which
+    corrupts the child (worker exits rc=1; a relaunch can fail outright). Strip
+    them so every spawned exe unpacks fresh."""
+    return {k: v for k, v in os.environ.items()
+            if not (k.startswith("_MEI") or k.startswith("_PYI"))}
 
 
 def detect_gateway():
@@ -629,7 +640,7 @@ def _spawn_device_worker(kind, args, timeout=60):
     try:
         with open(req, "w", encoding="utf-8") as f:
             json.dump({"kind": kind, "args": args}, f)
-        env = dict(os.environ)
+        env = _clean_env()  # strip PyInstaller vars so the worker exe unpacks fresh
         env["NETMON_DEVIO"] = req
         try:
             proc = subprocess.Popen([exe], env=env, stdout=subprocess.DEVNULL,
@@ -1048,7 +1059,9 @@ def _self_update(ctx):
         os.replace(new, exe)   # drop the verified new exe into place
         with open(prob, "w") as f:
             f.write(ver)        # probation: watchdog restores .bak if new never heartbeats
-        subprocess.Popen([exe], **_no_window_kwargs())
+        # Clean env so the NEW exe unpacks its own one-file bundle instead of
+        # inheriting our _MEIPASS2 (which corrupts the relaunched agent).
+        subprocess.Popen([exe], env=_clean_env(), **_no_window_kwargs())
         print(f"[self-update] swapped exe -> {ver}; relaunching", flush=True)
         return True
     except Exception as e:

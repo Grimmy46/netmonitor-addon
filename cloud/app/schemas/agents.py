@@ -102,6 +102,7 @@ class PrinterStatusIn(BaseModel):
     raw: str | None = None               # raw status byte(s) as hex
     detail: str | None = None            # human-readable decode
     cut_count: int | None = None         # lifetime cut count (≈ tickets), for paper tracking
+    paper_remaining_cm: int | None = None  # printer's own paper-remaining gauge (cm), if programmed
 
 
 class AgentReport(BaseModel):

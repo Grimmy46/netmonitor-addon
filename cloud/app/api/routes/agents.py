@@ -159,7 +159,9 @@ def _paper_fields(a: Agent) -> dict:
     """Derived predictive-paper view for the dashboard: how much of the current
     roll is used, tickets left, and whether the yield is learned or still seeded."""
     cc, start = a.printer_cut_count, a.printer_roll_start_cut
-    if cc is None or start is None:
+    # A real lifetime cut counter is a large positive number; 0/None means we
+    # haven't actually read the counter yet — show no gauge rather than a false 0%.
+    if cc is None or start is None or cc <= 0:
         return {}
     eff = a.printer_cuts_per_roll or get_settings().paper_seed_cuts_per_roll
     used = max(0, cc - start)
@@ -178,7 +180,7 @@ def _apply_paper_tracking(a: Agent, cut_count: int | None, prev: str | None,
     """Update the roll model from this poll's cut count. Anchors the roll on first
     sighting and on each reload, LEARNS the roll's true yield when one runs empty,
     and self-heals if a roll was swapped before running out."""
-    if cut_count is None or cut_count < 0:
+    if cut_count is None or cut_count <= 0:  # 0 = counter not actually read yet
         return
     st = get_settings()
     a.printer_cut_count = cut_count

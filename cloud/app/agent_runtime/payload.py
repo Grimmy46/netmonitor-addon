@@ -33,7 +33,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.08.16.3"
+PAYLOAD_VERSION = "2026.08.16.4"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -605,15 +605,22 @@ def _cmd_printer_monitor(args):
     else:
         state, detail = "ok", "paper present, cover closed"
     result = {"present": True, "state": state, "raw": f"{b:02x}", "detail": detail}
-    # Lifetime cut count (GS E1 → ASCII "<N>cuts") for paper-usage tracking —
-    # best-effort; never fail the status read over it.
+    # Paper-usage signals for predictive paper. The KPM180H can volunteer two
+    # different strings; read what's there and classify by suffix, never guessing:
+    #   "<N>cuts" = lifetime cut count (≈ tickets)  → consumption model
+    #   "<N>cm"   = paper remaining in cm           → direct gauge (needs the roll
+    #               length programmed into the printer, else it reads 0)
+    # Best-effort; never fail the status read over it, and never treat "0cm" as a
+    # cut count (that mistake parked the gauge at 0).
     try:
         cc = _usb_txn(path, b"\x1d\xe1", 600, 32)
-        chex = (cc or {}).get("read_hex") or ""
-        if chex:
-            m = re.search(r"(\d+)", bytes.fromhex(chex).decode("ascii", "ignore"))
-            if m:
-                result["cut_count"] = int(m.group(1))
+        txt = bytes.fromhex((cc or {}).get("read_hex") or "").decode("ascii", "ignore")
+        mcuts = re.search(r"(\d+)\s*cuts", txt)
+        if mcuts:
+            result["cut_count"] = int(mcuts.group(1))
+        mcm = re.search(r"(\d+)\s*cm", txt)
+        if mcm:
+            result["paper_remaining_cm"] = int(mcm.group(1))
     except Exception:  # noqa: BLE001
         pass
     return result

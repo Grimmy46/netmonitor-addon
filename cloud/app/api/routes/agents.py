@@ -155,9 +155,66 @@ def _is_online(last_seen_at: str | None) -> bool:
     return (datetime.now(tz=timezone.utc) - ts).total_seconds() <= window
 
 
+def _paper_fields(a: Agent) -> dict:
+    """Derived predictive-paper view for the dashboard: how much of the current
+    roll is used, tickets left, and whether the yield is learned or still seeded."""
+    cc, start = a.printer_cut_count, a.printer_roll_start_cut
+    if cc is None or start is None:
+        return {}
+    eff = a.printer_cuts_per_roll or get_settings().paper_seed_cuts_per_roll
+    used = max(0, cc - start)
+    return {
+        "printer_cut_count": cc,
+        "printer_roll_percent": (min(100.0, round(100.0 * used / eff, 1)) if eff else None),
+        "printer_cuts_remaining": max(0, int(round(eff - used))),
+        "printer_cuts_per_roll": round(float(eff), 1),
+        "printer_roll_learned": a.printer_cuts_per_roll is not None,
+        "printer_roll_partial": bool(a.printer_roll_partial),
+    }
+
+
+def _apply_paper_tracking(a: Agent, cut_count: int | None, prev: str | None,
+                          new_state: str | None, now: datetime) -> None:
+    """Update the roll model from this poll's cut count. Anchors the roll on first
+    sighting and on each reload, LEARNS the roll's true yield when one runs empty,
+    and self-heals if a roll was swapped before running out."""
+    if cut_count is None or cut_count < 0:
+        return
+    st = get_settings()
+    a.printer_cut_count = cut_count
+    a.printer_cut_count_at = now
+    if a.printer_roll_start_cut is None:  # first sighting — anchor mid-roll (estimate)
+        a.printer_roll_start_cut = cut_count
+        a.printer_roll_start_at = now
+        a.printer_roll_partial = True
+    # Ran to empty → learn the yield, but only from a roll anchored at a real change.
+    if new_state == "paper_out" and prev != "paper_out" and not a.printer_roll_partial:
+        observed = cut_count - (a.printer_roll_start_cut or cut_count)
+        if observed >= st.paper_min_learn_cuts:
+            cur = a.printer_cuts_per_roll
+            a.printer_cuts_per_roll = (
+                float(observed) if cur is None else round(0.5 * cur + 0.5 * observed, 1)
+            )
+    # Reload (paper restored) → fresh roll anchored here; clear any low warning.
+    if new_state == "ok" and prev == "paper_out":
+        a.printer_roll_start_cut = cut_count
+        a.printer_roll_start_at = now
+        a.printer_roll_partial = False
+        a.printer_low_alert_state = a.printer_low_alert_at = None
+    # Missed reload (swapped before empty): used far more than a roll holds → re-anchor.
+    eff = a.printer_cuts_per_roll or st.paper_seed_cuts_per_roll
+    if a.printer_roll_start_cut is not None and \
+            cut_count - a.printer_roll_start_cut > eff * st.paper_overrun_factor:
+        a.printer_roll_start_cut = cut_count
+        a.printer_roll_start_at = now
+        a.printer_roll_partial = True
+        a.printer_low_alert_state = a.printer_low_alert_at = None
+
+
 def _agent_out(a: Agent, site_name: str | None, latest_rtt: float | None) -> AgentOut:
     online = _is_online(a.last_seen_at)
     return AgentOut(
+        **_paper_fields(a),
         id=a.id,
         name=a.name,
         site_id=a.site_id,
@@ -555,6 +612,9 @@ async def agent_report(
                 raw=(p.raw if p.present else None),
                 detail=(p.detail if p.present else "printer disconnected"),
             ))
+        # Predictive paper: fold in the lifetime cut count (uses prev/new_state
+        # to detect run-outs and reloads).
+        _apply_paper_tracking(agent, p.cut_count if p.present else None, prev, new_state, now)
     client_ip = _client_ip(request)
     if client_ip:
         agent.last_ip = client_ip
@@ -915,6 +975,28 @@ async def agent_printer_log(
         .order_by(desc(PrinterEvent.created_at)).limit(limit)
     )).scalars().all()
     return [_printer_event_out(e) for e in rows]
+
+
+@router.post("/{agent_id}/printer/new-roll", response_model=AgentOut)
+async def mark_new_roll(
+    agent_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _admin=Depends(require_admin),
+) -> AgentOut:
+    """Operator loaded a fresh roll: anchor the paper gauge at the current cut
+    count so 'used' counts from zero again. This is the reliable reload signal
+    when a roll is swapped before it runs fully empty."""
+    agent = await db.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Station not found")
+    if agent.printer_cut_count is not None:
+        agent.printer_roll_start_cut = agent.printer_cut_count
+        agent.printer_roll_start_at = datetime.now(tz=timezone.utc)
+        agent.printer_roll_partial = False
+        agent.printer_low_alert_state = agent.printer_low_alert_at = None
+        await db.commit()
+        await db.refresh(agent)
+    return _agent_out(agent, None, None)
 
 
 # ── enrollment (kiosk first-run station picker — PIN-gated, no token yet) ─────

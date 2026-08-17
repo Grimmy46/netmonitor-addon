@@ -33,7 +33,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.08.16.2"
+PAYLOAD_VERSION = "2026.08.16.3"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -604,7 +604,19 @@ def _cmd_printer_monitor(args):
         state, detail = "error", "printer error"
     else:
         state, detail = "ok", "paper present, cover closed"
-    return {"present": True, "state": state, "raw": f"{b:02x}", "detail": detail}
+    result = {"present": True, "state": state, "raw": f"{b:02x}", "detail": detail}
+    # Lifetime cut count (GS E1 → ASCII "<N>cuts") for paper-usage tracking —
+    # best-effort; never fail the status read over it.
+    try:
+        cc = _usb_txn(path, b"\x1d\xe1", 600, 32)
+        chex = (cc or {}).get("read_hex") or ""
+        if chex:
+            m = re.search(r"(\d+)", bytes.fromhex(chex).decode("ascii", "ignore"))
+            if m:
+                result["cut_count"] = int(m.group(1))
+    except Exception:  # noqa: BLE001
+        pass
+    return result
 
 
 def _build_test_ticket(label, cut="full"):

@@ -341,6 +341,7 @@ async def sweep(db: AsyncSession) -> dict:
     faults: list[_Fault] = []
     recoveries: list[_Fault] = []
     printer_faults: list[_Fault] = []  # per-station, never mass-suppressed
+    paper_low_faults: list[_Fault] = []  # predictive "roll almost out" (own state field)
 
     # ── Kiosk agents: claimed stations that stopped checking in ───────────
     agents = (
@@ -408,6 +409,33 @@ async def sweep(db: AsyncSession) -> dict:
                     tag=f"printer-{a.id}", url="/",
                 ))
             a.printer_alert_state, a.printer_alert_state_at = None, None
+
+        # ── Predictive paper: the current roll is nearly used up ──────────
+        # Only on a fresh reading from a live agent with a known roll anchor.
+        if (not down and p_fresh and a.printer_cut_count is not None
+                and a.printer_roll_start_cut is not None):
+            eff = a.printer_cuts_per_roll or st.paper_seed_cuts_per_roll
+            used = max(0, a.printer_cut_count - a.printer_roll_start_cut)
+            frac = (used / eff) if eff else 0.0
+            if frac >= st.paper_low_pct:
+                if a.printer_low_alert_state is None:
+                    a.printer_low_alert_state, a.printer_low_alert_at = "pending", now
+                elif (
+                    a.printer_low_alert_state == "pending"
+                    and a.printer_low_alert_at is not None
+                    and (now - a.printer_low_alert_at).total_seconds() >= st.paper_low_confirm_seconds
+                ):
+                    remaining = max(0, int(round(eff - used)))
+                    est = "estimate" if a.printer_roll_partial else "learned roll"
+                    paper_low_faults.append(_Fault(
+                        entity=a,
+                        title=f"🧻 {a.name} paper low — swap soon",
+                        body=f"~{round(100 * frac)}% of the roll used, ~{remaining} tickets left ({est})",
+                        tag=f"paper-{a.id}", url="/",
+                    ))
+            elif a.printer_low_alert_state is not None:
+                # Back under threshold (roll reloaded) — clear quietly.
+                a.printer_low_alert_state, a.printer_low_alert_at = None, None
 
     # ── Devices on the alert site (Main): offline or LAN-unreachable ───────
     site_ids = await _alert_site_ids(db)
@@ -520,6 +548,12 @@ async def sweep(db: AsyncSession) -> dict:
         pushed += await send_push(db, {
             "title": f.title, "body": f.body, "tag": f.tag, "url": f.url,
         })
+    # Low-paper warnings use their own alert-state field.
+    for f in paper_low_faults:
+        f.entity.printer_low_alert_state, f.entity.printer_low_alert_at = "notified", now
+        pushed += await send_push(db, {
+            "title": f.title, "body": f.body, "tag": f.tag, "url": f.url,
+        })
     if len(faults) >= st.alert_mass_threshold:
         # Mass event: one summary instead of a storm. Sounds like a power-down
         # at close — or a site-wide outage, which is exactly one push too.
@@ -545,16 +579,18 @@ async def sweep(db: AsyncSession) -> dict:
             "title": r.title, "body": r.body, "tag": r.tag, "url": r.url,
         })
     await db.commit()
-    if faults or site_faults or recoveries or printer_faults:
+    if faults or site_faults or recoveries or printer_faults or paper_low_faults:
         logger.info(
             "Alert sweep: %d fault(s), %d site outage(s), %d printer fault(s), "
-            "%d recovery(ies), %d push(es) sent",
-            len(faults), len(site_faults), len(printer_faults), len(recoveries), pushed,
+            "%d paper-low, %d recovery(ies), %d push(es) sent",
+            len(faults), len(site_faults), len(printer_faults),
+            len(paper_low_faults), len(recoveries), pushed,
         )
     return {
         "faults": len(faults),
         "site_faults": len(site_faults),
         "printer_faults": len(printer_faults),
+        "paper_low": len(paper_low_faults),
         "recoveries": len(recoveries),
         "pushed": pushed,
     }

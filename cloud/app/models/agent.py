@@ -61,3 +61,24 @@ class Agent(Base, UUIDPk, Timestamps):
     printer_alert_state_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
+
+    # Predictive paper: the printer reports a lifetime cut count (≈ one cut per
+    # ticket). We anchor it at each fresh roll (roll_start_cut) so cuts-this-roll
+    # drives a "paper low, swap soon" warning, and we LEARN the roll's true yield
+    # (cuts_per_roll) whenever a roll runs to empty. roll_partial = the anchor was
+    # set mid-roll (first sighting), so its usage is an estimate until the next
+    # real roll change and it must not teach the learned yield.
+    printer_cut_count: Mapped[int | None] = mapped_column(default=None)
+    printer_cut_count_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    printer_roll_start_cut: Mapped[int | None] = mapped_column(default=None)
+    printer_roll_start_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    printer_roll_partial: Mapped[bool] = mapped_column(default=True)
+    printer_cuts_per_roll: Mapped[float | None] = mapped_column(default=None)  # learned yield
+    printer_low_alert_state: Mapped[str | None] = mapped_column(default=None)  # None|pending|notified
+    printer_low_alert_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )

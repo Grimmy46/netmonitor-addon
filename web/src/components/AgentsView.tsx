@@ -45,6 +45,26 @@ function PrinterChip({ agent }: { agent: Agent }) {
   );
 }
 
+function PaperGauge({ agent }: { agent: Agent }) {
+  const pct = agent.printer_roll_percent;
+  if (pct == null) return null;
+  const left = agent.printer_cuts_remaining;
+  const color = pct >= 85 ? "var(--critical)" : pct >= 70 ? "var(--warn, #b7791f)" : "var(--good)";
+  const basis = agent.printer_roll_learned ? "learned roll size" : "estimate — learning";
+  const tip = `${Math.round(pct)}% of the roll used${left != null ? ` · ~${left} tickets left` : ""} · ${basis}`;
+  return (
+    <div style={{ marginTop: 6, maxWidth: 240 }} title={tip}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--ink-muted)" }}>
+        <span>🧻 Paper {Math.round(pct)}% used{agent.printer_roll_partial ? " ~" : ""}</span>
+        {left != null ? <span>~{left} left</span> : null}
+      </div>
+      <div style={{ height: 5, borderRadius: 999, background: "rgba(127,127,127,0.18)", marginTop: 2, overflow: "hidden" }}>
+        <div style={{ width: `${Math.min(100, Math.max(2, pct))}%`, height: "100%", background: color }} />
+      </div>
+    </div>
+  );
+}
+
 function AgentCard({
   agent,
   spark,
@@ -98,6 +118,7 @@ function AgentCard({
           {agent.printer_status ? (
             <div style={{ marginTop: 4 }}><PrinterChip agent={agent} /></div>
           ) : null}
+          <PaperGauge agent={agent} />
         </div>
         <div className="spacer" />
         <StatusPill status={agent.online ? "online" : agent.last_seen_at ? "offline" : "unknown"} />
@@ -134,6 +155,16 @@ function AgentCard({
           {pings === null ? <p className="hint">Loading…</p> : <LatencyChart data={pings} />}
           {isAdmin() ? <PrinterCheck agentId={agent.id} /> : null}
           {isAdmin() ? <PrinterTestButton agentId={agent.id} label={agent.name} /> : null}
+          {isAdmin() && agent.printer_cut_count != null ? (
+            <button
+              className="btn"
+              style={{ fontSize: 12, padding: "4px 10px", marginLeft: 8 }}
+              title="Tell the tracker a fresh roll was just loaded (resets the paper gauge)"
+              onClick={(e) => { e.stopPropagation(); api.markNewRoll(agent.id).catch(() => {}); }}
+            >
+              🧻 New roll
+            </button>
+          ) : null}
           {isAdmin() ? <PrinterDeep agentId={agent.id} /> : null}
           <div style={{ marginTop: 12, textAlign: "right" }}>
             <button className="btn" onClick={(e) => { e.stopPropagation(); onToggle(); }}>

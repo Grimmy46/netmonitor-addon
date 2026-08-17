@@ -35,6 +35,13 @@ class AgentOut(BaseModel):
     printer_status_at: str | None = None
     printer_detail: str | None = None
     printer_raw: str | None = None
+    # Predictive paper (present only once a cut count has been read).
+    printer_cut_count: int | None = None
+    printer_roll_percent: float | None = None    # % of the roll used (0–100)
+    printer_cuts_remaining: int | None = None     # est. tickets left this roll
+    printer_cuts_per_roll: float | None = None    # effective yield (learned or seed)
+    printer_roll_learned: bool = False            # yield measured from a real run-out?
+    printer_roll_partial: bool = False            # anchor set mid-roll (estimate only)
 
 
 # ── enrollment (kiosk first-run station picker, PIN-gated) ───────────────────
@@ -94,6 +101,7 @@ class PrinterStatusIn(BaseModel):
     state: str | None = None             # ok | paper_out | cover_open | error | unknown
     raw: str | None = None               # raw status byte(s) as hex
     detail: str | None = None            # human-readable decode
+    cut_count: int | None = None         # lifetime cut count (≈ tickets), for paper tracking
 
 
 class AgentReport(BaseModel):

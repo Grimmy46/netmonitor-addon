@@ -90,6 +90,22 @@ class Settings(BaseSettings):
     # The internet must look healthy again this long before an incident closes.
     brownout_clear_seconds: int = 180
 
+    # ── Predictive paper (ticket-printer roll usage) ───────────────────────────
+    # Seed roll yield in cuts (≈ tickets) used until the true value is learned.
+    # Basis: a 500 ft roll at ~4 in/ticket ≈ 1500 cuts. Auto-corrected on the first
+    # real run-out; change if the ticket length differs.
+    paper_seed_cuts_per_roll: float = 1500.0
+    paper_roll_length_ft: int = 500            # informational (roll length loaded)
+    # A run-out teaches the learned yield only if the roll produced at least this
+    # many cuts (guards against learning from a tiny partial roll).
+    paper_min_learn_cuts: int = 200
+    # If cuts-this-roll exceeds yield × this, assume a reload was missed → re-anchor.
+    paper_overrun_factor: float = 1.3
+    # Warn when the roll is at/over this fraction used.
+    paper_low_pct: float = 0.85
+    # The low-paper warning must persist this long before it pushes (debounce).
+    paper_low_confirm_seconds: int = 120
+
     # VAPID "sub" claim sent to the push services.
     vapid_subject: str = "mailto:dawidrcs@gmail.com"
 

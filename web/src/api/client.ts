@@ -76,6 +76,13 @@ export interface Agent {
   printer_status_at: string | null;
   printer_detail: string | null;
   printer_raw: string | null;
+  // Predictive paper (roll usage from the printer's cut count).
+  printer_cut_count: number | null;
+  printer_roll_percent: number | null;      // % of the roll used (0–100)
+  printer_cuts_remaining: number | null;     // est. tickets left
+  printer_cuts_per_roll: number | null;      // effective yield (learned or seed)
+  printer_roll_learned: boolean;             // yield measured from a real run-out?
+  printer_roll_partial: boolean;             // anchor set mid-roll (estimate only)
 }
 
 export interface PrinterEvent {
@@ -319,6 +326,8 @@ export const api = {
     }),
   agentPrinterLog: (id: string, limit = 40) =>
     req<PrinterEvent[]>(`/agents/${id}/printer-log?limit=${limit}`),
+  markNewRoll: (id: string) =>
+    req<Agent>(`/agents/${id}/printer/new-roll`, { method: "POST" }),
   fleetPrinterLog: (hours = 168, limit = 5000) =>
     req<PrinterEvent[]>(`/agents/printer-log?hours=${hours}&limit=${limit}`),
   agentPings: (id: string) => req<PingPoint[]>(`/agents/${id}/pings`),

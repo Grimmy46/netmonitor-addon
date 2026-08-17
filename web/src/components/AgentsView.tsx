@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { api, isAdmin, type Agent, type MetricPoint, type PingPoint, type SparkPoint, type WanStatus } from "../api/client";
+import { api, isAdmin, type Agent, type MetricPoint, type PingPoint, type SparkPoint, type TeardownStatus, type WanStatus } from "../api/client";
 import { PrinterCheck } from "./PrinterCheck";
 import { PrinterDeep } from "./PrinterDeep";
 import { PrinterTestButton } from "./PrinterTestButton";
@@ -193,6 +193,7 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
   const [showPrinterLog, setShowPrinterLog] = useState(false);
   const [showWan, setShowWan] = useState(false);
   const [wan, setWan] = useState<WanStatus | null>(null);
+  const [teardown, setTeardown] = useState<TeardownStatus | null>(null);
   const [notice, setNotice] = useState<{ notice: string | null; at: string | null } | null>(null);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [cols, setCols] = useState(1);
@@ -209,6 +210,7 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
       api.agentSparklines().then((s) => alive && setSparks(s)).catch(() => {});
       api.getNotice().then((n) => alive && setNotice(n.notice ? n : null)).catch(() => {});
       api.wanStatus().then((w) => alive && setWan(w)).catch(() => {});
+      api.getTeardown().then((t) => alive && setTeardown(t)).catch(() => {});
     };
     tick();
     const id = setInterval(tick, 15000);
@@ -272,8 +274,30 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
     <WanPanel onClose={() => setShowWan(false)} />
   ) : null;
 
+  const toggleTeardown = () => {
+    const next = !(teardown?.active);
+    if (next && !window.confirm("Start teardown mode? All fault alerts pause while you pack up (auto-off in 18h).")) return;
+    api.setTeardown(next).then(setTeardown).catch(() => {});
+  };
+
   return (
     <>
+      {teardown?.active ? (
+        <div className="banner" style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10, borderLeft: "3px solid var(--warn, #b7791f)" }}>
+          <span style={{ fontSize: 18 }}>🧰</span>
+          <span style={{ flex: 1 }}>
+            <strong>Teardown mode — fault alerts paused.</strong>{" "}
+            <span className="sub" style={{ fontSize: 12 }}>
+              Packing up: {teardown.offline}/{teardown.total} offline
+              {teardown.since ? ` · since ${new Date(teardown.since).toLocaleString(undefined, { hour: "numeric", minute: "2-digit" })}` : ""}
+              {teardown.auto_off_at ? ` · auto-off ${new Date(teardown.auto_off_at).toLocaleString(undefined, { hour: "numeric", minute: "2-digit" })}` : ""}
+            </span>
+          </span>
+          {isAdmin() ? (
+            <button className="btn" style={{ fontSize: 12, padding: "3px 10px" }} onClick={toggleTeardown}>End teardown</button>
+          ) : null}
+        </div>
+      ) : null}
       {wan?.state === "brownout" ? (
         <div className="banner" style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10, borderLeft: "3px solid var(--critical)", cursor: "pointer" }}
           onClick={() => setShowWan(true)} title="Open WAN / ISP health">
@@ -319,6 +343,13 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
           style={wan?.state === "brownout" ? { borderColor: "var(--critical)", color: "var(--critical)" } : undefined}>
           🌐 WAN health
         </button>
+        {isAdmin() ? (
+          <button className="btn" onClick={toggleTeardown}
+            title="Teardown mode — pause all fault alerts while packing up a venue"
+            style={teardown?.active ? { borderColor: "var(--warn, #b7791f)", color: "var(--warn, #b7791f)" } : undefined}>
+            🧰 {teardown?.active ? "Teardown ON" : "Teardown"}
+          </button>
+        ) : null}
         {isAdmin() ? <button className="btn" onClick={() => setManage(true)}>⚙ Manage stations</button> : null}
         {isAdmin() ? <button className="btn" onClick={() => setShowUpdate(true)} title="Upload the agent exe and stage a rollout">⬆ Agent update</button> : null}
       </div>

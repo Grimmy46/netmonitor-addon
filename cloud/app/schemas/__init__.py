@@ -28,6 +28,8 @@ from app.schemas.agents import (
     ProbeTargetsOut,
     ScheduleRolloutIn,
     ScheduleRolloutOut,
+    TeardownIn,
+    TeardownStatusOut,
 )
 from app.schemas.integrations import (
     UnifiConsoleIn,
@@ -60,6 +62,8 @@ __all__ = [
     "NoticeOut",
     "PrinterEventOut",
     "ScheduleRolloutIn",
+    "TeardownIn",
+    "TeardownStatusOut",
     "ScheduleRolloutOut",
     "BulkResult",
     "BulkStationsIn",

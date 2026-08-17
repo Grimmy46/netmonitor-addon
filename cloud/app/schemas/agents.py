@@ -105,6 +105,20 @@ class PrinterStatusIn(BaseModel):
     paper_remaining_cm: int | None = None  # printer's own paper-remaining gauge (cm), if programmed
 
 
+class TeardownIn(BaseModel):
+    enabled: bool
+    hours: float | None = 18.0   # safety auto-off window; None = no auto-off
+
+
+class TeardownStatusOut(BaseModel):
+    active: bool = False
+    since: datetime | None = None
+    auto_off_at: datetime | None = None
+    online: int = 0
+    offline: int = 0
+    total: int = 0
+
+
 class AgentReport(BaseModel):
     target: str = ""
     gateway: str = ""

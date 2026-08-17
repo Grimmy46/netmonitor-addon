@@ -42,6 +42,18 @@ class Account(Base, UUIDPk, Timestamps):
         DateTime(timezone=True), default=None
     )
 
+    # Teardown mode: while on, the alert sweep pauses ALL fault pushes (kiosks,
+    # devices, sites, printers, low-paper) so packing up a venue doesn't storm
+    # the operator. auto_off_at is a safety expiry so it can't silently mask
+    # problems at the next venue if someone forgets to turn it off.
+    teardown_mode: Mapped[bool] = mapped_column(default=False)
+    teardown_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    teardown_auto_off_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+
     # WAN brownout confirm timer: set when the internet first looks degraded
     # (while the LAN is fine) and no incident is open yet; once it persists past
     # the confirm window the alert sweep opens a WanIncident and clears this.

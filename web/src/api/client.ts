@@ -181,6 +181,15 @@ export interface WanMetricSeries {
   points: MetricPoint[];
 }
 
+export interface TeardownStatus {
+  active: boolean;
+  since: string | null;
+  auto_off_at: string | null;
+  online: number;
+  offline: number;
+  total: number;
+}
+
 export interface UnifiStatus {
   configured: boolean;
   label: string | null;
@@ -319,6 +328,12 @@ export const api = {
     req<AgentCommand[]>(`/agents/${agentId}/commands?limit=${limit}`),
   getNotice: () => req<{ notice: string | null; at: string | null }>("/agents/notice"),
   dismissNotice: () => req<void>("/agents/notice/dismiss", { method: "POST" }),
+  getTeardown: () => req<TeardownStatus>("/agents/teardown"),
+  setTeardown: (enabled: boolean, hours: number | null = 18) =>
+    req<TeardownStatus>("/agents/teardown", {
+      method: "POST",
+      body: JSON.stringify({ enabled, hours }),
+    }),
   scheduleRollout: (at: string | null) =>
     req<{ at: string | null }>("/agents/exe-rollout/schedule", {
       method: "POST",

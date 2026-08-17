@@ -46,6 +46,8 @@ from app.schemas import (
     ScheduleRolloutIn,
     ScheduleRolloutOut,
     ProbeTargetsOut,
+    TeardownIn,
+    TeardownStatusOut,
 )
 from app.core.auth import current_user, require_admin
 from app.services.sync import get_or_create_account
@@ -937,6 +939,54 @@ async def dismiss_dashboard_notice(
     account.rollout_notice = None
     account.rollout_notice_at = None
     await db.commit()
+
+
+# ── Teardown mode (pause all fault alerts while packing up a venue) ──────────
+async def _teardown_status(db: AsyncSession, account) -> TeardownStatusOut:
+    agents = (await db.execute(
+        select(Agent).where(Agent.machine_id.is_not(None))
+    )).scalars().all()
+    seen = [a for a in agents if a.last_seen_at]
+    online = sum(1 for a in seen if _is_online(a.last_seen_at))
+    return TeardownStatusOut(
+        active=bool(account.teardown_mode),
+        since=account.teardown_since,
+        auto_off_at=account.teardown_auto_off_at,
+        online=online,
+        offline=len(seen) - online,
+        total=len(agents),
+    )
+
+
+@router.get("/teardown", response_model=TeardownStatusOut)
+async def teardown_status(
+    db: AsyncSession = Depends(get_db), _user=Depends(current_user),
+) -> TeardownStatusOut:
+    account = await get_or_create_account(db)
+    return await _teardown_status(db, account)
+
+
+@router.post("/teardown", response_model=TeardownStatusOut)
+async def set_teardown(
+    body: TeardownIn, db: AsyncSession = Depends(get_db), _admin=Depends(require_admin),
+) -> TeardownStatusOut:
+    """Turn teardown mode on/off. While on, the alert sweep pauses every fault
+    push so packing up a venue doesn't storm the operator. `hours` sets a safety
+    auto-off (default 18h; null = no auto-off)."""
+    account = await get_or_create_account(db)
+    now = datetime.now(tz=timezone.utc)
+    if body.enabled:
+        account.teardown_mode = True
+        account.teardown_since = now
+        account.teardown_auto_off_at = (
+            now + timedelta(hours=body.hours) if body.hours and body.hours > 0 else None
+        )
+    else:
+        account.teardown_mode = False
+        account.teardown_since = None
+        account.teardown_auto_off_at = None
+    await db.commit()
+    return await _teardown_status(db, account)
 
 
 # ── Printer status log (per-card history + fleet report) ─────────────────────

@@ -322,6 +322,23 @@ async def _maybe_fire_wan_brownout(db: AsyncSession, now: datetime) -> int:
     return opened
 
 
+async def _maybe_expire_teardown(db: AsyncSession, now: datetime) -> bool:
+    """True if teardown mode is currently active (pause all fault alerts). Auto-
+    turns it off once its safety expiry passes so it can't silently mask problems
+    at the next venue."""
+    account = (await db.execute(select(Account).limit(1))).scalar_one_or_none()
+    if account is None or not account.teardown_mode:
+        return False
+    if account.teardown_auto_off_at is not None and now >= account.teardown_auto_off_at:
+        account.teardown_mode = False
+        account.rollout_notice = "🧰 Teardown mode auto-ended (safety expiry) — alerts resumed."
+        account.rollout_notice_at = now
+        await db.commit()
+        logger.info("Teardown mode auto-expired")
+        return False
+    return True
+
+
 async def sweep(db: AsyncSession) -> dict:
     """One pass. Returns counts (also handy for tests)."""
     st = get_settings()
@@ -331,6 +348,8 @@ async def sweep(db: AsyncSession) -> dict:
     await _maybe_fire_scheduled_rollout(db, now)
     # WAN brownout detection + incident log — also independent of subscriptions.
     await _maybe_fire_wan_brownout(db, now)
+    # Teardown mode: while a venue is being packed up, pause all fault pushes.
+    quiet = await _maybe_expire_teardown(db, now)
 
     # No ears, no alarms: skip all work until someone has enabled notifications.
     has_subs = (await db.execute(select(PushSubscription.id).limit(1))).first()
@@ -533,6 +552,22 @@ async def sweep(db: AsyncSession) -> dict:
                 ))
         # degraded/unknown: leave the state alone — degraded is still up,
         # unknown carries no information either way.
+
+    # ── Teardown mode: pause all fault pushes ────────────────────────────────
+    # Mark every would-be fault "suppressed" (so it neither pushes now nor pushes
+    # a recovery when the gear powers back up at the next venue) and send nothing.
+    if quiet:
+        for f in site_faults + faults:
+            f.entity.alert_state, f.entity.alert_state_at = "suppressed", now
+        for f in printer_faults:
+            f.entity.printer_alert_state, f.entity.printer_alert_state_at = "suppressed", now
+        for f in paper_low_faults:
+            f.entity.printer_low_alert_state, f.entity.printer_low_alert_at = "suppressed", now
+        await db.commit()
+        n = len(faults) + len(site_faults) + len(printer_faults) + len(paper_low_faults)
+        if n:
+            logger.info("Teardown mode: suppressed %d fault(s), no push sent", n)
+        return {"teardown": True, "suppressed": n}
 
     # ── Deliver ────────────────────────────────────────────────────────────
     pushed = 0

@@ -22,6 +22,7 @@ class DeviceOut(BaseModel):
     down_seconds: int | None = None  # how long it's been offline
     dormant: bool = False  # effective: manually parked OR past the age threshold
     manual_dormant: bool = False  # operator explicitly parked this device
+    keep_monitored: bool = False  # critical: keeps alerting through teardown
 
     # Local reachability from an on-site agent's LAN ping (independent of UniFi).
     # None = never probed. Powers the "unreachable" 5-state.
@@ -68,6 +69,13 @@ class SiteOut(BaseModel):
     # Saved position on the fleet site map (pixels; null = not yet placed).
     map_x: float | None = None
     map_y: float | None = None
+
+    # Per-site teardown (venue pack-up) + critical exemption.
+    teardown_active: bool = False
+    teardown_scheduled_at: datetime | None = None
+    teardown_since: datetime | None = None
+    teardown_auto_off_at: datetime | None = None
+    keep_monitored: bool = False
 
 
 class MetricPoint(BaseModel):

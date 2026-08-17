@@ -15,6 +15,12 @@ export interface Site {
   dormant_device_count: number;
   map_x: number | null;
   map_y: number | null;
+  // Per-site teardown + critical exemption.
+  teardown_active: boolean;
+  teardown_scheduled_at: string | null;
+  teardown_since: string | null;
+  teardown_auto_off_at: string | null;
+  keep_monitored: boolean;
 }
 
 export interface Device {
@@ -30,6 +36,7 @@ export interface Device {
   down_seconds: number | null;
   dormant: boolean;
   manual_dormant: boolean;
+  keep_monitored: boolean;
   // Local LAN reachability from an on-site agent (null = never probed).
   local_reachable: boolean | null;
   local_rtt_ms: number | null;
@@ -252,6 +259,14 @@ export const api = {
       body: JSON.stringify({ dormant }),
     }),
   metrics: (siteId: string) => req<MetricPoint[]>(`/sites/${siteId}/metrics`),
+  setSiteKeepMonitored: (siteId: string, keep: boolean) =>
+    req<Site>(`/sites/${siteId}/keep-monitored`, { method: "POST", body: JSON.stringify({ keep }) }),
+  setSiteTeardown: (siteId: string, enabled: boolean, hours: number | null = 18) =>
+    req<Site>(`/sites/${siteId}/teardown`, { method: "POST", body: JSON.stringify({ enabled, hours }) }),
+  scheduleSiteTeardown: (siteId: string, at: string | null, hours: number | null = 18) =>
+    req<Site>(`/sites/${siteId}/teardown/schedule`, { method: "POST", body: JSON.stringify({ at, hours }) }),
+  setDeviceKeepMonitored: (siteId: string, deviceId: string, keep: boolean) =>
+    req<Device>(`/sites/${siteId}/devices/${deviceId}/keep-monitored`, { method: "POST", body: JSON.stringify({ keep }) }),
   wanMetrics: (siteId: string) => req<WanMetricSeries[]>(`/sites/${siteId}/wan-metrics`),
 
   // WAN brownout incident log (from our own on-lot probes).

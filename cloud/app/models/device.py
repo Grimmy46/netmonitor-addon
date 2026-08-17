@@ -41,6 +41,11 @@ class Device(Base, UUIDPk, Timestamps):
     # manual_dormant OR the automatic offline-age rule.
     manual_dormant: Mapped[bool] = mapped_column(default=False)
 
+    # Critical device that must KEEP alerting through any teardown (its site's or
+    # the global one) — e.g. a safety/comms box. Status comes from UniFi's API,
+    # so it's monitored even after the local agents go offline during a move.
+    keep_monitored: Mapped[bool] = mapped_column(default=False)
+
     # Local reachability from an on-site agent actively pinging this device on the
     # LAN (by its current IP). This is independent of UniFi's `is_online`: a device
     # can be ONLINE in the controller yet not answer a LAN ping ("unreachable").

@@ -45,5 +45,22 @@ class Site(Base, UUIDPk, Timestamps):
     map_x: Mapped[float | None] = mapped_column(default=None)
     map_y: Mapped[float | None] = mapped_column(default=None)
 
+    # Per-site teardown: when a venue is packed up its alerts pause. A one-off
+    # scheduled_at arms it; the sweep flips teardown_active on when that time
+    # passes (auto-off is a safety expiry). keep_monitored marks a critical site
+    # (Safety, Main office) that must KEEP alerting through any teardown — its
+    # status comes from the UniFi API, not the local agents that go offline.
+    teardown_scheduled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    teardown_active: Mapped[bool] = mapped_column(default=False)
+    teardown_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    teardown_auto_off_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    keep_monitored: Mapped[bool] = mapped_column(default=False)
+
     account: Mapped["Account"] = relationship(back_populates="sites")  # noqa: F821
     devices: Mapped[list["Device"]] = relationship(back_populates="site")  # noqa: F821

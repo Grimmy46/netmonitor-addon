@@ -339,6 +339,32 @@ async def _maybe_expire_teardown(db: AsyncSession, now: datetime) -> bool:
     return True
 
 
+async def _maybe_fire_site_teardowns(db: AsyncSession, now: datetime) -> None:
+    """Arm/expire per-site scheduled teardowns. A site whose one-off scheduled
+    time has passed enters teardown (then disarms); an active one whose safety
+    auto-off has passed leaves teardown. Critical (keep_monitored) sites never
+    enter teardown."""
+    changed = False
+    for s in (await db.execute(select(Site))).scalars():
+        if (s.teardown_scheduled_at is not None and now >= s.teardown_scheduled_at
+                and not s.teardown_active and not s.keep_monitored):
+            s.teardown_active = True
+            s.teardown_since = now
+            s.teardown_auto_off_at = s.teardown_auto_off_at or (now + timedelta(hours=18))
+            s.teardown_scheduled_at = None  # one-off: disarm
+            changed = True
+            logger.info("Site teardown activated: %s", s.name)
+        elif (s.teardown_active and s.teardown_auto_off_at is not None
+              and now >= s.teardown_auto_off_at):
+            s.teardown_active = False
+            s.teardown_since = None
+            s.teardown_auto_off_at = None
+            changed = True
+            logger.info("Site teardown auto-expired: %s", s.name)
+    if changed:
+        await db.commit()
+
+
 async def sweep(db: AsyncSession) -> dict:
     """One pass. Returns counts (also handy for tests)."""
     st = get_settings()
@@ -348,8 +374,9 @@ async def sweep(db: AsyncSession) -> dict:
     await _maybe_fire_scheduled_rollout(db, now)
     # WAN brownout detection + incident log — also independent of subscriptions.
     await _maybe_fire_wan_brownout(db, now)
-    # Teardown mode: while a venue is being packed up, pause all fault pushes.
+    # Teardown: global manual toggle + per-site scheduled teardowns.
     quiet = await _maybe_expire_teardown(db, now)
+    await _maybe_fire_site_teardowns(db, now)
 
     # No ears, no alarms: skip all work until someone has enabled notifications.
     has_subs = (await db.execute(select(PushSubscription.id).limit(1))).first()
@@ -553,25 +580,41 @@ async def sweep(db: AsyncSession) -> dict:
         # degraded/unknown: leave the state alone — degraded is still up,
         # unknown carries no information either way.
 
-    # ── Teardown mode: pause all fault pushes ────────────────────────────────
-    # Mark every would-be fault "suppressed" (so it neither pushes now nor pushes
-    # a recovery when the gear powers back up at the next venue) and send nothing.
-    if quiet:
-        for f in site_faults + faults:
-            f.entity.alert_state, f.entity.alert_state_at = "suppressed", now
-        for f in printer_faults:
-            f.entity.printer_alert_state, f.entity.printer_alert_state_at = "suppressed", now
-        for f in paper_low_faults:
-            f.entity.printer_low_alert_state, f.entity.printer_low_alert_at = "suppressed", now
-        await db.commit()
-        n = len(faults) + len(site_faults) + len(printer_faults) + len(paper_low_faults)
-        if n:
-            logger.info("Teardown mode: suppressed %d fault(s), no push sent", n)
-        return {"teardown": True, "suppressed": n}
+    # ── Teardown suppression (per-entity) ────────────────────────────────────
+    # A fault is paused if the global teardown is on OR its site is in teardown —
+    # UNLESS the device or its site is flagged keep_monitored (critical: Safety,
+    # Main office …), which keeps alerting off the UniFi API even mid-move.
+    sites_by_id = {s.id: s for s in (await db.execute(select(Site))).scalars()}
+
+    def _entity_suppressed(entity) -> bool:
+        if getattr(entity, "keep_monitored", False):
+            return False
+        s = sites_by_id.get(getattr(entity, "site_id", None))
+        if s is not None:
+            if s.keep_monitored:
+                return False
+            if s.teardown_active:
+                return True
+        return bool(quiet)
+
+    def _site_suppressed(s) -> bool:
+        if s.keep_monitored:
+            return False
+        if s.teardown_active:
+            return True
+        return bool(quiet)
+
+    def _is_suppressed(entity) -> bool:
+        return _site_suppressed(entity) if isinstance(entity, Site) else _entity_suppressed(entity)
 
     # ── Deliver ────────────────────────────────────────────────────────────
     pushed = 0
+    suppressed = 0
     for f in site_faults:
+        if _site_suppressed(f.entity):
+            f.entity.alert_state, f.entity.alert_state_at = "suppressed", now
+            suppressed += 1
+            continue
         f.entity.alert_state, f.entity.alert_state_at = "notified", now
         pushed += await send_push(db, {
             "title": f.title, "body": f.body, "tag": f.tag, "url": f.url,
@@ -579,37 +622,51 @@ async def sweep(db: AsyncSession) -> dict:
     # Printer faults are per-station and always sent (a full-site power-down
     # takes the agents offline, so those printers are skipped above, not here).
     for f in printer_faults:
+        if _entity_suppressed(f.entity):
+            f.entity.printer_alert_state, f.entity.printer_alert_state_at = "suppressed", now
+            suppressed += 1
+            continue
         f.entity.printer_alert_state, f.entity.printer_alert_state_at = "notified", now
         pushed += await send_push(db, {
             "title": f.title, "body": f.body, "tag": f.tag, "url": f.url,
         })
     # Low-paper warnings use their own alert-state field.
     for f in paper_low_faults:
+        if _entity_suppressed(f.entity):
+            f.entity.printer_low_alert_state, f.entity.printer_low_alert_at = "suppressed", now
+            suppressed += 1
+            continue
         f.entity.printer_low_alert_state, f.entity.printer_low_alert_at = "notified", now
         pushed += await send_push(db, {
             "title": f.title, "body": f.body, "tag": f.tag, "url": f.url,
         })
-    if len(faults) >= st.alert_mass_threshold:
-        # Mass event: one summary instead of a storm. Sounds like a power-down
-        # at close — or a site-wide outage, which is exactly one push too.
-        for f in faults:
+    # Kiosk/device faults: pause the ones in teardown, apply mass-suppression to
+    # the rest (so a genuine power-down of NON-teardown gear is still one push).
+    for f in [x for x in faults if _entity_suppressed(x.entity)]:
+        f.entity.alert_state, f.entity.alert_state_at = "suppressed", now
+        suppressed += 1
+    deliver_faults = [x for x in faults if not _entity_suppressed(x.entity)]
+    if len(deliver_faults) >= st.alert_mass_threshold:
+        for f in deliver_faults:
             f.entity.alert_state, f.entity.alert_state_at = "suppressed", now
         names = ", ".join(
-            (f.entity.name or "?") for f in faults[:5]
-        ) + ("…" if len(faults) > 5 else "")
+            (f.entity.name or "?") for f in deliver_faults[:5]
+        ) + ("…" if len(deliver_faults) > 5 else "")
         pushed += await send_push(db, {
-            "title": f"⚡ {len(faults)} things went offline together",
+            "title": f"⚡ {len(deliver_faults)} things went offline together",
             "body": f"Looks like a power-down or site-wide outage · {names}",
             "tag": "mass-offline",
             "url": "/",
         })
     else:
-        for f in faults:
+        for f in deliver_faults:
             f.entity.alert_state, f.entity.alert_state_at = "notified", now
             pushed += await send_push(db, {
                 "title": f.title, "body": f.body, "tag": f.tag, "url": f.url,
             })
     for r in recoveries:
+        if _is_suppressed(r.entity):
+            continue  # in teardown — recovered quietly
         pushed += await send_push(db, {
             "title": r.title, "body": r.body, "tag": r.tag, "url": r.url,
         })
@@ -617,9 +674,9 @@ async def sweep(db: AsyncSession) -> dict:
     if faults or site_faults or recoveries or printer_faults or paper_low_faults:
         logger.info(
             "Alert sweep: %d fault(s), %d site outage(s), %d printer fault(s), "
-            "%d paper-low, %d recovery(ies), %d push(es) sent",
+            "%d paper-low, %d recovery(ies), %d push(es) sent, %d teardown-suppressed",
             len(faults), len(site_faults), len(printer_faults),
-            len(paper_low_faults), len(recoveries), pushed,
+            len(paper_low_faults), len(recoveries), pushed, suppressed,
         )
     return {
         "faults": len(faults),
@@ -628,6 +685,7 @@ async def sweep(db: AsyncSession) -> dict:
         "paper_low": len(paper_low_faults),
         "recoveries": len(recoveries),
         "pushed": pushed,
+        "suppressed": suppressed,
     }
 
 

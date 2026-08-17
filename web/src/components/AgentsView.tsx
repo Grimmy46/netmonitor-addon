@@ -10,6 +10,7 @@ import { StationsPanel } from "./StationsPanel";
 import { AgentUpdatePanel } from "./AgentUpdatePanel";
 import { PrinterLogPanel } from "./PrinterLogPanel";
 import { WanPanel } from "./WanPanel";
+import { TeardownPlanner } from "./TeardownPlanner";
 import { StatusPill } from "./StatusPill";
 
 function timeAgo(iso: string | null): string {
@@ -192,6 +193,7 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
   const [showUpdate, setShowUpdate] = useState(false);
   const [showPrinterLog, setShowPrinterLog] = useState(false);
   const [showWan, setShowWan] = useState(false);
+  const [showTeardown, setShowTeardown] = useState(false);
   const [wan, setWan] = useState<WanStatus | null>(null);
   const [teardown, setTeardown] = useState<TeardownStatus | null>(null);
   const [notice, setNotice] = useState<{ notice: string | null; at: string | null } | null>(null);
@@ -272,6 +274,8 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
     <PrinterLogPanel onClose={() => setShowPrinterLog(false)} />
   ) : showWan ? (
     <WanPanel onClose={() => setShowWan(false)} />
+  ) : showTeardown ? (
+    <TeardownPlanner onClose={() => setShowTeardown(false)} />
   ) : null;
 
   const toggleTeardown = () => {
@@ -348,6 +352,12 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
             title="Teardown mode — pause all fault alerts while packing up a venue"
             style={teardown?.active ? { borderColor: "var(--warn, #b7791f)", color: "var(--warn, #b7791f)" } : undefined}>
             🧰 {teardown?.active ? "Teardown ON" : "Teardown"}
+          </button>
+        ) : null}
+        {isAdmin() ? (
+          <button className="btn" onClick={() => setShowTeardown(true)}
+            title="Teardown planner — schedule per-site teardown + keep critical sites monitored">
+            🗓 Teardown planner
           </button>
         ) : null}
         {isAdmin() ? <button className="btn" onClick={() => setManage(true)}>⚙ Manage stations</button> : null}

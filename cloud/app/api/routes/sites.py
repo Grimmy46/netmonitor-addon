@@ -75,6 +75,11 @@ def _build_site_out(site: Site, n_total: int, n_online: int, n_dormant: int, m) 
         upload_mbps=m.upload_mbps if m else None,
         map_x=site.map_x,
         map_y=site.map_y,
+        teardown_active=bool(site.teardown_active),
+        teardown_scheduled_at=site.teardown_scheduled_at,
+        teardown_since=site.teardown_since,
+        teardown_auto_off_at=site.teardown_auto_off_at,
+        keep_monitored=bool(site.keep_monitored),
     )
 
 
@@ -98,6 +103,7 @@ def _device_out(dev: Device, now: datetime, cutoff: datetime) -> DeviceOut:
         down_seconds=down_seconds,
         dormant=dormant,
         manual_dormant=dev.manual_dormant,
+        keep_monitored=bool(dev.keep_monitored),
         local_reachable=dev.local_reachable,
         local_rtt_ms=dev.local_rtt_ms,
         local_checked_at=dev.local_checked_at,
@@ -175,6 +181,113 @@ async def set_device_dormant(
     if dev is None or dev.site_id != site_id:
         raise HTTPException(status_code=404, detail="Device not found")
     dev.manual_dormant = body.dormant
+    await db.commit()
+    await db.refresh(dev)
+    return _device_out(dev, _now(), _dormant_cutoff())
+
+
+class SetKeepMonitoredIn(BaseModel):
+    keep: bool
+
+
+class SiteTeardownIn(BaseModel):
+    enabled: bool
+    hours: float | None = 18.0   # safety auto-off window
+
+
+class SiteTeardownScheduleIn(BaseModel):
+    at: datetime | None = None    # one-off scheduled teardown start; null cancels
+    hours: float | None = 18.0    # auto-off window after it fires
+
+
+async def _site_out_for(db: AsyncSession, site: Site) -> SiteOut:
+    cutoff = _dormant_cutoff()
+    total = func.count(Device.id)
+    online = func.count(Device.id).filter(Device.is_online.is_(True))
+    dormant = func.count(Device.id).filter(_dormant_sql(cutoff))
+    row = (await db.execute(
+        select(total, online, dormant).where(Device.site_id == site.id)
+    )).one()
+    latest = await _latest_metrics_by_site(db)
+    return _build_site_out(site, row[0], row[1], row[2], latest.get(site.id))
+
+
+@router.post("/{site_id}/keep-monitored", response_model=SiteOut)
+async def set_site_keep_monitored(
+    site_id: uuid.UUID, body: SetKeepMonitoredIn,
+    db: AsyncSession = Depends(get_db), _admin=Depends(require_admin),
+) -> SiteOut:
+    """Flag a site critical (Safety, Main office …): it keeps alerting through any
+    teardown, monitored via the UniFi API. Flagging it also clears any teardown."""
+    site = await db.get(Site, site_id)
+    if site is None:
+        raise HTTPException(status_code=404, detail="Site not found")
+    site.keep_monitored = body.keep
+    if body.keep:
+        site.teardown_active = False
+        site.teardown_scheduled_at = None
+        site.teardown_since = site.teardown_auto_off_at = None
+    await db.commit()
+    await db.refresh(site)
+    return await _site_out_for(db, site)
+
+
+@router.post("/{site_id}/teardown", response_model=SiteOut)
+async def set_site_teardown(
+    site_id: uuid.UUID, body: SiteTeardownIn,
+    db: AsyncSession = Depends(get_db), _admin=Depends(require_admin),
+) -> SiteOut:
+    """Turn a site's teardown on/off right now (manual)."""
+    site = await db.get(Site, site_id)
+    if site is None:
+        raise HTTPException(status_code=404, detail="Site not found")
+    now = _now()
+    if body.enabled:
+        site.teardown_active = True
+        site.teardown_since = now
+        site.teardown_auto_off_at = (
+            now + timedelta(hours=body.hours) if body.hours and body.hours > 0 else None
+        )
+        site.teardown_scheduled_at = None
+    else:
+        site.teardown_active = False
+        site.teardown_since = site.teardown_auto_off_at = None
+    await db.commit()
+    await db.refresh(site)
+    return await _site_out_for(db, site)
+
+
+@router.post("/{site_id}/teardown/schedule", response_model=SiteOut)
+async def schedule_site_teardown(
+    site_id: uuid.UUID, body: SiteTeardownScheduleIn,
+    db: AsyncSession = Depends(get_db), _admin=Depends(require_admin),
+) -> SiteOut:
+    """Arm a one-off teardown for a site at a future time (or cancel with at=null).
+    The auto-off window is computed from `hours` when it fires."""
+    site = await db.get(Site, site_id)
+    if site is None:
+        raise HTTPException(status_code=404, detail="Site not found")
+    if site.keep_monitored and body.at is not None:
+        raise HTTPException(status_code=422, detail="Site is keep-monitored (critical) — unflag it first")
+    site.teardown_scheduled_at = body.at
+    site.teardown_auto_off_at = (
+        body.at + timedelta(hours=body.hours) if body.at and body.hours and body.hours > 0 else None
+    )
+    await db.commit()
+    await db.refresh(site)
+    return await _site_out_for(db, site)
+
+
+@router.post("/{site_id}/devices/{device_id}/keep-monitored", response_model=DeviceOut)
+async def set_device_keep_monitored(
+    site_id: uuid.UUID, device_id: uuid.UUID, body: SetKeepMonitoredIn,
+    db: AsyncSession = Depends(get_db), _admin=Depends(require_admin),
+) -> DeviceOut:
+    """Flag a device critical — it keeps alerting through teardown (UniFi status)."""
+    dev = await db.get(Device, device_id)
+    if dev is None or dev.site_id != site_id:
+        raise HTTPException(status_code=404, detail="Device not found")
+    dev.keep_monitored = body.keep
     await db.commit()
     await db.refresh(dev)
     return _device_out(dev, _now(), _dormant_cutoff())

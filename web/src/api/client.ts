@@ -21,6 +21,10 @@ export interface Site {
   teardown_since: string | null;
   teardown_auto_off_at: string | null;
   keep_monitored: boolean;
+  dormant: boolean;
+  manual_dormant: boolean;
+  offline_since: string | null;
+  down_seconds: number | null;
 }
 
 export interface Device {
@@ -188,6 +192,15 @@ export interface WanMetricSeries {
   points: MetricPoint[];
 }
 
+export interface StatusEvent {
+  id: string;
+  site_id: string | null;
+  name: string;
+  kind: string;
+  event: string; // offline | online
+  at: string;
+}
+
 export interface TeardownStatus {
   active: boolean;
   since: string | null;
@@ -267,6 +280,9 @@ export const api = {
     req<Site>(`/sites/${siteId}/teardown/schedule`, { method: "POST", body: JSON.stringify({ at, hours }) }),
   setDeviceKeepMonitored: (siteId: string, deviceId: string, keep: boolean) =>
     req<Device>(`/sites/${siteId}/devices/${deviceId}/keep-monitored`, { method: "POST", body: JSON.stringify({ keep }) }),
+  setSiteDormant: (siteId: string, dormant: boolean) =>
+    req<Site>(`/sites/${siteId}/dormant`, { method: "POST", body: JSON.stringify({ dormant }) }),
+  statusEvents: (hours = 72) => req<StatusEvent[]>(`/sites/status-events?hours=${hours}`),
   wanMetrics: (siteId: string) => req<WanMetricSeries[]>(`/sites/${siteId}/wan-metrics`),
 
   // WAN brownout incident log (from our own on-lot probes).

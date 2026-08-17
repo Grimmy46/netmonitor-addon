@@ -10,9 +10,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.auth import current_user, require_admin
 from app.core.db import get_db
-from app.models import Device, IspMetric, Site
-from app.schemas import DeviceOut, DormantDeviceOut, MetricPoint, SiteOut, WanMetricSeries
+from app.models import Device, IspMetric, Site, StatusEvent
+from app.schemas import (
+    DeviceOut,
+    DormantDeviceOut,
+    MetricPoint,
+    SiteOut,
+    StatusEventOut,
+    WanMetricSeries,
+)
 from app.services.sync import PRIMARY_WAN_LABELS, is_primary_wan
+
+
+def _site_dormant(site: Site, now: datetime) -> bool:
+    """A packed-up venue: manually parked, OR offline past the auto-dormant window."""
+    if site.manual_dormant:
+        return True
+    if site.offline_since is None:
+        return False
+    hours = get_settings().site_dormant_after_hours
+    return (now - site.offline_since).total_seconds() >= hours * 3600
 
 router = APIRouter(prefix="/sites", tags=["sites"])
 
@@ -80,6 +97,11 @@ def _build_site_out(site: Site, n_total: int, n_online: int, n_dormant: int, m) 
         teardown_since=site.teardown_since,
         teardown_auto_off_at=site.teardown_auto_off_at,
         keep_monitored=bool(site.keep_monitored),
+        dormant=_site_dormant(site, _now()),
+        manual_dormant=bool(site.manual_dormant),
+        offline_since=site.offline_since,
+        down_seconds=(int((_now() - site.offline_since).total_seconds())
+                      if site.offline_since else None),
     )
 
 
@@ -291,6 +313,42 @@ async def set_device_keep_monitored(
     await db.commit()
     await db.refresh(dev)
     return _device_out(dev, _now(), _dormant_cutoff())
+
+
+@router.post("/{site_id}/dormant", response_model=SiteOut)
+async def set_site_dormant(
+    site_id: uuid.UUID, body: SetDormantIn,
+    db: AsyncSession = Depends(get_db), _admin=Depends(require_admin),
+) -> SiteOut:
+    """Manually park a whole site (packed-up venue) out of the active board, or
+    bring it back. It also auto-parks after 48h offline and auto-returns online."""
+    site = await db.get(Site, site_id)
+    if site is None:
+        raise HTTPException(status_code=404, detail="Site not found")
+    site.manual_dormant = body.dormant
+    await db.commit()
+    await db.refresh(site)
+    return await _site_out_for(db, site)
+
+
+@router.get("/status-events", response_model=list[StatusEventOut])
+async def status_events(
+    hours: int = Query(72, ge=1, le=2160),
+    limit: int = Query(500, ge=1, le=5000),
+    db: AsyncSession = Depends(get_db), _user=Depends(current_user),
+) -> list[StatusEventOut]:
+    """The teardown/build sequence: site online↔offline transitions, newest first.
+    This is the raw order in which venues go dark (teardown) and light up (build)."""
+    since = _now() - timedelta(hours=hours)
+    rows = (await db.execute(
+        select(StatusEvent).where(StatusEvent.ts >= since)
+        .order_by(StatusEvent.ts.desc()).limit(limit)
+    )).scalars().all()
+    return [
+        StatusEventOut(id=e.id, site_id=e.site_id, name=e.name, kind=e.kind,
+                       event=e.event, at=e.ts)
+        for e in rows
+    ]
 
 
 @router.get("/{site_id}", response_model=SiteOut)

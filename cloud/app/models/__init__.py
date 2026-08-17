@@ -11,6 +11,7 @@ from app.models.probe import ProbeSample, ProbeTarget
 from app.models.push_subscription import PushSubscription
 from app.models.site import Site
 from app.models.site_plan import SitePlan
+from app.models.status_event import StatusEvent
 from app.models.unifi_console import UnifiConsole
 from app.models.unifi_credential import UnifiCredential
 from app.models.user import User
@@ -30,6 +31,7 @@ __all__ = [
     "PushSubscription",
     "Site",
     "SitePlan",
+    "StatusEvent",
     "UnifiConsole",
     "UnifiCredential",
     "User",

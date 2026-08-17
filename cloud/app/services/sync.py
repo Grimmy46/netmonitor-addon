@@ -9,7 +9,29 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decrypt
-from app.models import Account, Device, IspMetric, Site, UnifiConsole, UnifiCredential
+from app.models import (
+    Account,
+    Device,
+    IspMetric,
+    Site,
+    StatusEvent,
+    UnifiConsole,
+    UnifiCredential,
+)
+
+
+def _note_site_transition(site, new_status, now, out) -> None:
+    """Set a site's status; when it crosses online↔offline, stamp offline_since
+    and queue a StatusEvent (the teardown/build sequence). StatusEvent rows are
+    created after the flush (out list), when new sites have an id."""
+    old = site.status
+    site.status = new_status
+    if new_status == "offline" and old != "offline":
+        site.offline_since = now
+        out.append((site, "offline"))
+    elif old == "offline" and new_status != "offline":
+        site.offline_since = None
+        out.append((site, "online"))
 from app.services.unifi import UnifiError, UnifiSiteManagerClient
 from app.services.unifi_console import UnifiConsoleClient, UnifiConsoleError
 
@@ -80,6 +102,8 @@ async def sync_unifi(db: AsyncSession) -> dict:
 
     client = UnifiSiteManagerClient(decrypt(cred.encrypted_api_key))
     account = await get_or_create_account(db)
+    now = datetime.now(tz=timezone.utc)
+    site_events: list = []  # (site, "offline"|"online") — logged after flush
 
     raw_sites = await client.list_sites()
     raw_devices = await client.list_devices()
@@ -120,12 +144,16 @@ async def sync_unifi(db: AsyncSession) -> dict:
         if offline is not None:
             site.device_offline = int(offline)
         if total is not None and offline is not None:
-            site.status = "online" if offline == 0 else ("offline" if offline >= total else "degraded")
+            new_status = "online" if offline == 0 else ("offline" if offline >= total else "degraded")
+            _note_site_transition(site, new_status, now, site_events)
         db.add(site)
         site_by_uid[uid] = site
         if site.gateway_mac:
             site_by_gwmac[site.gateway_mac] = site
     await db.flush()
+    for s, ev in site_events:  # now sites have ids
+        db.add(StatusEvent(account_id=account.id, site_id=s.id, name=s.name,
+                           kind="site", event=ev, ts=now))
 
     # ── devices ──────────────────────────────────────────────────────────────
     existing_devices = {
@@ -226,6 +254,7 @@ async def sync_unifi_console(db: AsyncSession, console: UnifiConsole) -> dict:
     )
     account = await get_or_create_account(db)
     now = datetime.now(tz=timezone.utc)
+    site_events: list = []
 
     raw_sites = await client.list_sites()
 
@@ -288,13 +317,18 @@ async def sync_unifi_console(db: AsyncSession, console: UnifiConsole) -> dict:
         site.device_total = count
         site.device_offline = max(0, count - online)
         if count == 0:
-            site.status = "unknown"
+            new_status = "unknown"
         elif site.device_offline == 0:
-            site.status = "online"
+            new_status = "online"
         elif online == 0:
-            site.status = "offline"
+            new_status = "offline"
         else:
-            site.status = "degraded"
+            new_status = "degraded"
+        _note_site_transition(site, new_status, now, site_events)
+        for s, ev in site_events:
+            db.add(StatusEvent(account_id=account.id, site_id=s.id, name=s.name,
+                               kind="site", event=ev, ts=now))
+        site_events.clear()
         n_sites += 1
 
     console.last_synced_at = datetime.now(tz=timezone.utc).isoformat()

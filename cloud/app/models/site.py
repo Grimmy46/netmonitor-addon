@@ -62,5 +62,13 @@ class Site(Base, UUIDPk, Timestamps):
     )
     keep_monitored: Mapped[bool] = mapped_column(default=False)
 
+    # Dormancy (packed-up venues): manual_dormant parks a site out of the active
+    # board; offline_since drives the automatic 48h rule. A site returns to active
+    # automatically when it comes back online (offline_since clears).
+    manual_dormant: Mapped[bool] = mapped_column(default=False)
+    offline_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+
     account: Mapped["Account"] = relationship(back_populates="sites")  # noqa: F821
     devices: Mapped[list["Device"]] = relationship(back_populates="site")  # noqa: F821

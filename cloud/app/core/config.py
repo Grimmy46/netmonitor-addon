@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     # A device offline longer than this many days is classified "dormant" and
     # moved out of the active view into the Dormant tab.
     dormant_after_days: int = 4
+    # A whole SITE (UXG venue) offline longer than this many hours auto-moves to
+    # dormant (packed-up venue). It returns to active automatically when it comes
+    # back online at the next event.
+    site_dormant_after_hours: int = 48
     # An agent that hasn't checked in within this many seconds counts as offline.
     agent_offline_after_seconds: int = 120
     # Suggested seconds between an on-site agent's full LAN device-ping sweeps.

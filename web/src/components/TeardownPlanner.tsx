@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type Site } from "../api/client";
+import { api, type Site, type StatusEvent } from "../api/client";
 
 /**
  * Teardown planner: manage per-site teardown across the UXG sites in one place.
@@ -47,6 +47,12 @@ function SiteRow({ site, onChange }: { site: Site; onChange: () => void }) {
             onChange={(e) => run(api.setSiteKeepMonitored(site.id, e.target.checked))} />
           Keep monitored (critical)
         </label>
+        <label style={{ fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}
+          title="Park this packed-up venue out of the active board (auto after 48h offline; auto-returns online)">
+          <input type="checkbox" checked={site.dormant} disabled={busy}
+            onChange={(e) => run(api.setSiteDormant(site.id, e.target.checked))} />
+          Dormant{site.dormant && !site.manual_dormant ? " (auto)" : ""}
+        </label>
         <div className="spacer" style={{ flex: 1 }} />
         {!critical && !site.teardown_active ? (
           <>
@@ -79,10 +85,15 @@ function SiteRow({ site, onChange }: { site: Site; onChange: () => void }) {
 
 export function TeardownPlanner({ onClose }: { onClose: () => void }) {
   const [sites, setSites] = useState<Site[] | null>(null);
+  const [events, setEvents] = useState<StatusEvent[] | null>(null);
+  const [showSeq, setShowSeq] = useState(false);
   const [err, setErr] = useState("");
   const [q, setQ] = useState("");
 
-  const load = () => api.sites().then(setSites).catch((e) => setErr(String(e instanceof Error ? e.message : e)));
+  const load = () => {
+    api.sites().then(setSites).catch((e) => setErr(String(e instanceof Error ? e.message : e)));
+    api.statusEvents(168).then(setEvents).catch(() => {});
+  };
   useEffect(() => { load(); }, []);
 
   const shown = useMemo(() => {
@@ -121,6 +132,30 @@ export function TeardownPlanner({ onClose }: { onClose: () => void }) {
             shown.map((s) => <SiteRow key={s.id} site={s} onChange={load} />)
           )}
         </div>
+
+        <button className="btn" style={{ fontSize: 12, marginTop: 12 }} onClick={() => setShowSeq((v) => !v)}>
+          {showSeq ? "▾" : "▸"} Teardown / build sequence ({events?.length ?? 0})
+        </button>
+        {showSeq ? (
+          <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8, marginTop: 8 }}>
+            {events === null ? (
+              <p className="hint" style={{ padding: 12 }}>Loading…</p>
+            ) : events.length === 0 ? (
+              <p className="hint" style={{ padding: 12 }}>No site transitions logged yet (recorded on each UniFi sync).</p>
+            ) : (
+              events.map((e) => (
+                <div key={e.id} style={{ display: "flex", gap: 10, padding: "6px 12px", borderBottom: "1px solid var(--border)", fontSize: 12 }}>
+                  <span style={{ width: 70, color: e.event === "offline" ? "var(--critical)" : "var(--good)" }}>
+                    {e.event === "offline" ? "● offline" : "○ online"}
+                  </span>
+                  <strong style={{ flex: 1 }}>{e.name}</strong>
+                  <span className="sub">{new Date(e.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+                </div>
+              ))
+            )}
+          </div>
+        ) : null}
+
         <div className="modal-actions" style={{ marginTop: 16 }}>
           <button className="btn" onClick={onClose}>Close</button>
         </div>

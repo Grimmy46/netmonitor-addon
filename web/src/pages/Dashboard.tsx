@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, isAdmin, session, type Site, type UnifiStatus } from "../api/client";
+import { api, isAdmin, session, type Site, type TeardownStatus, type UnifiStatus } from "../api/client";
 import { PlannerView } from "../components/PlannerView";
+import { TeardownPlanner } from "../components/TeardownPlanner";
 import { PulseLogo } from "../components/PulseLogo";
 import { AgentsView } from "../components/AgentsView";
 import { DormantView } from "../components/DormantView";
@@ -12,13 +13,15 @@ import { SiteMap } from "../components/SiteMap";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { SitePage } from "./SitePage";
 
-type FleetFilter = "all" | "online" | "attention" | "offline";
+type FleetFilter = "all" | "online" | "attention" | "offline" | "dormant";
 
+// Dormant (packed-up) venues drop out of every active filter into their own chip.
 const FLEET_FILTERS: { key: FleetFilter; label: string; match: (s: Site) => boolean }[] = [
-  { key: "all", label: "All", match: () => true },
-  { key: "online", label: "Online", match: (s) => s.status === "online" },
-  { key: "attention", label: "Needs attention", match: (s) => s.status === "degraded" || s.status === "offline" },
-  { key: "offline", label: "Offline", match: (s) => s.status === "offline" },
+  { key: "all", label: "All", match: (s) => !s.dormant },
+  { key: "online", label: "Online", match: (s) => s.status === "online" && !s.dormant },
+  { key: "attention", label: "Needs attention", match: (s) => (s.status === "degraded" || s.status === "offline") && !s.dormant },
+  { key: "offline", label: "Offline", match: (s) => s.status === "offline" && !s.dormant },
+  { key: "dormant", label: "Dormant", match: (s) => s.dormant },
 ];
 
 // Minimal hash router: "#/site/<id>" → that site's page; anything else → fleet.
@@ -47,12 +50,30 @@ export function Dashboard() {
   const [view, setView] = useState<"live" | "fleet" | "map" | "dormant" | "kiosks" | "ticketboxes" | "planner">("live");
   const [fleetFilter, setFleetFilter] = useState<FleetFilter>("all");
   const [siteRoute, setSiteRoute] = useState<string | null>(siteIdFromHash());
+  const [teardown, setTeardown] = useState<TeardownStatus | null>(null);
+  const [showPlanner, setShowPlanner] = useState(false);
+  const td = !!teardown?.active;
+
+  const toggleTeardown = () => {
+    const next = !td;
+    if (next && !window.confirm("Start teardown mode? Fault alerts pause and the dashboard focuses on what's still online.")) return;
+    api.setTeardown(next).then(setTeardown).catch(() => {});
+  };
 
   useEffect(() => {
     const onHash = () => setSiteRoute(siteIdFromHash());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+
+  // In teardown, the kiosk-level tabs are hidden — bounce off them to the
+  // "what's still online" fleet view.
+  useEffect(() => {
+    if (td && (view === "kiosks" || view === "ticketboxes")) {
+      setView("fleet");
+      setFleetFilter("online");
+    }
+  }, [td, view]);
 
   const refresh = useCallback(async () => {
     try {
@@ -65,6 +86,7 @@ export function Dashboard() {
       setStatus(st);
       setConsoleCount(cs.length);
       setError("");
+      api.getTeardown().then(setTeardown).catch(() => {});
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
     }
@@ -101,17 +123,12 @@ export function Dashboard() {
     }
   }
 
-  const online = sites.filter((s) => s.status === "online").length;
-  const issues = sites.filter((s) => s.status === "degraded" || s.status === "offline").length;
   const counts = useMemo(
-    () => ({
-      all: sites.length,
-      online,
-      attention: issues,
-      offline: sites.filter((s) => s.status === "offline").length,
-    }),
-    [sites, online, issues],
+    () => Object.fromEntries(FLEET_FILTERS.map((f) => [f.key, sites.filter(f.match).length])) as Record<FleetFilter, number>,
+    [sites],
   );
+  const online = counts.online ?? 0;
+  const issues = counts.attention ?? 0;
   const shownSites = sites.filter(FLEET_FILTERS.find((f) => f.key === fleetFilter)!.match);
 
   return (
@@ -126,12 +143,21 @@ export function Dashboard() {
             <button className={`tab ${view === "fleet" ? "active" : ""}`} onClick={() => setView("fleet")}>Fleet</button>
             <button className={`tab ${view === "map" ? "active" : ""}`} onClick={() => setView("map")}>Map</button>
             <button className={`tab ${view === "dormant" ? "active" : ""}`} onClick={() => setView("dormant")}>Dormant</button>
-            <button className={`tab ${view === "kiosks" ? "active" : ""}`} onClick={() => setView("kiosks")}>Kiosks</button>
-            <button className={`tab ${view === "ticketboxes" ? "active" : ""}`} onClick={() => setView("ticketboxes")}>Ticket Boxes</button>
+            {!td ? <button className={`tab ${view === "kiosks" ? "active" : ""}`} onClick={() => setView("kiosks")}>Kiosks</button> : null}
+            {!td ? <button className={`tab ${view === "ticketboxes" ? "active" : ""}`} onClick={() => setView("ticketboxes")}>Ticket Boxes</button> : null}
             <button className={`tab ${view === "planner" ? "active" : ""}`} onClick={() => setView("planner")}>Planner</button>
           </nav>
         ) : null}
         <div className="spacer" />
+        {isAdmin() && !siteRoute ? (
+          <>
+            <button className="btn" onClick={toggleTeardown} title="Teardown mode — pause alerts + focus on what's online"
+              style={td ? { borderColor: "var(--warn, #b7791f)", color: "var(--warn, #b7791f)" } : undefined}>
+              🧰 {td ? "Teardown ON" : "Teardown"}
+            </button>
+            <button className="btn" onClick={() => setShowPlanner(true)} title="Teardown planner + sequence">🗓</button>
+          </>
+        ) : null}
         <NotifyBell />
         <ThemeToggle />
         <span className="sub hide-sm" style={{ margin: "0 4px" }}>{session.user?.email}</span>
@@ -145,6 +171,17 @@ export function Dashboard() {
         </div>
       ) : (
       <div className="container">
+        {td ? (
+          <div className="banner" style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10, borderLeft: "3px solid var(--warn, #b7791f)" }}>
+            <span style={{ fontSize: 18 }}>🧰</span>
+            <span style={{ flex: 1 }}>
+              <strong>Teardown mode</strong> — fault alerts paused; kiosk views hidden. Showing what's still online.
+              {teardown ? <span className="sub" style={{ fontSize: 12 }}> · {teardown.offline}/{teardown.total} stations offline</span> : null}
+            </span>
+            <button className="btn" style={{ fontSize: 12, padding: "3px 10px" }} onClick={() => setShowPlanner(true)}>Planner</button>
+            <button className="btn" style={{ fontSize: 12, padding: "3px 10px" }} onClick={toggleTeardown}>End teardown</button>
+          </div>
+        ) : null}
         <div className="toolbar">
           <div>
             {sites.length > 0 ? (
@@ -224,6 +261,9 @@ export function Dashboard() {
           onClose={() => setSettingsOpen(false)}
           onChanged={refresh}
         />
+      ) : null}
+      {showPlanner ? (
+        <TeardownPlanner onClose={() => { setShowPlanner(false); refresh(); }} />
       ) : null}
     </>
   );

@@ -77,6 +77,22 @@ class SiteOut(BaseModel):
     teardown_auto_off_at: datetime | None = None
     keep_monitored: bool = False
 
+    # Dormancy (packed-up venue): effective = manual OR offline > 48h.
+    dormant: bool = False
+    manual_dormant: bool = False
+    offline_since: datetime | None = None
+    down_seconds: int | None = None
+
+
+class StatusEventOut(BaseModel):
+    """One site online/offline transition — the teardown/build sequence."""
+    id: uuid.UUID
+    site_id: uuid.UUID | None = None
+    name: str
+    kind: str = "site"
+    event: str = ""       # offline | online
+    at: datetime
+
 
 class MetricPoint(BaseModel):
     ts: datetime

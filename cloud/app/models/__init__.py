@@ -9,6 +9,7 @@ from app.models.ping_sample import PingSample
 from app.models.printer_event import PrinterEvent
 from app.models.probe import ProbeSample, ProbeTarget
 from app.models.push_subscription import PushSubscription
+from app.models.scan_batch import ScanBatch
 from app.models.site import Site
 from app.models.site_plan import SitePlan
 from app.models.status_event import StatusEvent
@@ -29,6 +30,7 @@ __all__ = [
     "ProbeSample",
     "ProbeTarget",
     "PushSubscription",
+    "ScanBatch",
     "Site",
     "SitePlan",
     "StatusEvent",

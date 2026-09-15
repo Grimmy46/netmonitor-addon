@@ -6,7 +6,6 @@
 <meta name="theme-color" content="#181312">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23181312'/%3E%3Crect x='10' y='10' width='12' height='12' rx='2' fill='%23C8102E' transform='rotate(45 16 16)'/%3E%3C/svg%3E">
 <title>RCS Scan Station</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -182,6 +181,14 @@ textarea{font-family:"IBM Plex Mono",monospace;font-size:12.5px;resize:vertical;
 .toggle.boxed:hover{border-color:var(--ink-3)}
 .toggle.boxed:has(input:checked){border-color:var(--brand);background:var(--brand-soft)}
 .toggle.boxed span{font-weight:600}
+.hubline{display:flex;align-items:center;gap:9px;padding:10px 12px;border-radius:8px;font-size:13px;font-weight:500;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--ink-2)}
+.hubline .dot{width:8px;height:8px;border-radius:50%;background:var(--ink-3);flex:none}
+.hubline.busy .dot{background:var(--warn);animation:pulse 1.2s ease-in-out infinite}
+.hubline.good{background:var(--ok-soft);border-color:var(--ok);color:var(--ok)}
+.hubline.good .dot{background:var(--ok)}
+.hubline.bad{background:var(--bad-soft);border-color:var(--bad);color:var(--bad)}
+.hubline.bad .dot{background:var(--bad)}
+.hubline .spacer{flex:1}
 
 details.fold{border-top:1px solid var(--line)}
 details.fold summary{
@@ -309,6 +316,10 @@ td .cell-edit:focus{border-style:solid;border-color:var(--brand);background:var(
         <span class="note mono" id="groupCount">0 in this group</span>
       </header>
       <div class="body" style="display:flex;flex-direction:column;gap:14px">
+        <div class="f" id="scannerWrap">
+          <label for="dScanner">Who is scanning — labels the batch on the hub</label>
+          <input id="dScanner" placeholder="e.g. Handheld 1 · Dawid" autocomplete="off">
+        </div>
         <div class="f">
           <div style="display:flex;align-items:center;gap:8px">
             <span class="flabel">Category</span>
@@ -421,6 +432,11 @@ td .cell-edit:focus{border-style:solid;border-color:var(--brand);background:var(
         <button class="btn" id="btnCopy">Copy to clipboard</button>
         <label class="toggle" style="margin-left:4px;padding:0"><input type="checkbox" id="optCleanOnly"><span>Leave conflicting rows out</span></label>
       </div>
+      <div class="hubline" id="hubLine" style="display:none">
+        <i class="dot"></i><span id="hubText">Not sent</span>
+        <div class="spacer"></div>
+        <button class="btn sm" id="btnHubSend">Send to hub</button>
+      </div>
       <textarea id="csvOut" class="mono" readonly spellcheck="false"></textarea>
       <div id="exportNotes"></div>
       <ol class="steps">
@@ -485,6 +501,7 @@ function defaultCats(){
 
 let S = {
   rows: [],
+  scanner: "",
   cats: defaultCats(),
   active: "battery",
   defaults: { owner:"RCS Technology", status:"active", area:"" },
@@ -508,6 +525,7 @@ function load(){
       S.batch = p.batch || {};
       S.opts = Object.assign(S.opts, p.opts || {});
       S.known = typeof p.known === "string" ? p.known : "";
+      S.scanner = typeof p.scanner === "string" ? p.scanner : "";
     }catch(e){}
     return;
   }
@@ -964,6 +982,7 @@ $("btnUndo").addEventListener("click", undo);
 $("btnClearKnown").addEventListener("click", function(){ $("knownTags").value = ""; S.known = ""; render(); save(); });
 $("knownTags").addEventListener("input", function(){ S.known = this.value; render(); save(); });
 $("dArea").addEventListener("input", function(){ S.defaults.area = this.value; render(); save(); });
+$("dScanner").addEventListener("input", function(){ S.scanner = this.value; save(); });
 
 function fillSelect(el, values, labels){
   el.innerHTML = values.map(function(v){ return '<option value="'+esc(v)+'">'+esc(labels ? labels[v] : v)+'</option>'; }).join("");
@@ -1166,8 +1185,80 @@ function refreshCsv(){
   });
   $("exportNotes").innerHTML = notes.join("");
 }
-$("optCleanOnly").addEventListener("change", refreshCsv);
-function openSheet(){ refreshCsv(); $("sheet").setAttribute("open",""); $("btnCopy").focus(); }
+$("optCleanOnly").addEventListener("change", function(){ refreshCsv(); hubRender(); });
+
+/* ── hub upload ───────────────────────────────────────────────────────────
+   Same-origin POST to the NetMonitor API when this page is self-hosted. The
+   token is visible in source by design — it keeps drive-by posts out, nothing
+   more. An upload never blocks the local save: the CSV in the box above is
+   always the real deliverable, and a failed send is reported, not swallowed. */
+const HUB = { path: "/scan-batches", token: "rcs-scan-2026" };
+const HUB_ENABLED = location.protocol !== "file:" && !/(^|\.)claude\.ai$/i.test(location.hostname);
+let hubState = { status: "idle", msg: "", sentKey: null, at: null };
+
+function batchKey(){ return (S.rows.length + "|" + buildCsv($("optCleanOnly").checked).text); }
+
+function hubRender(){
+  const el = $("hubLine");
+  if(!HUB_ENABLED){ el.style.display = "none"; return; }
+  el.style.display = "";
+  el.className = "hubline" + (hubState.status === "sending" ? " busy"
+    : hubState.status === "sent" ? " good" : hubState.status === "error" ? " bad" : "");
+  const sameBatch = hubState.sentKey === batchKey();
+  if(hubState.status === "sending") $("hubText").textContent = "Sending to the hub…";
+  else if(hubState.status === "sent" && sameBatch) $("hubText").textContent = "On the hub — sent " + hubState.at;
+  else if(hubState.status === "sent") $("hubText").textContent = "Sent earlier, but this CSV has changed since";
+  else if(hubState.status === "error") $("hubText").textContent = hubState.msg || "Send failed";
+  else $("hubText").textContent = "Not sent to the hub yet";
+  const b = $("btnHubSend");
+  b.disabled = hubState.status === "sending";
+  b.textContent = (hubState.status === "sent" && sameBatch) ? "Send again" : "Send to hub";
+}
+
+function hubSend(){
+  if(!HUB_ENABLED) return;
+  const out = buildCsv($("optCleanOnly").checked);
+  if(!out.count){ hubState = {status:"error", msg:"Nothing to send", sentKey:null}; hubRender(); return; }
+  const key = batchKey();
+  const rows = S.rows.slice().reverse()
+    .filter(function(r){ return $("optCleanOnly").checked ? r._flag !== "dup" : true; })
+    .map(function(r){
+      const o = {asset_tag:r.tag, category:r.category, model:r.model, primary_serial:r.serial,
+                 owner:r.owner, area:r.area, status:r.status, manufacturer:r.manufacturer};
+      (r.extras||[]).forEach(function(e){ if(e.value !== "") o[e.key] = e.value; });
+      return o;
+    });
+  const summary = {};
+  rows.forEach(function(r){ summary[r.category] = (summary[r.category]||0)+1; });
+
+  hubState = {status:"sending", msg:"", sentKey:null}; hubRender();
+  fetch(HUB.path, {
+    method:"POST",
+    headers:{"Content-Type":"application/json","X-Scan-Token":HUB.token},
+    body: JSON.stringify({scanner: ($("dScanner").value||"").trim() || "Unnamed scanner",
+                          note:"", csv: out.text, rows: rows, summary: summary})
+  }).then(function(res){
+    if(!res.ok) throw new Error(res.status === 401 ? "Hub rejected the token" : "Hub returned " + res.status);
+    return res.json();
+  }).then(function(){
+    hubState = {status:"sent", msg:"", sentKey:key,
+                at:new Date().toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"})};
+    hubRender(); toast("Batch sent to the hub");
+  }).catch(function(err){
+    hubState = {status:"error", msg:(err && err.message) || "Send failed — check the connection", sentKey:null};
+    hubRender();
+  });
+}
+$("btnHubSend").addEventListener("click", hubSend);
+
+function openSheet(){
+  refreshCsv();
+  if(hubState.sentKey !== batchKey() && hubState.status !== "sending") hubState = {status:"idle", msg:"", sentKey:hubState.sentKey, at:hubState.at};
+  hubRender();
+  $("sheet").setAttribute("open","");
+  $("btnCopy").focus();
+  if(HUB_ENABLED && hubState.sentKey !== batchKey()) hubSend();   // "as soon as it's built"
+}
 function closeSheet(){ $("sheet").removeAttribute("open"); refocus(); }
 $("btnExport").addEventListener("click", openSheet);
 $("btnCloseSheet").addEventListener("click", closeSheet);
@@ -1220,6 +1311,8 @@ $("btnSave").addEventListener("click", function(){
 /* ── boot ── */
 load();
 $("knownTags").value = S.known;
+$("dScanner").value = S.scanner || "";
+if(!HUB_ENABLED) $("scannerWrap").style.display = "none";
 $("dArea").value = S.defaults.area || "";
 $("dOwner").value = S.defaults.owner || "";
 $("dStatus").value = S.defaults.status || "active";

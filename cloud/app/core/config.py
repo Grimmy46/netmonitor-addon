@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     # Fernet key for encrypting stored third-party credentials (e.g. UniFi API key).
     encryption_key: str = ""
 
+    # Shared token for the Scan Station endpoints. The Scan Station is a static
+    # page with no user session, so it carries this token in its source — it is
+    # public by construction and only keeps drive-by posts out. Override via the
+    # SCAN_UPLOAD_TOKEN env var to rotate it (the page must be updated to match).
+    scan_upload_token: str = "rcs-scan-2026"
+
     # CORS (comma-separated)
     cors_origins: str = "http://localhost:5173"
 

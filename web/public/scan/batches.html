@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#181312">
+<title>Scan Batches</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23181312'/%3E%3Crect x='10' y='10' width='12' height='12' rx='2' fill='%23C8102E' transform='rotate(45 16 16)'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --bg:#F4F1EE; --surface:#FFFFFF; --surface-2:#EAE5E0;
+  --line:#D8D1CA; --line-strong:#BCB2AA;
+  --ink:#191413; --ink-2:#5E5450; --ink-3:#8B807A;
+  --brand:#C8102E; --brand-on:#FFFFFF; --brand-soft:rgba(200,16,46,.10);
+  --ok:#116B50; --ok-soft:rgba(17,107,80,.13);
+  --warn:#95560A; --warn-soft:rgba(149,86,10,.15);
+  --bad:#B01223; --bad-soft:rgba(176,18,35,.12);
+  --slab:#181312; --slab-on:#F6F2EF; --slab-dim:#9C918B; --slab-line:#38302E;
+  --shadow:0 1px 2px rgba(25,20,19,.05), 0 10px 26px -14px rgba(25,20,19,.22);
+  --r:10px;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#13100F; --surface:#1C1817; --surface-2:#241F1E;
+    --line:#332B2A; --line-strong:#4B403E;
+    --ink:#F3EEEA; --ink-2:#A99E98; --ink-3:#7C716C;
+    --brand:#FF5065; --brand-on:#2A0308; --brand-soft:rgba(255,80,101,.14);
+    --ok:#41D394; --ok-soft:rgba(65,211,148,.14);
+    --warn:#F0AA4B; --warn-soft:rgba(240,170,75,.15);
+    --bad:#FF6B78; --bad-soft:rgba(255,107,120,.14);
+    --slab:#0C0A09; --slab-line:#2C2523;
+    --shadow:0 1px 2px rgba(0,0,0,.5), 0 10px 26px -14px rgba(0,0,0,.8);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#13100F; --surface:#1C1817; --surface-2:#241F1E;
+  --line:#332B2A; --line-strong:#4B403E;
+  --ink:#F3EEEA; --ink-2:#A99E98; --ink-3:#7C716C;
+  --brand:#FF5065; --brand-on:#2A0308; --brand-soft:rgba(255,80,101,.14);
+  --ok:#41D394; --ok-soft:rgba(65,211,148,.14);
+  --warn:#F0AA4B; --warn-soft:rgba(240,170,75,.15);
+  --bad:#FF6B78; --bad-soft:rgba(255,107,120,.14);
+  --slab:#0C0A09; --slab-line:#2C2523;
+  --shadow:0 1px 2px rgba(0,0,0,.5), 0 10px 26px -14px rgba(0,0,0,.8);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Barlow",system-ui,-apple-system,sans-serif;font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.mono{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+.top{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:14px 20px;border-bottom:1px solid var(--line);background:var(--surface);position:sticky;top:0;z-index:20}
+.mark{display:flex;align-items:baseline;gap:9px}
+.mark b{font-family:"Barlow Condensed",sans-serif;font-weight:700;font-size:21px;letter-spacing:.05em;text-transform:uppercase}
+.mark .diamond{width:11px;height:11px;background:var(--brand);transform:rotate(45deg);border-radius:2px;align-self:center;flex:none}
+.mark small{color:var(--ink-3);font-size:12px;letter-spacing:.1em;text-transform:uppercase;font-weight:600}
+.top .spacer{flex:1}
+.pulse{display:flex;align-items:center;gap:8px;font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
+.pulse i{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 4px var(--ok-soft);animation:beat 2.4s ease-in-out infinite}
+.pulse.stale i{background:var(--bad);box-shadow:0 0 0 4px var(--bad-soft);animation:none}
+@keyframes beat{0%,100%{opacity:1}50%{opacity:.4}}
+.tally{display:flex;gap:18px}
+.tally div{text-align:right}
+.tally .n{font-family:"IBM Plex Mono",monospace;font-weight:600;font-size:19px;line-height:1}
+.tally .l{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
+
+.wrap{display:grid;grid-template-columns:minmax(300px,380px) minmax(0,1fr);gap:18px;padding:18px;max-width:1560px;margin:0 auto;align-items:start}
+@media (max-width:920px){.wrap{grid-template-columns:1fr}}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);overflow:hidden}
+.card>header{padding:11px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+.eyebrow{font-family:"Barlow Condensed",sans-serif;font-weight:600;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3)}
+
+.blist{max-height:calc(100vh - 170px);overflow-y:auto}
+.b{display:block;width:100%;text-align:left;border:none;border-bottom:1px solid var(--line);background:transparent;padding:11px 14px;cursor:pointer;position:relative;transition:background .12s}
+.b:hover{background:var(--surface-2)}
+.b[aria-current="true"]{background:var(--brand-soft)}
+.b[aria-current="true"]::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--brand)}
+.b.fresh{animation:land .8s ease}
+@keyframes land{from{background:var(--ok-soft)}to{background:transparent}}
+.b .r1{display:flex;align-items:baseline;gap:8px}
+.b .who{font-weight:600}
+.b .when{margin-left:auto;font-size:12px;color:var(--ink-3);font-family:"IBM Plex Mono",monospace}
+.b .r2{display:flex;align-items:center;gap:6px;margin-top:5px;flex-wrap:wrap}
+.chip{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--ink-2);white-space:nowrap}
+.chip.done{background:var(--ok-soft);border-color:var(--ok);color:var(--ok)}
+.chip.count{background:transparent;border-color:transparent;color:var(--ink-3);padding-left:0;font-family:"IBM Plex Mono",monospace;letter-spacing:0;text-transform:none;font-weight:600}
+
+.btn{border:1px solid var(--line-strong);background:var(--surface);border-radius:8px;padding:7px 12px;font-weight:600;font-size:13.5px;cursor:pointer;display:inline-flex;align-items:center;gap:7px;text-decoration:none;color:inherit;transition:background .14s}
+.btn:hover{background:var(--surface-2)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.primary{background:var(--brand);border-color:var(--brand);color:var(--brand-on)}
+.btn.primary:hover{filter:brightness(1.07)}
+.btn.sm{padding:5px 10px;font-size:12.5px}
+.btn.danger{color:var(--bad);border-color:var(--bad)}
+.btn.danger:hover{background:var(--bad-soft)}
+.btn.armed{background:var(--bad-soft);border-color:var(--bad);color:var(--bad)}
+
+.tablewrap{overflow-x:auto;max-height:46vh;overflow-y:auto}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+thead th{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);font-family:"Barlow Condensed",sans-serif;font-weight:600;font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);white-space:nowrap;position:sticky;top:0;background:var(--surface)}
+tbody td{padding:7px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+tbody tr:last-child td{border-bottom:none}
+td.k{font-family:"IBM Plex Mono",monospace;font-weight:600}
+td.d{font-family:"IBM Plex Mono",monospace;color:var(--ink-2);font-size:12.5px}
+
+textarea{width:100%;height:190px;padding:10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface-2);font-family:"IBM Plex Mono",monospace;font-size:12px;white-space:pre;overflow-wrap:normal;overflow-x:auto;resize:vertical;line-height:1.45}
+.empty{padding:56px 24px;text-align:center;color:var(--ink-3)}
+.empty .big{font-family:"Barlow Condensed",sans-serif;font-size:22px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2);margin-bottom:6px}
+.note{font-size:12.5px;color:var(--ink-3);line-height:1.5}
+.note code{font-family:"IBM Plex Mono",monospace;background:var(--surface-2);padding:1px 5px;border-radius:4px;font-size:11.5px}
+.bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:12px 14px;border-top:1px solid var(--line);background:var(--surface-2)}
+.bar .spacer{flex:1}
+.err{margin:14px;padding:10px 12px;border-radius:8px;background:var(--bad-soft);border:1px solid var(--bad);color:var(--bad);font-size:13px;font-weight:500}
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:var(--slab);color:var(--slab-on);padding:10px 18px;border-radius:999px;font-size:13.5px;font-weight:600;box-shadow:var(--shadow);z-index:80;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;max-width:90vw;text-align:center}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(-4px)}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="mark"><i class="diamond"></i><b>Scan Batches</b><small>Ray Cammack Shows</small></div>
+  <div class="spacer"></div>
+  <div class="pulse" id="pulse"><i></i><span id="pulseText">Live</span></div>
+  <div class="tally">
+    <div><div class="n" id="tBatches">0</div><div class="l">Batches</div></div>
+    <div><div class="n" id="tRows">0</div><div class="l">Devices</div></div>
+    <div><div class="n" id="tPending" style="color:var(--warn)">0</div><div class="l">Not imported</div></div>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <header>
+      <span class="eyebrow">As they land</span>
+      <div style="flex:1"></div>
+      <button class="btn sm" id="btnRefresh">Refresh</button>
+    </header>
+    <div id="listErr"></div>
+    <div class="blist" id="blist"></div>
+    <div class="empty" id="listEmpty">
+      <div class="big">No batches yet</div>
+      <div>Build a CSV on a handheld and it appears here within a few seconds.</div>
+    </div>
+  </div>
+
+  <div class="card" id="detailCard">
+    <header>
+      <span class="eyebrow" id="detailTitle">Batch</span>
+      <div style="flex:1"></div>
+      <span class="note mono" id="detailMeta"></span>
+    </header>
+    <div id="detailBody">
+      <div class="empty">
+        <div class="big">Pick a batch</div>
+        <div>Its devices and the exact CSV the handheld produced show up here.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+"use strict";
+/* The token is public by construction — this page and the Scan Station are both
+   static files anyone with the URL can read. It keeps drive-by traffic out and
+   nothing more; treat batch contents accordingly. */
+const TOKEN = "rcs-scan-2026";
+const API = "/scan-batches";
+const POLL_MS = 10000;
+
+const $ = function(id){ return document.getElementById(id); };
+const esc = function(s){ return String(s==null?"":s).replace(/[&<>"']/g,function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]; }); };
+const H = {"X-Scan-Token": TOKEN};
+
+let batches = [], selected = null, detail = null, seen = new Set(), firstLoad = true, failures = 0;
+
+let toastTimer = null;
+function toast(m){
+  const t = $("toast"); t.textContent = m; t.classList.add("show");
+  clearTimeout(toastTimer); toastTimer = setTimeout(function(){ t.classList.remove("show"); }, 2400);
+}
+function when(iso){
+  const d = new Date(iso), now = new Date();
+  const mins = Math.floor((now - d) / 60000);
+  if(mins < 1) return "just now";
+  if(mins < 60) return mins + "m ago";
+  if(d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+  return d.toLocaleDateString([], {month:"short", day:"numeric"}) + " " + d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+}
+
+async function load(){
+  try{
+    const res = await fetch(API + "?limit=200", {headers:H});
+    if(!res.ok) throw new Error(res.status === 401 ? "The hub rejected this page's token." : "Hub returned " + res.status);
+    const next = await res.json();
+    failures = 0; $("listErr").innerHTML = "";
+    const fresh = [];
+    next.forEach(function(b){ if(!firstLoad && !seen.has(b.id)) fresh.push(b.id); seen.add(b.id); });
+    batches = next; firstLoad = false;
+    renderList(fresh);
+    if(fresh.length) toast(fresh.length === 1 ? "New batch just landed" : fresh.length + " new batches landed");
+    setPulse(true);
+  }catch(err){
+    failures++;
+    setPulse(false);
+    if(failures === 1 || failures % 6 === 0){
+      $("listErr").innerHTML = '<div class="err">' + esc(err.message || "Can't reach the hub") + ' Retrying every ' + (POLL_MS/1000) + 's.</div>';
+    }
+  }
+}
+function setPulse(ok){
+  $("pulse").className = "pulse" + (ok ? "" : " stale");
+  $("pulseText").textContent = ok ? "Live" : "Offline";
+}
+
+function renderList(fresh){
+  const rows = batches.reduce(function(a,b){ return a + b.row_count; }, 0);
+  const pending = batches.filter(function(b){ return !b.imported_at; }).length;
+  $("tBatches").textContent = batches.length;
+  $("tRows").textContent = rows;
+  $("tPending").textContent = pending;
+  $("listEmpty").style.display = batches.length ? "none" : "block";
+
+  $("blist").innerHTML = batches.map(function(b){
+    const sum = Object.keys(b.summary || {}).sort().map(function(k){
+      return '<span class="chip">' + esc(k) + ' ' + b.summary[k] + '</span>';
+    }).join("");
+    return '<button class="b' + ((fresh||[]).indexOf(b.id) >= 0 ? " fresh" : "") + '" data-id="' + b.id + '" aria-current="' + (b.id === selected) + '">'
+      + '<span class="r1"><span class="who">' + esc(b.scanner || "Unnamed scanner") + '</span>'
+      + '<span class="when">' + esc(when(b.created_at)) + '</span></span>'
+      + '<span class="r2"><span class="chip count">' + b.row_count + ' device' + (b.row_count === 1 ? "" : "s") + '</span>'
+      + sum + (b.imported_at ? '<span class="chip done">Imported</span>' : '') + '</span>'
+      + (b.note ? '<span class="r2 note">' + esc(b.note) + '</span>' : '')
+      + '</button>';
+  }).join("");
+}
+
+$("blist").addEventListener("click", function(e){
+  const b = e.target.closest("[data-id]");
+  if(b) select(b.getAttribute("data-id"));
+});
+$("btnRefresh").addEventListener("click", function(){ load(); if(selected) openDetail(selected); });
+
+async function select(id){
+  selected = id;
+  renderList([]);
+  await openDetail(id);
+}
+
+async function openDetail(id){
+  $("detailBody").innerHTML = '<div class="empty"><div class="big">Loading…</div></div>';
+  try{
+    const res = await fetch(API + "/" + id, {headers:H});
+    if(!res.ok) throw new Error("Hub returned " + res.status);
+    detail = await res.json();
+  }catch(err){
+    $("detailBody").innerHTML = '<div class="err">' + esc(err.message) + '</div>';
+    return;
+  }
+  const d = detail;
+  const cols = [];
+  (d.rows || []).forEach(function(r){ Object.keys(r).forEach(function(k){ if(cols.indexOf(k) < 0) cols.push(k); }); });
+  const order = ["asset_tag","category","model","primary_serial","area","owner","status","manufacturer"];
+  cols.sort(function(a,b){
+    const ia = order.indexOf(a), ib = order.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+  });
+
+  $("detailTitle").textContent = d.scanner || "Unnamed scanner";
+  $("detailMeta").textContent = d.row_count + " devices · " + when(d.created_at);
+
+  $("detailBody").innerHTML =
+    '<div class="tablewrap"><table><thead><tr>'
+    + cols.map(function(c){ return '<th>' + esc(c) + '</th>'; }).join("")
+    + '</tr></thead><tbody>'
+    + (d.rows || []).map(function(r){
+        return '<tr>' + cols.map(function(c){
+          const v = r[c] == null || r[c] === "" ? "—" : r[c];
+          return '<td class="' + (c === "asset_tag" ? "k" : "d") + '">' + esc(v) + '</td>';
+        }).join("") + '</tr>';
+      }).join("")
+    + '</tbody></table></div>'
+    + '<div style="padding:14px"><div class="eyebrow" style="margin-bottom:8px">Exact CSV the handheld built</div>'
+    + '<textarea id="csvBox" readonly spellcheck="false">' + esc(d.csv || "") + '</textarea></div>'
+    + '<div class="bar">'
+      + '<a class="btn primary" href="' + API + '/' + d.id + '/csv?token=' + encodeURIComponent(TOKEN) + '">Download CSV</a>'
+      + '<button class="btn" id="btnCopyCsv">Copy CSV</button>'
+      + '<button class="btn" id="btnMark">' + (d.imported_at ? "Mark not imported" : "Mark imported") + '</button>'
+      + '<div class="spacer"></div>'
+      + '<button class="btn danger sm" id="btnDel">Delete batch</button>'
+    + '</div>'
+    + '<p class="note" style="padding:0 14px 14px;margin:0">Marking a batch imported is just a note to yourself — it stops a run being pushed into the inventory app twice, which would be rejected as duplicate asset tags.</p>';
+
+  $("btnCopyCsv").addEventListener("click", function(){
+    const ta = $("csvBox");
+    const done = function(){ toast("CSV copied"); };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(ta.value).then(done, function(){ ta.select(); document.execCommand("copy"); done(); });
+    } else { ta.select(); document.execCommand("copy"); done(); }
+  });
+
+  $("btnMark").addEventListener("click", async function(){
+    const undo = !!detail.imported_at;
+    this.disabled = true;
+    try{
+      const r = await fetch(API + "/" + detail.id + "/imported" + (undo ? "?undo=true" : ""), {method:"POST", headers:H});
+      if(!r.ok) throw new Error("Hub returned " + r.status);
+      toast(undo ? "Marked not imported" : "Marked imported");
+      await load(); await openDetail(detail.id);
+    }catch(err){ toast(err.message); this.disabled = false; }
+  });
+
+  /* two-step: confirm() is unreliable in embedded webviews, and deleting a
+     counting run someone just walked a lot for deserves a deliberate second tap */
+  let armed = false, armTimer = null;
+  $("btnDel").addEventListener("click", async function(){
+    const b = this;
+    if(!armed){
+      armed = true; b.textContent = "Delete — tap again"; b.classList.add("armed");
+      clearTimeout(armTimer);
+      armTimer = setTimeout(function(){ armed = false; b.textContent = "Delete batch"; b.classList.remove("armed"); }, 4000);
+      return;
+    }
+    clearTimeout(armTimer); b.disabled = true;
+    try{
+      const r = await fetch(API + "/" + detail.id, {method:"DELETE", headers:H});
+      if(!r.ok && r.status !== 204) throw new Error("Hub returned " + r.status);
+      toast("Batch deleted");
+      selected = null; detail = null;
+      $("detailBody").innerHTML = '<div class="empty"><div class="big">Pick a batch</div><div>Its devices and the exact CSV show up here.</div></div>';
+      $("detailTitle").textContent = "Batch"; $("detailMeta").textContent = "";
+      await load();
+    }catch(err){ toast(err.message); b.disabled = false; }
+  });
+}
+
+load();
+setInterval(load, POLL_MS);
+document.addEventListener("visibilitychange", function(){ if(!document.hidden) load(); });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,1238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#181312">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23181312'/%3E%3Crect x='10' y='10' width='12' height='12' rx='2' fill='%23C8102E' transform='rotate(45 16 16)'/%3E%3C/svg%3E">
+<title>RCS Scan Station</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+/* ─── tokens ─── light is the base; every colour is defined here ─── */
+:root{
+  --bg:#F4F1EE; --surface:#FFFFFF; --surface-2:#EAE5E0; --surface-3:#DED7D0;
+  --line:#D8D1CA; --line-strong:#BCB2AA;
+  --ink:#191413; --ink-2:#5E5450; --ink-3:#8B807A;
+  --brand:#C8102E; --brand-on:#FFFFFF; --brand-soft:rgba(200,16,46,.10);
+  --ok:#116B50; --ok-soft:rgba(17,107,80,.13);
+  --warn:#95560A; --warn-soft:rgba(149,86,10,.15);
+  --bad:#B01223; --bad-soft:rgba(176,18,35,.12);
+  --slab:#181312; --slab-on:#F6F2EF; --slab-dim:#9C918B; --slab-line:#38302E;
+  --shadow:0 1px 2px rgba(25,20,19,.05), 0 10px 26px -14px rgba(25,20,19,.22);
+  --r:10px;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#13100F; --surface:#1C1817; --surface-2:#241F1E; --surface-3:#2E2726;
+    --line:#332B2A; --line-strong:#4B403E;
+    --ink:#F3EEEA; --ink-2:#A99E98; --ink-3:#7C716C;
+    --brand:#FF5065; --brand-on:#2A0308; --brand-soft:rgba(255,80,101,.14);
+    --ok:#41D394; --ok-soft:rgba(65,211,148,.14);
+    --warn:#F0AA4B; --warn-soft:rgba(240,170,75,.15);
+    --bad:#FF6B78; --bad-soft:rgba(255,107,120,.14);
+    --slab:#0C0A09; --slab-on:#F6F2EF; --slab-dim:#8E837D; --slab-line:#2C2523;
+    --shadow:0 1px 2px rgba(0,0,0,.5), 0 10px 26px -14px rgba(0,0,0,.8);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#13100F; --surface:#1C1817; --surface-2:#241F1E; --surface-3:#2E2726;
+  --line:#332B2A; --line-strong:#4B403E;
+  --ink:#F3EEEA; --ink-2:#A99E98; --ink-3:#7C716C;
+  --brand:#FF5065; --brand-on:#2A0308; --brand-soft:rgba(255,80,101,.14);
+  --ok:#41D394; --ok-soft:rgba(65,211,148,.14);
+  --warn:#F0AA4B; --warn-soft:rgba(240,170,75,.15);
+  --bad:#FF6B78; --bad-soft:rgba(255,107,120,.14);
+  --slab:#0C0A09; --slab-on:#F6F2EF; --slab-dim:#8E837D; --slab-line:#2C2523;
+  --shadow:0 1px 2px rgba(0,0,0,.5), 0 10px 26px -14px rgba(0,0,0,.8);
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:"Barlow",system-ui,-apple-system,"Segoe UI",sans-serif;
+  font-size:15px; line-height:1.5; -webkit-font-smoothing:antialiased;
+}
+.mono{font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
+.eyebrow{
+  font-family:"Barlow Condensed",sans-serif; font-weight:600; font-size:12px;
+  letter-spacing:.14em; text-transform:uppercase; color:var(--ink-3);
+}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+/* ─── shell ─── */
+.top{
+  display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+  padding:14px 20px;border-bottom:1px solid var(--line);
+  background:var(--surface);position:sticky;top:0;z-index:20;
+}
+.mark{display:flex;align-items:baseline;gap:9px}
+.mark b{font-family:"Barlow Condensed",sans-serif;font-weight:700;font-size:21px;letter-spacing:.05em;text-transform:uppercase}
+.mark .diamond{width:11px;height:11px;background:var(--brand);transform:rotate(45deg);border-radius:2px;align-self:center;flex:none}
+.mark small{color:var(--ink-3);font-size:12px;letter-spacing:.1em;text-transform:uppercase;font-weight:600}
+.top .spacer{flex:1}
+.tally{display:flex;gap:20px;align-items:center}
+.tally div{text-align:right}
+.tally .n{font-family:"IBM Plex Mono",monospace;font-weight:600;font-size:19px;line-height:1;font-variant-numeric:tabular-nums}
+.tally .l{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
+
+.wrap{display:grid;grid-template-columns:minmax(330px,400px) minmax(0,1fr);gap:20px;padding:20px;align-items:start;max-width:1560px;margin:0 auto}
+@media (max-width:1000px){.wrap{grid-template-columns:1fr;padding:14px;gap:14px}}
+.rail{display:flex;flex-direction:column;gap:14px;position:sticky;top:69px}
+@media (max-width:1000px){.rail{position:static}}
+
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
+.card>header{padding:11px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+.card>.body{padding:14px}
+
+/* ─── capture slab ─── */
+.slab{
+  background:var(--slab);border:1px solid var(--slab-line);border-radius:var(--r);
+  padding:18px;color:var(--slab-on);box-shadow:var(--shadow);
+  transition:box-shadow .18s ease, border-color .18s ease;
+}
+.slab.flash-ok{border-color:var(--ok);box-shadow:0 0 0 3px var(--ok-soft),var(--shadow)}
+.slab.flash-bad{border-color:var(--bad);box-shadow:0 0 0 3px var(--bad-soft),var(--shadow)}
+.slab.flash-warn{border-color:var(--warn);box-shadow:0 0 0 3px var(--warn-soft),var(--shadow)}
+
+.lamp-row{display:flex;align-items:center;gap:9px;margin-bottom:12px}
+.lamp{width:9px;height:9px;border-radius:50%;background:var(--slab-dim);flex:none}
+.lamp.live{background:var(--ok);box-shadow:0 0 0 4px var(--ok-soft);animation:pulse 2.4s ease-in-out infinite}
+.lamp.idle{background:var(--warn);box-shadow:0 0 0 4px var(--warn-soft)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+.lamp-row span{font-family:"Barlow Condensed",sans-serif;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--slab-dim);font-weight:600}
+.lamp-row .steps{margin-left:auto;display:flex;gap:4px}
+.lamp-row .steps i{width:16px;height:3px;border-radius:2px;background:var(--slab-line);display:block}
+.lamp-row .steps i.done{background:var(--ok)}
+.lamp-row .steps i.now{background:var(--warn)}
+
+.state{
+  font-family:"Barlow Condensed",sans-serif;font-weight:700;
+  font-size:clamp(28px,4.6vw,40px);line-height:.98;letter-spacing:.015em;
+  text-transform:uppercase;text-wrap:balance;margin:0 0 6px;
+}
+.state.mid{color:var(--warn)}
+.substate{color:var(--slab-dim);font-size:13.5px;min-height:20px;margin-bottom:14px}
+.substate b{color:var(--slab-on);font-family:"IBM Plex Mono",monospace;font-weight:500}
+
+.gun{position:relative}
+.gun input{
+  width:100%;padding:13px 14px;border-radius:8px;
+  background:rgba(255,255,255,.055);border:1px solid var(--slab-line);
+  color:var(--slab-on);font-family:"IBM Plex Mono",monospace;font-size:17px;letter-spacing:.06em;
+}
+.gun input::placeholder{color:var(--slab-dim);letter-spacing:0;font-family:"Barlow",sans-serif}
+.gun input:focus{border-color:var(--brand);background:rgba(255,255,255,.085);outline:none}
+.gun.blurred input{border-color:var(--warn)}
+.gun-hint{margin-top:8px;font-size:12px;color:var(--slab-dim);display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.gun-hint kbd{font-family:"IBM Plex Mono",monospace;font-size:11px;background:rgba(255,255,255,.08);border:1px solid var(--slab-line);border-radius:4px;padding:1px 5px}
+.slab-acts{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+
+/* ─── buttons ─── */
+.btn{
+  border:1px solid var(--line-strong);background:var(--surface);border-radius:8px;
+  padding:8px 13px;font-weight:600;font-size:13.5px;cursor:pointer;
+  display:inline-flex;align-items:center;gap:7px;transition:background .14s,border-color .14s;
+}
+.btn:hover{background:var(--surface-2)}
+.btn:disabled{opacity:.42;cursor:not-allowed}
+.btn.primary{background:var(--brand);border-color:var(--brand);color:var(--brand-on)}
+.btn.primary:hover{filter:brightness(1.07)}
+.btn.ghost-dark{background:rgba(255,255,255,.06);border-color:var(--slab-line);color:var(--slab-on)}
+.btn.ghost-dark:hover{background:rgba(255,255,255,.13)}
+.btn.sm{padding:5px 10px;font-size:12.5px}
+.btn.armed{background:var(--bad-soft);border-color:var(--bad);color:var(--bad)}
+.btn.armed:hover{background:var(--bad-soft);filter:brightness(.97)}
+.btn.icon{padding:5px 9px}
+
+/* ─── segmented pickers ─── */
+.seg{display:flex;flex-wrap:wrap;gap:6px}
+.seg button{
+  flex:1 1 90px;border:1px solid var(--line-strong);background:var(--surface-2);border-radius:8px;
+  padding:11px 8px;cursor:pointer;font-family:"Barlow Condensed",sans-serif;
+  font-weight:600;font-size:16px;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--ink-2);transition:all .14s;
+}
+.seg button:hover{border-color:var(--ink-3)}
+.seg button[aria-pressed="true"]{background:var(--brand);border-color:var(--brand);color:var(--brand-on)}
+.seg.quiet button{font-family:"IBM Plex Mono",monospace;font-size:13px;letter-spacing:.02em;text-transform:none;padding:8px}
+
+/* ─── fields ─── */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.f{display:flex;flex-direction:column;gap:4px}
+/* direct children only — a .toggle label nested in .f must not inherit this */
+.f > label:not(.toggle),.flabel{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
+.f select,.f input,textarea,.inp{
+  width:100%;padding:7px 9px;border-radius:7px;border:1px solid var(--line-strong);
+  background:var(--surface);font-size:14px;
+}
+textarea{font-family:"IBM Plex Mono",monospace;font-size:12.5px;resize:vertical;line-height:1.45}
+.toggle{display:flex;align-items:flex-start;gap:9px;padding:7px 0;cursor:pointer}
+.toggle input{margin-top:3px;accent-color:var(--brand);flex:none;width:16px;height:16px}
+.toggle span{font-size:13px}
+.toggle span em{display:block;font-style:normal;color:var(--ink-3);font-size:12px;line-height:1.4}
+.toggle.boxed{border:1px solid var(--line-strong);background:var(--surface-2);border-radius:8px;padding:10px 12px;transition:border-color .14s,background .14s}
+.toggle.boxed:hover{border-color:var(--ink-3)}
+.toggle.boxed:has(input:checked){border-color:var(--brand);background:var(--brand-soft)}
+.toggle.boxed span{font-weight:600}
+
+details.fold{border-top:1px solid var(--line)}
+details.fold summary{
+  list-style:none;cursor:pointer;padding:11px 14px;display:flex;align-items:center;gap:8px;
+  font-family:"Barlow Condensed",sans-serif;font-weight:600;font-size:13px;
+  letter-spacing:.13em;text-transform:uppercase;color:var(--ink-2);
+}
+details.fold summary::-webkit-details-marker{display:none}
+details.fold summary::before{content:"+";font-family:"IBM Plex Mono",monospace;color:var(--ink-3)}
+details.fold[open] summary::before{content:"–"}
+details.fold .body{padding:0 14px 14px}
+
+/* ─── manifest ─── */
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+thead th{
+  text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);
+  font-family:"Barlow Condensed",sans-serif;font-weight:600;font-size:12px;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);white-space:nowrap;
+  position:sticky;top:0;background:var(--surface);z-index:2;
+}
+tbody td{padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tbody tr:last-child td{border-bottom:none}
+tbody tr.is-new td{animation:slide .35s ease}
+@keyframes slide{from{background:var(--ok-soft)}to{background:transparent}}
+td.stripe{padding:0;width:4px}
+td.stripe i{display:block;width:4px;height:38px;background:var(--ok)}
+tr[data-flag="dup"] td.stripe i{background:var(--bad)}
+tr[data-flag="incomplete"] td.stripe i{background:var(--warn)}
+td.tag{font-family:"IBM Plex Mono",monospace;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+td.ser{font-family:"IBM Plex Mono",monospace;color:var(--ink-2);white-space:nowrap;font-size:13px}
+td.ser.empty input{color:var(--warn)}
+td .cell-edit{background:transparent;border:1px dashed transparent;border-radius:5px;padding:2px 5px;margin:-2px -5px;cursor:text;font:inherit;color:inherit;width:100%;min-width:74px}
+td .cell-edit:hover{border-color:var(--line-strong)}
+td .cell-edit:focus{border-style:solid;border-color:var(--brand);background:var(--surface-2);outline:none}
+.chip{
+  display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:700;
+  letter-spacing:.07em;text-transform:uppercase;border:1px solid var(--line-strong);
+  background:var(--surface-2);color:var(--ink-2);white-space:nowrap;
+}
+.chip.flag-dup{background:var(--bad-soft);border-color:var(--bad);color:var(--bad)}
+.chip.flag-incomplete{background:var(--warn-soft);border-color:var(--warn);color:var(--warn)}
+.x{border:none;background:transparent;color:var(--ink-3);cursor:pointer;padding:4px 7px;border-radius:6px;font-size:15px;line-height:1}
+.x:hover{background:var(--bad-soft);color:var(--bad)}
+
+.empty-state{padding:52px 24px;text-align:center;color:var(--ink-3)}
+.empty-state .big{font-family:"Barlow Condensed",sans-serif;font-size:22px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-2);margin-bottom:6px}
+
+.footbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 14px;border-top:1px solid var(--line);background:var(--surface-2);border-radius:0 0 var(--r) var(--r)}
+.footbar .spacer{flex:1}
+.warnline{display:flex;gap:9px;align-items:flex-start;padding:10px 12px;border-radius:8px;background:var(--warn-soft);border:1px solid var(--warn);color:var(--warn);font-size:13px;font-weight:500;margin:14px}
+.warnline.bad{background:var(--bad-soft);border-color:var(--bad);color:var(--bad)}
+.warnline b{font-family:"IBM Plex Mono",monospace}
+
+/* ─── sheets ─── */
+.sheet{position:fixed;inset:0;background:rgba(10,7,7,.55);display:none;z-index:60;padding:20px;overflow:auto}
+.sheet[open]{display:block}
+.sheet .panel{max-width:880px;margin:16px auto;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
+.sheet .phead{padding:14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;position:sticky;top:0;background:var(--surface);border-radius:var(--r) var(--r) 0 0;z-index:2}
+#csvOut{height:220px;white-space:pre;overflow-wrap:normal;overflow-x:auto}
+.steps{counter-reset:s;list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:9px}
+.steps li{counter-increment:s;display:flex;gap:10px;font-size:13.5px;color:var(--ink-2)}
+.steps li::before{content:counter(s);flex:none;width:20px;height:20px;border-radius:50%;background:var(--brand-soft);color:var(--brand);font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:600;display:grid;place-items:center;margin-top:1px}
+.note{font-size:12.5px;color:var(--ink-3);line-height:1.5}
+.note code{font-family:"IBM Plex Mono",monospace;background:var(--surface-2);padding:1px 5px;border-radius:4px;font-size:11.5px}
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:var(--slab);color:var(--slab-on);padding:10px 18px;border-radius:999px;font-size:13.5px;font-weight:600;box-shadow:var(--shadow);z-index:80;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;max-width:90vw;text-align:center}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(-4px)}
+
+/* ─── category editor ─── */
+.catrow{border:1px solid var(--line);border-radius:var(--r);margin-bottom:12px;overflow:hidden}
+.catrow>.h{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface-2);flex-wrap:wrap}
+.catrow>.h .name{font-family:"Barlow Condensed",sans-serif;font-weight:700;font-size:17px;letter-spacing:.06em;text-transform:uppercase}
+.catrow>.h .spacer{flex:1}
+.catrow>.b{padding:12px;display:flex;flex-direction:column;gap:12px}
+.catrow.off{opacity:.5}
+.fieldrow{display:grid;grid-template-columns:1.1fr 1fr 1.1fr 34px;gap:8px;align-items:end}
+@media (max-width:640px){.fieldrow{grid-template-columns:1fr 1fr;}.fieldrow .del{grid-column:2;justify-self:end}}
+.tiny{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
+</style>
+
+</head>
+<body>
+<header class="top">
+  <div class="mark">
+    <i class="diamond"></i>
+    <b>Scan Station</b>
+    <small>Ray Cammack Shows</small>
+  </div>
+  <div class="spacer"></div>
+  <div class="tally">
+    <div><div class="n" id="tCount">0</div><div class="l">Captured</div></div>
+    <div><div class="n" id="tSerial">0</div><div class="l">With serial</div></div>
+    <div><div class="n" id="tDup" style="color:var(--bad)">0</div><div class="l">Conflicts</div></div>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="rail">
+
+    <section class="slab" id="slab">
+      <div class="lamp-row">
+        <i class="lamp live" id="lamp"></i><span id="lampText">Listening for scanner</span>
+        <span class="steps" id="stepDots"></span>
+      </div>
+      <h1 class="state" id="stateLine">Scan asset tag</h1>
+      <p class="substate" id="subLine">Trigger the sticker on the next device.</p>
+      <div class="gun" id="gunWrap">
+        <input id="gun" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Pull the trigger — or type and press Enter">
+      </div>
+      <div class="gun-hint">
+        <span id="lastEcho">No scans yet this session</span>
+        <span><kbd>Esc</kbd> cancel · <kbd>⌘Z</kbd> undo</span>
+      </div>
+      <div class="slab-acts">
+        <button class="btn ghost-dark sm" id="btnSkipStep" disabled>Skip this step</button>
+        <button class="btn ghost-dark sm" id="btnSaveNow" disabled>Save now</button>
+        <button class="btn ghost-dark sm" id="btnUndo" disabled>Undo last</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <header>
+        <span class="eyebrow">Stamped on every scan</span>
+        <div style="flex:1"></div>
+        <span class="note mono" id="groupCount">0 in this group</span>
+      </header>
+      <div class="body" style="display:flex;flex-direction:column;gap:14px">
+        <div class="f">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="flabel">Category</span>
+            <div style="flex:1"></div>
+            <button class="btn sm" id="btnCats">Edit categories</button>
+          </div>
+          <div class="seg" id="catSeg"></div>
+        </div>
+        <div class="f" id="modelWrap">
+          <label>Model</label>
+          <div class="seg quiet" id="modelSeg"></div>
+        </div>
+        <div class="f">
+          <label>Serial number</label>
+          <label class="toggle boxed"><input type="checkbox" id="optSerial"><span>Capture a serial<em>An extra trigger per device. The default comes from the category.</em></span></label>
+        </div>
+        <div id="batchFields"></div>
+        <div class="f">
+          <label for="dArea">Area — applies from here forward</label>
+          <input id="dArea" placeholder="e.g. Darrell · leave blank for none">
+        </div>
+        <p class="note" style="margin:0">Each row keeps the category, model, area and fields that were set the moment it was scanned. Change them mid-session and only later scans pick up the new values.</p>
+      </div>
+
+      <details class="fold" id="foldDefaults">
+        <summary>Fixed for this batch</summary>
+        <div class="body">
+          <div class="grid2">
+            <div class="f"><label for="dOwner">Owner</label><select id="dOwner"></select></div>
+            <div class="f"><label for="dStatus">Status</label><select id="dStatus"></select></div>
+          </div>
+          <p class="note" style="margin:10px 0 0">Manufacturer comes from the category. Venue is left blank on every row — assign it in the app once these are in.</p>
+        </div>
+      </details>
+
+      <details class="fold" id="foldGuard">
+        <summary>Duplicate guard</summary>
+        <div class="body">
+          <p class="note" style="margin:0 0 8px">Paste the asset tags already in the database — a column, a list, or a whole devices CSV. Any 3–6 digit number gets picked up.</p>
+          <textarea id="knownTags" rows="4" placeholder="1007&#10;1008&#10;1010…"></textarea>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:8px">
+            <button class="btn sm" id="btnClearKnown">Clear</button>
+            <span class="note mono" id="knownCount">0 tags loaded</span>
+          </div>
+        </div>
+      </details>
+
+      <details class="fold" id="foldBehaviour">
+        <summary>Scanner behaviour</summary>
+        <div class="body">
+          <label class="toggle"><input type="checkbox" id="optSmart" checked><span>Sort scans automatically<em>A 3–6 digit code reads as an asset tag, anything else as a serial — so out-of-order scans still land right.</em></span></label>
+          <label class="toggle"><input type="checkbox" id="optIdle" checked><span>Accept scans with no Enter suffix<em>Commits a fast keystroke burst after a short pause, for guns not configured to send Enter.</em></span></label>
+          <label class="toggle"><input type="checkbox" id="optBeep" checked><span>Audio feedback<em>Rising tone accepted, low buzz rejected.</em></span></label>
+        </div>
+      </details>
+    </section>
+
+    <section class="card">
+      <details class="fold" style="border-top:none">
+        <summary>Running it on a handheld</summary>
+        <div class="body">
+          <ol class="steps">
+            <li>Any Android terminal with a laser or imager engine works the same way a USB gun does — it types the decoded code into whatever field has focus.</li>
+            <li>On Zebra, open DataWedge, pick the profile bound to the browser, and set Keystroke output on with an Enter action suffix.</li>
+            <li>On other terminals look for "keyboard emulation", "keyboard wedge" or "HID output" in the scanner settings app, and add a carriage-return suffix.</li>
+            <li>No Enter suffix available? Leave <em>Accept scans with no Enter suffix</em> on and the station commits each burst itself.</li>
+            <li>Tap the scan box once so it holds focus, then work the trigger. The lamp turns amber if focus is ever lost.</li>
+          </ol>
+        </div>
+      </details>
+    </section>
+  </div>
+
+  <div class="card" style="overflow:hidden">
+    <header>
+      <span class="eyebrow">Manifest</span>
+      <div style="flex:1"></div>
+      <button class="btn sm" id="btnClearAll">Clear session</button>
+    </header>
+    <div id="alerts"></div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr id="headRow"></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="empty-state" id="emptyState">
+        <div class="big">Nothing captured yet</div>
+        <div>Click the scan box, then pull the trigger on your first sticker.</div>
+      </div>
+    </div>
+    <div class="footbar">
+      <button class="btn primary" id="btnExport" disabled>Build import CSV</button>
+      <span class="note" id="footNote">Exports the 20 columns the bulk importer expects.</span>
+      <div class="spacer"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ export ══ -->
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+  <div class="panel">
+    <div class="phead">
+      <span class="eyebrow" id="sheetTitle">Import CSV</span>
+      <div style="flex:1"></div>
+      <button class="btn sm" id="btnCloseSheet">Close</button>
+    </div>
+    <div style="padding:14px;display:flex;flex-direction:column;gap:12px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn primary" id="btnSave">Save .csv file</button>
+        <button class="btn" id="btnCopy">Copy to clipboard</button>
+        <label class="toggle" style="margin-left:4px;padding:0"><input type="checkbox" id="optCleanOnly"><span>Leave conflicting rows out</span></label>
+      </div>
+      <textarea id="csvOut" class="mono" readonly spellcheck="false"></textarea>
+      <div id="exportNotes"></div>
+      <ol class="steps">
+        <li>Save or copy the CSV. If you copy it, paste into a plain text editor and save the file as <code>.csv</code>.</li>
+        <li>In Device Inventory open <b>Devices → Import CSV</b> and choose the file.</li>
+        <li>The importer validates every row before it writes anything — read the preview, then confirm.</li>
+      </ol>
+      <p class="note">The first 20 columns are the app's template, in its order. Any custom field you mapped to <code>details</code> is appended as a <code>details.&lt;key&gt;</code> column, which the importer also accepts.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ══ category editor ══ -->
+<div class="sheet" id="catSheet" role="dialog" aria-modal="true" aria-labelledby="catTitle">
+  <div class="panel">
+    <div class="phead">
+      <span class="eyebrow" id="catTitle">Categories &amp; fields</span>
+      <div style="flex:1"></div>
+      <button class="btn sm" id="btnAddCat">Add category</button>
+      <button class="btn sm" id="btnCloseCats">Done</button>
+    </div>
+    <div style="padding:14px">
+      <p class="note" style="margin:0 0 14px">Categories must be ones the inventory app already knows, or the import is rejected — so the list below is fixed to its nine. Everything else here is yours: which ones show as buttons, the models each offers, whether it asks for a serial, and any extra fields to capture.</p>
+      <div id="catList"></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+"use strict";
+
+/* ── vocabularies, read from the app's own pickers ── */
+const CATEGORIES = ["battery","kds","kiosk","network","other","payment","pos","printer","scanner"];
+const CAT_LABEL = {battery:"Battery",kds:"KDS",kiosk:"Kiosk",network:"Network",other:"Other",payment:"Payment",pos:"POS",printer:"Printer",scanner:"Scanner"};
+const MANUFACTURERS = ["Zebra","Citizen","Epson","Inseego","Meraki","Nexus","PAX","Starlink","Sunmi","TPlink","UniFi","Verizon"];
+const OWNERS = ["RCS Technology","RCS Corporate","2G3B Concessions","ARH Concessions","BBrews","FunPass+","J&A Concessions","Odyssey Foods","Trinity Concessions"];
+const STATUSES = ["active","in_repair","retired","in_transit","in_storage","missing","sold"];
+const STATUS_LABEL = {active:"Active",in_repair:"In Repair",retired:"Retired",in_transit:"In Transit",in_storage:"In Storage",missing:"Missing",sold:"Sold"};
+const HEADERS = ["asset_tag","category","status","manufacturer","model","manufacturer_model_code","part_number","primary_serial","secondary_serial","fcc_id","ic_id","contains_fcc_id","contains_ic_id","manufactured_date","purchase_date","warranty_expiry","enclosure_rating","owner","venue","area"];
+/* standard columns a custom field may be mapped onto (the rest are set elsewhere) */
+const TARGETS = ["details","secondary_serial","manufacturer_model_code","part_number","fcc_id","ic_id","enclosure_rating","manufactured_date","purchase_date","warranty_expiry"];
+const TARGET_LABEL = {details:"details.<key>",secondary_serial:"secondary_serial",manufacturer_model_code:"manufacturer_model_code",part_number:"part_number",fcc_id:"fcc_id",ic_id:"ic_id",enclosure_rating:"enclosure_rating",manufactured_date:"manufactured_date",purchase_date:"purchase_date",warranty_expiry:"warranty_expiry"};
+
+const KEY = "rcs-scan-station-v2", OLDKEY = "rcs-scan-station-v1";
+const $ = function(id){ return document.getElementById(id); };
+const uid = function(){ return "x" + Math.random().toString(36).slice(2,9); };
+
+function newCat(key, on, manufacturer, models, serial, fields){
+  return {key:key, on:!!on, manufacturer:manufacturer||"Zebra", models:models||[], model:(models&&models[0])||"",
+          serial:!!serial, fields:fields||[]};
+}
+function defaultCats(){
+  const c = {};
+  CATEGORIES.forEach(function(k){ c[k] = newCat(k,false,"Zebra",[],false,[]); });
+  c.battery = newCat("battery", true,  "Zebra", ["TC21","TC22"], false, []);
+  c.scanner = newCat("scanner", true,  "Zebra", ["TC21","TC22"], true,  []);
+  return c;
+}
+
+let S = {
+  rows: [],
+  cats: defaultCats(),
+  active: "battery",
+  defaults: { owner:"RCS Technology", status:"active", area:"" },
+  batch: {},                 // {catKey:{fieldId:value}}
+  opts: { smart:true, idle:true, beep:true },
+  known: "",
+  pending: null               // {cat, tag, serial, extras:[], step}
+};
+
+/* ── storage ── */
+function load(){
+  let raw = null;
+  try{ raw = localStorage.getItem(KEY); }catch(e){}
+  if(raw){
+    try{
+      const p = JSON.parse(raw);
+      S.rows = Array.isArray(p.rows) ? p.rows : [];
+      if(p.cats){ Object.keys(S.cats).forEach(function(k){ if(p.cats[k]) S.cats[k] = Object.assign(S.cats[k], p.cats[k]); }); }
+      S.active = p.active && S.cats[p.active] ? p.active : S.active;
+      S.defaults = Object.assign(S.defaults, p.defaults || {});
+      S.batch = p.batch || {};
+      S.opts = Object.assign(S.opts, p.opts || {});
+      S.known = typeof p.known === "string" ? p.known : "";
+    }catch(e){}
+    return;
+  }
+  /* migrate a v1 session so an in-progress batch is never lost */
+  try{
+    const old = localStorage.getItem(OLDKEY);
+    if(!old) return;
+    const p = JSON.parse(old);
+    S.rows = (Array.isArray(p.rows) ? p.rows : []).map(function(r){
+      return { id:r.id||uid(), tag:r.tag, serial:r.serial||"", category:r.category||"battery",
+        manufacturer:r.manufacturer||"Zebra", model:r.model||"", owner:r.owner||"", status:r.status||"active",
+        venue:"", area:r.area||"", wantSerial:!!r.wantSerial, extras:[] };
+    });
+    if(p.defaults){ S.defaults.owner = p.defaults.owner || S.defaults.owner; S.defaults.status = p.defaults.status || S.defaults.status; S.defaults.area = p.defaults.area || ""; }
+    if(p.category && S.cats[p.category]) S.active = p.category;
+    if(p.opts){ S.opts.smart = p.opts.smart !== false; S.opts.idle = p.opts.idle !== false; S.opts.beep = p.opts.beep !== false;
+                if(S.cats.scanner) S.cats.scanner.serial = p.opts.twoScan !== false; }
+    if(typeof p.known === "string") S.known = p.known;
+  }catch(e){}
+}
+function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
+
+function cat(){ return S.cats[S.active]; }
+
+/* ── scan parsing ── a sticker may carry the tag, the serial, or both ── */
+const TAG_RE = /^\d{3,6}$/;
+function looksLikeTag(v){ return TAG_RE.test(v); }
+
+function parseScan(raw){
+  let s = String(raw || "").trim();
+  if(!s) return {};
+  if(/^https?:\/\//i.test(s)){
+    try{
+      const u = new URL(s), q = u.searchParams;
+      const t = q.get("tag") || q.get("asset") || q.get("asset_tag") || "";
+      const sn = q.get("sn") || q.get("serial") || q.get("primary_serial") || "";
+      const segs = u.pathname.split("/").filter(Boolean);
+      const last = segs.length ? segs[segs.length-1] : "";
+      const tag = t || (looksLikeTag(last) ? last : "");
+      if(tag || sn) return {tag:tag, serial:sn};
+      s = last || s;
+    }catch(e){}
+  }
+  const kv = {}; let m, sawKv = false;
+  const kvRe = /\b(asset_tag|asset|tag|at|sn|serial|primary_serial|s\/n)\s*[:=]\s*([^\s,;|]+)/gi;
+  while((m = kvRe.exec(s)) !== null){
+    sawKv = true;
+    const k = m[1].toLowerCase();
+    if(k === "sn" || k === "serial" || k === "primary_serial" || k === "s/n") kv.serial = m[2]; else kv.tag = m[2];
+  }
+  if(sawKv && (kv.tag || kv.serial)) return {tag:kv.tag||"", serial:kv.serial||""};
+
+  const parts = s.split(/[\t\n\r,;|]+/).map(function(x){return x.trim();}).filter(Boolean);
+  if(parts.length >= 2){
+    const tagPart = parts.find(looksLikeTag);
+    if(tagPart){
+      const rest = parts.filter(function(p){ return p !== tagPart; });
+      return {tag:tagPart, serial:rest[0] || ""};
+    }
+    return {tag:parts[0], serial:parts[1]};
+  }
+  if(parts.length === 1 && /\s/.test(parts[0])){
+    const sp = parts[0].split(/\s+/);
+    if(sp.length === 2 && (looksLikeTag(sp[0]) || looksLikeTag(sp[1]))){
+      const t = looksLikeTag(sp[0]) ? sp[0] : sp[1];
+      return {tag:t, serial:(looksLikeTag(sp[0]) ? sp[1] : sp[0])};
+    }
+  }
+  return {single: parts[0] || s};
+}
+
+/* ── capture sequence ── */
+function serialOn(){ return $("optSerial").checked; }
+function deviceFields(c){ return (S.cats[c].fields || []).filter(function(f){ return f.scope === "device"; }); }
+function batchFields(c){ return (S.cats[c].fields || []).filter(function(f){ return f.scope === "batch"; }); }
+
+function stepsFor(c, wantSerial){
+  const st = [{kind:"tag", label:"Asset tag"}];
+  if(wantSerial) st.push({kind:"serial", label:"Serial number"});
+  deviceFields(c).forEach(function(f){ st.push({kind:"field", field:f, label:f.label || f.key}); });
+  return st;
+}
+
+function startPending(c, tag, serial){
+  S.pending = { cat:c, wantSerial:serialOn(), tag:tag, serial:serial||"", extras:[], step:0 };
+  S.pending.steps = stepsFor(c, S.pending.wantSerial);
+  S.pending.step = 1;
+  if(serial && S.pending.steps[1] && S.pending.steps[1].kind === "serial") S.pending.step = 2;
+}
+function pendingDone(){ return S.pending && S.pending.step >= S.pending.steps.length; }
+
+function commitPending(){
+  const p = S.pending;
+  if(!p) return;
+  const c = S.cats[p.cat];
+  const known = knownSet();
+  const dupDb = known.has(norm(p.tag));
+  const dupSession = S.rows.some(function(r){ return norm(r.tag) === norm(p.tag); });
+
+  S.rows.unshift({
+    id: uid(), tag:String(p.tag).trim(), serial:String(p.serial||"").trim(),
+    category:p.cat, manufacturer:c.manufacturer, model:c.model,
+    owner:S.defaults.owner, status:S.defaults.status, venue:"", area:S.defaults.area,
+    wantSerial:p.wantSerial,
+    extras: p.extras.concat(batchFields(p.cat).map(function(f){
+      return {key:f.key, label:f.label||f.key, target:f.target||"details", value:(S.batch[p.cat]&&S.batch[p.cat][f.id])||""};
+    })).filter(function(e){ return e.value !== ""; }),
+    _new:true
+  });
+  S.pending = null;
+
+  if(dupDb || dupSession){
+    beep("bad"); flash("bad");
+    toast("Tag " + p.tag + (dupDb ? " is already in the database" : " was already scanned"));
+  } else { beep("ok"); flash("ok"); }
+  setEcho(p.tag + (p.serial ? " · " + p.serial : ""));
+  render(); save();
+  setTimeout(function(){ S.rows.forEach(function(r){ r._new = false; }); }, 500);
+}
+
+function feedStep(value){
+  const p = S.pending, st = p.steps[p.step];
+  if(!st){ commitPending(); return; }
+  if(st.kind === "serial") p.serial = value;
+  else if(st.kind === "field") p.extras.push({key:st.field.key, label:st.field.label||st.field.key, target:st.field.target||"details", value:value});
+  p.step++;
+  if(pendingDone()) commitPending();
+  else { beep("half"); flash("warn"); setEcho(value); render(); }
+}
+
+function handleScan(raw){
+  const parsed = parseScan(raw);
+  const value = parsed.single !== undefined ? parsed.single : (parsed.tag || parsed.serial);
+
+  if(S.pending){
+    const st = S.pending.steps[S.pending.step];
+    if(S.opts.smart && st && st.kind === "serial" && looksLikeTag(value) && value !== S.pending.tag){
+      commitPending();                       // a new tag arrived instead — bank the old one
+      startPending(S.active, value, "");
+      beep("half"); flash("warn"); toast("Previous device saved without a serial");
+      setEcho(value); render(); save(); return;
+    }
+    feedStep(value);
+    return;
+  }
+
+  if(parsed.tag && parsed.serial){
+    startPending(S.active, parsed.tag, parsed.serial);
+    if(pendingDone()) commitPending(); else { beep("half"); flash("warn"); setEcho(parsed.tag); render(); }
+    return;
+  }
+  if(!value){ beep("bad"); flash("bad"); toast("Empty scan ignored"); return; }
+  if(S.opts.smart && serialOn() && !looksLikeTag(value)){
+    beep("bad"); flash("bad");
+    toast("That looks like a serial — scan the asset tag first");
+    setEcho(value); return;
+  }
+  startPending(S.active, value, "");
+  if(pendingDone()) commitPending(); else { beep("half"); flash("warn"); setEcho(value); render(); }
+}
+
+/* ── duplicate guard ── */
+function knownSet(){
+  const out = new Set();
+  const found = ($("knownTags").value || "").match(/\b\d{3,6}\b/g);
+  if(found) found.forEach(function(n){ out.add(String(parseInt(n,10))); });
+  return out;
+}
+function norm(t){ const n = parseInt(t,10); return isNaN(n) ? String(t).trim().toUpperCase() : String(n); }
+
+function computeFlags(){
+  const known = knownSet(), tagCounts = {}, serialCounts = {};
+  S.rows.forEach(function(r){
+    const t = norm(r.tag); tagCounts[t] = (tagCounts[t]||0)+1;
+    if(r.serial){ const s = r.serial.toUpperCase(); serialCounts[s] = (serialCounts[s]||0)+1; }
+  });
+  S.rows.forEach(function(r){
+    if(!r.tag) { r._flag = "dup"; return; }
+    if(known.has(norm(r.tag)) || tagCounts[norm(r.tag)] > 1) { r._flag = "dup"; return; }
+    if(r.serial && serialCounts[r.serial.toUpperCase()] > 1) { r._flag = "dup"; return; }
+    if(r.wantSerial && !r.serial) { r._flag = "incomplete"; return; }
+    r._flag = "ok";
+  });
+}
+
+/* ── feedback ── */
+let AC = null;
+function beep(kind){
+  if(!S.opts.beep) return;
+  try{
+    AC = AC || new (window.AudioContext || window.webkitAudioContext)();
+    if(AC.state === "suspended") AC.resume();
+    const t = AC.currentTime, o = AC.createOscillator(), g = AC.createGain();
+    o.connect(g); g.connect(AC.destination);
+    if(kind === "ok"){ o.type="sine"; o.frequency.setValueAtTime(880,t); o.frequency.linearRampToValueAtTime(1320,t+.07); }
+    else if(kind === "half"){ o.type="sine"; o.frequency.setValueAtTime(660,t); }
+    else { o.type="square"; o.frequency.setValueAtTime(180,t); o.frequency.linearRampToValueAtTime(120,t+.16); }
+    g.gain.setValueAtTime(.0001,t);
+    g.gain.exponentialRampToValueAtTime(kind==="bad"?.10:.06,t+.012);
+    g.gain.exponentialRampToValueAtTime(.0001,t+(kind==="bad"?.22:.14));
+    o.start(t); o.stop(t+.26);
+  }catch(e){}
+}
+let flashTimer = null;
+function flash(kind){
+  const el = $("slab");
+  el.classList.remove("flash-ok","flash-bad","flash-warn");
+  void el.offsetWidth; el.classList.add("flash-" + kind);
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(function(){ el.classList.remove("flash-ok","flash-bad","flash-warn"); }, 600);
+}
+let toastTimer = null;
+function toast(msg){
+  const t = $("toast");
+  t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function(){ t.classList.remove("show"); }, 2400);
+}
+function setEcho(v){ $("lastEcho").textContent = v ? "Last read " + v : "No scans yet this session"; }
+
+/* ── keyboard-wedge input ── */
+const gun = $("gun");
+let lastKeyAt = 0, intervals = [], idleTimer = null;
+
+gun.addEventListener("keydown", function(e){
+  const now = Date.now();
+  if(lastKeyAt){ intervals.push(now - lastKeyAt); if(intervals.length > 12) intervals.shift(); }
+  lastKeyAt = now;
+  if(e.key === "Enter" || e.key === "Tab"){ e.preventDefault(); clearTimeout(idleTimer); fire(); }
+  else if(e.key === "Escape"){
+    e.preventDefault(); gun.value = "";
+    if(S.pending){ S.pending = null; toast("Pending device cancelled"); render(); }
+  }
+});
+gun.addEventListener("input", function(){
+  clearTimeout(idleTimer);
+  if(!S.opts.idle) return;
+  const v = gun.value.trim();
+  if(v.length < 3) return;
+  const avg = intervals.length >= 2 ? intervals.reduce(function(a,b){return a+b;},0) / intervals.length : 999;
+  if(avg > 40) return;
+  idleTimer = setTimeout(fire, 130);
+});
+function fire(){
+  const v = gun.value.trim();
+  gun.value = ""; intervals = []; lastKeyAt = 0;
+  if(v) handleScan(v);
+}
+function refocus(){ if(document.activeElement !== gun) gun.focus(); }
+gun.addEventListener("blur", function(){
+  $("gunWrap").classList.add("blurred");
+  $("lamp").className = "lamp idle"; $("lampText").textContent = "Scan box not focused";
+});
+gun.addEventListener("focus", function(){
+  $("gunWrap").classList.remove("blurred");
+  $("lamp").className = "lamp live"; $("lampText").textContent = "Listening for scanner";
+});
+document.addEventListener("click", function(e){
+  if(e.target.closest("input,select,textarea,button,summary,label,a,.sheet")) return;
+  refocus();
+});
+document.addEventListener("keydown", function(e){
+  if(e.key === "Escape"){
+    if($("sheet").hasAttribute("open")){ closeSheet(); return; }
+    if($("catSheet").hasAttribute("open")){ closeCats(); return; }
+  }
+  if((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z"){
+    const t = document.activeElement;
+    if(t && (t.tagName === "TEXTAREA" || t.classList.contains("cell-edit") || t.closest(".sheet"))) return;
+    e.preventDefault(); undo();
+  }
+});
+function undo(){
+  if(S.pending){ S.pending = null; toast("Pending device cancelled"); render(); return; }
+  if(!S.rows.length) return;
+  const r = S.rows.shift();
+  toast("Removed " + r.tag);
+  render(); save(); refocus();
+}
+
+/* ── render ── */
+function render(){
+  computeFlags();
+  renderCatSeg(); renderModelSeg(); renderBatchFields(); renderSlab(); renderTable();
+
+  const dup = S.rows.filter(function(r){ return r._flag === "dup"; }).length;
+  const inc = S.rows.filter(function(r){ return r._flag === "incomplete"; }).length;
+  $("tCount").textContent = S.rows.length;
+  $("tSerial").textContent = S.rows.filter(function(r){ return !!r.serial; }).length;
+  $("tDup").textContent = dup;
+
+  let a = "";
+  if(dup) a += '<div class="warnline bad"><span>◆</span><span><b>'+dup+'</b> row'+(dup>1?"s":"")+' would collide with a tag already in the database or scanned twice here. Fix or drop them — the importer rejects duplicate asset tags.</span></div>';
+  if(inc) a += '<div class="warnline"><span>◆</span><span><b>'+inc+'</b> row'+(inc>1?"s":"")+' captured without a serial. That still imports; the serial can be filled in later.</span></div>';
+  const badManu = {};
+  S.rows.forEach(function(r){ if(r.manufacturer && MANUFACTURERS.indexOf(r.manufacturer) === -1) badManu[r.manufacturer] = (badManu[r.manufacturer]||0)+1; });
+  Object.keys(badManu).forEach(function(m){
+    a += '<div class="warnline"><span>◆</span><span>Manufacturer <b>'+esc(m)+'</b> is not one the inventory app offers. Add it under Settings before importing, or those '+badManu[m]+' row'+(badManu[m]>1?"s":"")+' will be rejected.</span></div>';
+  });
+  $("alerts").innerHTML = a;
+
+  const kc = knownSet().size;
+  $("knownCount").textContent = kc + (kc === 1 ? " tag loaded" : " tags loaded");
+
+  let g = 0;
+  for(let i = 0; i < S.rows.length; i++){
+    const r = S.rows[i], c = cat();
+    if(r.category !== S.active || r.model !== c.model || (r.area||"") !== (S.defaults.area||"") || !!r.wantSerial !== serialOn()) break;
+    g++;
+  }
+  $("groupCount").textContent = g + " in this group";
+}
+
+function renderSlab(){
+  const st = $("stateLine"), sub = $("subLine"), dots = $("stepDots");
+  const p = S.pending;
+  if(p){
+    const step = p.steps[p.step];
+    st.textContent = "Scan " + (step ? step.label.toLowerCase() : "…");
+    st.classList.add("mid");
+    sub.innerHTML = "Holding <b>" + esc(p.tag) + "</b>" + (p.serial ? " · <b>"+esc(p.serial)+"</b>" : "") + " — step " + (p.step+1) + " of " + p.steps.length + ".";
+    dots.innerHTML = p.steps.map(function(_,i){ return '<i class="'+(i<p.step?"done":(i===p.step?"now":""))+'"></i>'; }).join("");
+    $("btnSkipStep").disabled = false;
+    $("btnSaveNow").disabled = false;
+  } else {
+    const steps = stepsFor(S.active, serialOn());
+    st.textContent = "Scan asset tag";
+    st.classList.remove("mid");
+    sub.textContent = steps.length > 1
+      ? steps.length + " triggers per device: " + steps.map(function(s){ return s.label.toLowerCase(); }).join(", ") + "."
+      : "Trigger the sticker on the next device.";
+    dots.innerHTML = steps.map(function(_,i){ return '<i class="'+(i===0?"now":"")+'"></i>'; }).join("");
+    $("btnSkipStep").disabled = true;
+    $("btnSaveNow").disabled = true;
+  }
+  $("btnUndo").disabled = !S.rows.length && !S.pending;
+}
+
+function renderCatSeg(){
+  const el = $("catSeg");
+  const on = CATEGORIES.filter(function(k){ return S.cats[k].on; });
+  el.innerHTML = on.map(function(k){
+    return '<button data-cat="'+k+'" aria-pressed="'+(k===S.active)+'">'+esc(CAT_LABEL[k])+'</button>';
+  }).join("") || '<span class="note">No categories switched on — use Edit categories.</span>';
+}
+function renderModelSeg(){
+  const c = cat(), wrap = $("modelWrap");
+  if(!c || !c.models.length){ wrap.style.display = "none"; return; }
+  wrap.style.display = "";
+  $("modelSeg").innerHTML = c.models.map(function(m){
+    return '<button data-model="'+esc(m)+'" aria-pressed="'+(m===c.model)+'">'+esc(m)+'</button>';
+  }).join("");
+}
+function renderBatchFields(){
+  const c = cat(), bf = c ? batchFields(S.active) : [];
+  const host = $("batchFields");
+  if(!bf.length){ host.innerHTML = ""; return; }
+  S.batch[S.active] = S.batch[S.active] || {};
+  host.innerHTML = '<div class="f"><label>Set once for this batch</label><div style="display:flex;flex-direction:column;gap:8px">' +
+    bf.map(function(f){
+      const v = S.batch[S.active][f.id] || "";
+      return '<div class="f"><label>'+esc(f.label||f.key)+'</label><input class="inp batch-in" data-fid="'+f.id+'" value="'+esc(v)+'" placeholder="'+esc(f.key)+'"></div>';
+    }).join("") + '</div></div>';
+}
+
+function extraKeys(){
+  const seen = [];
+  S.rows.forEach(function(r){ (r.extras||[]).forEach(function(e){ if(seen.indexOf(e.key) === -1) seen.push(e.key); }); });
+  return seen;
+}
+function renderTable(){
+  const keys = extraKeys();
+  $("headRow").innerHTML = '<th style="width:4px"></th><th>Asset tag</th><th>Serial</th><th>Category</th><th>Model</th><th>Area</th>'
+    + keys.map(function(k){ return '<th>'+esc(k)+'</th>'; }).join("")
+    + '<th>Flag</th><th style="width:34px"></th>';
+
+  $("rows").innerHTML = S.rows.map(function(r){
+    const chip = r._flag === "dup" ? '<span class="chip flag-dup">Duplicate</span>'
+      : r._flag === "incomplete" ? '<span class="chip flag-incomplete">No serial</span>'
+      : '<span class="chip">Ready</span>';
+    const ex = {}; (r.extras||[]).forEach(function(e){ ex[e.key] = e.value; });
+    return '<tr data-id="'+r.id+'" data-flag="'+r._flag+'"'+(r._new?' class="is-new"':'')+'>'
+      + '<td class="stripe"><i></i></td>'
+      + '<td class="tag"><input class="cell-edit mono" data-field="tag" value="'+esc(r.tag)+'" aria-label="Asset tag"></td>'
+      + '<td class="ser'+(!r.serial && r.wantSerial ? " empty" : "")+'"><input class="cell-edit mono" data-field="serial" value="'+esc(r.serial)+'" placeholder="'+(r.wantSerial?"— add serial —":"— not needed —")+'" aria-label="Serial"></td>'
+      + '<td><span class="chip">'+esc(CAT_LABEL[r.category]||r.category)+'</span></td>'
+      + '<td class="mono" style="color:var(--ink-2);font-size:13px">'+esc(r.model || "—")+'</td>'
+      + '<td style="color:var(--ink-2);font-size:13px">'+esc(r.area || "—")+'</td>'
+      + keys.map(function(k){ return '<td class="mono" style="color:var(--ink-2);font-size:13px">'+esc(ex[k] || "—")+'</td>'; }).join("")
+      + '<td>'+chip+'</td>'
+      + '<td><button class="x" data-del="'+r.id+'" aria-label="Remove '+esc(r.tag)+'">×</button></td>'
+      + '</tr>';
+  }).join("");
+
+  $("emptyState").style.display = S.rows.length ? "none" : "block";
+  $("btnExport").disabled = !S.rows.length;
+  $("footNote").textContent = S.rows.length
+    ? S.rows.length + " device" + (S.rows.length>1?"s":"") + " ready · " + (HEADERS.length + detailKeys().length) + " columns"
+    : "Exports the 20 columns the bulk importer expects.";
+}
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]; }); }
+
+/* ── table interactions ── */
+$("rows").addEventListener("click", function(e){
+  const del = e.target.closest("[data-del]");
+  if(del){ S.rows = S.rows.filter(function(r){ return r.id !== del.getAttribute("data-del"); }); render(); save(); refocus(); }
+});
+$("rows").addEventListener("change", function(e){
+  const inp = e.target.closest(".cell-edit");
+  if(!inp) return;
+  const id = inp.closest("tr").getAttribute("data-id");
+  const row = S.rows.find(function(r){ return r.id === id; });
+  if(!row) return;
+  row[inp.getAttribute("data-field")] = inp.value.trim();
+  render(); save();
+});
+$("rows").addEventListener("keydown", function(e){
+  if(e.key === "Enter" && e.target.closest(".cell-edit")){ e.target.blur(); refocus(); }
+});
+
+/* ── rail controls ── */
+$("catSeg").addEventListener("click", function(e){
+  const b = e.target.closest("button[data-cat]");
+  if(!b) return;
+  S.active = b.getAttribute("data-cat");
+  S.pending = null;
+  $("optSerial").checked = !!cat().serial;
+  render(); save(); refocus();
+});
+$("modelSeg").addEventListener("click", function(e){
+  const b = e.target.closest("button[data-model]");
+  if(!b) return;
+  cat().model = b.getAttribute("data-model");
+  render(); save(); refocus();
+});
+$("batchFields").addEventListener("input", function(e){
+  const i = e.target.closest(".batch-in");
+  if(!i) return;
+  S.batch[S.active] = S.batch[S.active] || {};
+  S.batch[S.active][i.getAttribute("data-fid")] = i.value;
+  save();
+});
+$("optSerial").addEventListener("change", function(){
+  cat().serial = this.checked; S.pending = null; render(); save(); refocus();
+});
+$("btnSkipStep").addEventListener("click", function(){
+  if(!S.pending) return;
+  S.pending.step++;
+  if(pendingDone()) commitPending(); else render();
+  refocus();
+});
+$("btnSaveNow").addEventListener("click", function(){ if(S.pending) commitPending(); refocus(); });
+$("btnUndo").addEventListener("click", undo);
+$("btnClearKnown").addEventListener("click", function(){ $("knownTags").value = ""; S.known = ""; render(); save(); });
+$("knownTags").addEventListener("input", function(){ S.known = this.value; render(); save(); });
+$("dArea").addEventListener("input", function(){ S.defaults.area = this.value; render(); save(); });
+
+function fillSelect(el, values, labels){
+  el.innerHTML = values.map(function(v){ return '<option value="'+esc(v)+'">'+esc(labels ? labels[v] : v)+'</option>'; }).join("");
+}
+fillSelect($("dOwner"), [""].concat(OWNERS)); $("dOwner").options[0].textContent = "— none —";
+fillSelect($("dStatus"), STATUSES, STATUS_LABEL);
+$("dOwner").addEventListener("change", function(){ S.defaults.owner = this.value; save(); });
+$("dStatus").addEventListener("change", function(){ S.defaults.status = this.value; save(); });
+["optSmart","optIdle","optBeep"].forEach(function(id){
+  const k = {optSmart:"smart",optIdle:"idle",optBeep:"beep"}[id];
+  $(id).addEventListener("change", function(){ S.opts[k] = this.checked; render(); save(); refocus(); });
+});
+
+/* two-step clear. confirm() is blocked inside the artifact frame — it returns
+   false without ever showing, so a confirm-gated clear silently does nothing. */
+let clearArmed = false, clearTimer = null, clearedBackup = null;
+$("btnClearAll").addEventListener("click", function(){
+  const b = this;
+  const reset = function(){ clearArmed = false; clearedBackup = null; b.textContent = "Clear session"; b.classList.remove("armed"); };
+  if(clearedBackup){ S.rows = clearedBackup; clearTimeout(clearTimer); reset(); render(); save(); toast("Restored " + S.rows.length + " rows"); refocus(); return; }
+  if(!S.rows.length){ toast("Nothing to clear"); return; }
+  if(!clearArmed){
+    clearArmed = true; b.textContent = "Clear " + S.rows.length + " rows?"; b.classList.add("armed");
+    clearTimeout(clearTimer); clearTimer = setTimeout(reset, 4000); return;
+  }
+  clearedBackup = S.rows.slice();
+  S.rows = []; S.pending = null; clearArmed = false;
+  b.textContent = "Undo clear"; b.classList.add("armed");
+  clearTimeout(clearTimer); clearTimer = setTimeout(reset, 10000);
+  render(); save(); refocus();
+});
+
+/* ── category editor ── */
+function renderCats(){
+  $("catList").innerHTML = CATEGORIES.map(function(k){
+    const c = S.cats[k];
+    return '<div class="catrow'+(c.on?"":" off")+'" data-cat="'+k+'">'
+      + '<div class="h">'
+        + '<label class="toggle" style="padding:0"><input type="checkbox" data-on="'+k+'"'+(c.on?" checked":"")+'><span class="name">'+esc(CAT_LABEL[k])+'</span></label>'
+        + '<div class="spacer"></div>'
+        + '<span class="note mono">'+(c.fields.length ? c.fields.length+" custom field"+(c.fields.length>1?"s":"") : "no custom fields")+'</span>'
+      + '</div>'
+      + (c.on ? '<div class="b">'
+        + '<div class="grid2">'
+          + '<div class="f"><label>Manufacturer</label><input class="inp" data-manu="'+k+'" value="'+esc(c.manufacturer)+'" list="manuList"></div>'
+          + '<div class="f"><label>Models — comma separated</label><input class="inp" data-models="'+k+'" value="'+esc(c.models.join(", "))+'" placeholder="TC21, TC22"></div>'
+        + '</div>'
+        + '<label class="toggle" style="padding:0"><input type="checkbox" data-serial="'+k+'"'+(c.serial?" checked":"")+'><span>Ask for a serial by default<em>You can still flip this per batch from the rail.</em></span></label>'
+        + '<div>'
+          + '<div class="tiny" style="margin-bottom:6px">Custom fields</div>'
+          + (c.fields.length ? '<div class="fieldrow" style="margin-bottom:4px"><span class="tiny">Label</span><span class="tiny">Key</span><span class="tiny">Goes to · When</span><span></span></div>' : '')
+          + c.fields.map(function(f){
+              return '<div class="fieldrow" style="margin-bottom:8px" data-fid="'+f.id+'">'
+                + '<input class="inp" data-flabel="'+f.id+'" value="'+esc(f.label||"")+'" placeholder="Wi-Fi MAC">'
+                + '<input class="inp mono" data-fkey="'+f.id+'" value="'+esc(f.key||"")+'" placeholder="wifi_mac">'
+                + '<div style="display:flex;gap:6px">'
+                  + '<select data-ftarget="'+f.id+'" class="inp">'+TARGETS.map(function(t){ return '<option value="'+t+'"'+(f.target===t?" selected":"")+'>'+esc(TARGET_LABEL[t])+'</option>'; }).join("")+'</select>'
+                  + '<select data-fscope="'+f.id+'" class="inp"><option value="device"'+(f.scope==="device"?" selected":"")+'>Per device</option><option value="batch"'+(f.scope==="batch"?" selected":"")+'>Per batch</option></select>'
+                + '</div>'
+                + '<button class="x del" data-fdel="'+f.id+'" aria-label="Remove field">×</button>'
+              + '</div>';
+            }).join("")
+          + '<button class="btn sm" data-addfield="'+k+'">Add field</button>'
+        + '</div>'
+      + '</div>' : '')
+    + '</div>';
+  }).join("") + '<datalist id="manuList">' + MANUFACTURERS.map(function(m){ return '<option value="'+esc(m)+'">'; }).join("") + '</datalist>';
+}
+function slug(s){ return String(s||"").toLowerCase().trim().replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,""); }
+
+$("catList").addEventListener("change", function(e){
+  const t = e.target;
+  let k;
+  if((k = t.getAttribute("data-on"))){
+    S.cats[k].on = t.checked;
+    if(!t.checked && S.active === k){
+      const first = CATEGORIES.find(function(x){ return S.cats[x].on; });
+      if(first){ S.active = first; $("optSerial").checked = !!S.cats[first].serial; }
+    }
+    if(t.checked && !CATEGORIES.some(function(x){ return S.cats[x].on && x !== k; })) S.active = k;
+    renderCats(); render(); save(); return;
+  }
+  if((k = t.getAttribute("data-serial"))){ S.cats[k].serial = t.checked; if(k===S.active) $("optSerial").checked = t.checked; render(); save(); return; }
+  const fid = t.getAttribute("data-ftarget") || t.getAttribute("data-fscope");
+  if(fid){
+    const which = t.getAttribute("data-ftarget") ? "target" : "scope";
+    CATEGORIES.forEach(function(ck){
+      const f = S.cats[ck].fields.find(function(x){ return x.id === fid; });
+      if(f) f[which] = t.value;
+    });
+    render(); save(); return;
+  }
+});
+$("catList").addEventListener("input", function(e){
+  const t = e.target; let k;
+  if((k = t.getAttribute("data-manu"))){ S.cats[k].manufacturer = t.value.trim(); render(); save(); return; }
+  if((k = t.getAttribute("data-models"))){
+    const list = t.value.split(",").map(function(x){ return x.trim(); }).filter(Boolean);
+    S.cats[k].models = list;
+    if(list.indexOf(S.cats[k].model) === -1) S.cats[k].model = list[0] || "";
+    render(); save(); return;
+  }
+  const fid = t.getAttribute("data-flabel") || t.getAttribute("data-fkey");
+  if(fid){
+    const isLabel = !!t.getAttribute("data-flabel");
+    CATEGORIES.forEach(function(ck){
+      const f = S.cats[ck].fields.find(function(x){ return x.id === fid; });
+      if(!f) return;
+      if(isLabel){
+        const autoKey = !f.key || f.key === slug(f.label);
+        f.label = t.value;
+        if(autoKey){
+          f.key = slug(t.value);
+          const kin = document.querySelector('[data-fkey="'+fid+'"]');
+          if(kin && document.activeElement !== kin) kin.value = f.key;
+        }
+      } else f.key = slug(t.value);
+    });
+    render(); save(); return;
+  }
+});
+$("catList").addEventListener("click", function(e){
+  const add = e.target.closest("[data-addfield]");
+  if(add){
+    const k = add.getAttribute("data-addfield");
+    S.cats[k].fields.push({id:uid(), label:"", key:"", target:"details", scope:"device"});
+    renderCats(); render(); save();
+    const inputs = document.querySelectorAll('[data-cat="'+k+'"] [data-flabel]');
+    if(inputs.length) inputs[inputs.length-1].focus();
+    return;
+  }
+  const del = e.target.closest("[data-fdel]");
+  if(del){
+    const fid = del.getAttribute("data-fdel");
+    CATEGORIES.forEach(function(ck){ S.cats[ck].fields = S.cats[ck].fields.filter(function(f){ return f.id !== fid; }); });
+    renderCats(); render(); save();
+  }
+});
+function openCats(){ renderCats(); $("catSheet").setAttribute("open",""); }
+function closeCats(){
+  CATEGORIES.forEach(function(k){ S.cats[k].fields = S.cats[k].fields.filter(function(f){ return f.key; }); });
+  $("catSheet").removeAttribute("open"); render(); save(); refocus();
+}
+$("btnCats").addEventListener("click", openCats);
+$("btnCloseCats").addEventListener("click", closeCats);
+$("btnAddCat").addEventListener("click", function(){
+  const off = CATEGORIES.find(function(k){ return !S.cats[k].on; });
+  if(!off){ toast("All nine categories are already switched on"); return; }
+  S.cats[off].on = true; renderCats(); render(); save();
+  const row = document.querySelector('[data-cat="'+off+'"]');
+  if(row) row.scrollIntoView({block:"center", behavior:"smooth"});
+});
+$("catSheet").addEventListener("click", function(e){ if(e.target === this) closeCats(); });
+
+/* ── CSV ── */
+function detailKeys(){
+  const seen = [];
+  S.rows.forEach(function(r){
+    (r.extras||[]).forEach(function(e){
+      if((e.target||"details") === "details" && e.value !== "" && seen.indexOf(e.key) === -1) seen.push(e.key);
+    });
+  });
+  return seen.sort();
+}
+function csvCell(v){
+  const s = v == null ? "" : String(v);
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+}
+function buildCsv(cleanOnly){
+  const src = S.rows.slice().reverse();                 // scan order, oldest first
+  const rows = cleanOnly ? src.filter(function(r){ return r._flag !== "dup"; }) : src;
+  const dk = detailKeys();
+  const cols = HEADERS.concat(dk.map(function(k){ return "details." + k; }));
+  const lines = [cols.join(",")];
+  rows.forEach(function(r){
+    const map = {
+      asset_tag:r.tag, category:r.category, status:r.status, manufacturer:r.manufacturer,
+      model:r.model, primary_serial:r.serial, owner:r.owner, venue:r.venue || "", area:r.area
+    };
+    (r.extras||[]).forEach(function(e){
+      if(e.value === "") return;
+      const t = e.target || "details";
+      if(t === "details") map["details." + e.key] = e.value;
+      else map[t] = e.value;
+    });
+    lines.push(cols.map(function(c){ return csvCell(map[c] || ""); }).join(","));
+  });
+  return { text: lines.join("\r\n") + "\r\n", count: rows.length, cols: cols.length, detail: dk };
+}
+function refreshCsv(){
+  const out = buildCsv($("optCleanOnly").checked);
+  $("csvOut").value = out.text;
+  $("btnSave").textContent = "Save .csv file (" + out.count + " row" + (out.count===1?"":"s") + ")";
+  const notes = [];
+  if(out.detail.length) notes.push('<div class="warnline" style="margin:0;background:var(--ok-soft);border-color:var(--ok);color:var(--ok)"><span>◆</span><span>Custom fields appended as <b>'+out.detail.map(function(k){return "details."+k;}).join(", ")+'</b>.</span></div>');
+  const badManu = {};
+  S.rows.forEach(function(r){ if(r.manufacturer && MANUFACTURERS.indexOf(r.manufacturer) === -1) badManu[r.manufacturer] = 1; });
+  Object.keys(badManu).forEach(function(m){
+    notes.push('<div class="warnline" style="margin:0"><span>◆</span><span>Manufacturer <b>'+esc(m)+'</b> is not in the app\'s list — add it under Settings first.</span></div>');
+  });
+  $("exportNotes").innerHTML = notes.join("");
+}
+$("optCleanOnly").addEventListener("change", refreshCsv);
+function openSheet(){ refreshCsv(); $("sheet").setAttribute("open",""); $("btnCopy").focus(); }
+function closeSheet(){ $("sheet").removeAttribute("open"); refocus(); }
+$("btnExport").addEventListener("click", openSheet);
+$("btnCloseSheet").addEventListener("click", closeSheet);
+$("sheet").addEventListener("click", function(e){ if(e.target === this) closeSheet(); });
+
+$("btnCopy").addEventListener("click", function(){
+  const ta = $("csvOut");
+  const done = function(){ toast("CSV copied — paste into a text editor and save as .csv"); };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(ta.value).then(done, function(){ ta.select(); document.execCommand("copy"); done(); });
+  } else { ta.select(); document.execCommand("copy"); done(); }
+});
+
+let downloads = null;
+if(window.claude && window.claude.use){ window.claude.use("downloads").then(function(d){ downloads = d; }, function(){}); }
+
+/* served from an ordinary web server there is no capability, but a normal
+   blob download works — so self-hosted copies still save a real file */
+function blobSave(name, text){
+  try{
+    const url = URL.createObjectURL(new Blob([text], {type:"text/csv;charset=utf-8"}));
+    const a = document.createElement("a");
+    a.href = url; a.download = name; a.style.display = "none";
+    document.body.appendChild(a); a.click();
+    setTimeout(function(){ URL.revokeObjectURL(url); a.remove(); }, 1500);
+    return true;
+  }catch(e){ return false; }
+}
+$("btnSave").addEventListener("click", function(){
+  const out = buildCsv($("optCleanOnly").checked);
+  const name = "rcs-devices-" + new Date().toISOString().slice(0,10);
+  if(!downloads){
+    if(blobSave(name + ".csv", out.text)) toast("Saved " + name + ".csv");
+    else toast("Couldn't save the file — use Copy to clipboard instead");
+    return;
+  }
+  downloads.save({filename:name + ".csv", data:out.text}).then(function(){
+    toast("Saved " + name + ".csv");
+  }, function(err){
+    const code = err && err.code;
+    if(code === "extension_not_enabled"){
+      downloads.save({filename:name + ".csv.txt", data:out.text}).then(function(){
+        toast("Saved as .csv.txt — rename it to .csv before importing");
+      }, function(){ toast("Save declined — use Copy to clipboard instead"); });
+    } else if(code === "declined"){ toast("Save cancelled"); }
+    else { toast("Couldn't save the file — use Copy to clipboard instead"); }
+  });
+});
+
+/* ── boot ── */
+load();
+$("knownTags").value = S.known;
+$("dArea").value = S.defaults.area || "";
+$("dOwner").value = S.defaults.owner || "";
+$("dStatus").value = S.defaults.status || "active";
+$("optSmart").checked = S.opts.smart; $("optIdle").checked = S.opts.idle; $("optBeep").checked = S.opts.beep;
+if(!S.cats[S.active] || !S.cats[S.active].on){
+  const first = CATEGORIES.find(function(k){ return S.cats[k].on; });
+  if(first) S.active = first;
+}
+$("optSerial").checked = !!(cat() && cat().serial);
+render();
+setTimeout(refocus, 60);
+})();
+</script>
+
+</body>
+</html>

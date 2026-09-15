@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#181312">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23181312'/%3E%3Crect x='10' y='10' width='12' height='12' rx='2' fill='%23C8102E' transform='rotate(45 16 16)'/%3E%3C/svg%3E">
 <title>RCS Scan Station</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -161,7 +160,9 @@ button,input,select,textarea{font:inherit;color:inherit}
 }
 .seg button:hover{border-color:var(--ink-3)}
 .seg button[aria-pressed="true"]{background:var(--brand);border-color:var(--brand);color:var(--brand-on)}
-.seg.quiet button{font-family:"IBM Plex Mono",monospace;font-size:13px;letter-spacing:.02em;text-transform:none;padding:8px}
+.seg.quiet button{font-family:"IBM Plex Mono",monospace;font-size:13px;letter-spacing:.02em;text-transform:none;padding:7px 8px;line-height:1.25}
+.seg.quiet .mm{display:block;font-weight:600}
+.seg.quiet .mf{display:block;font-family:"Barlow",sans-serif;font-size:11px;letter-spacing:.06em;text-transform:uppercase;opacity:.72;margin-top:1px}
 
 /* ─── fields ─── */
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
@@ -267,6 +268,8 @@ td .cell-edit:focus{border-style:solid;border-color:var(--brand);background:var(
 .fieldrow{display:grid;grid-template-columns:1.1fr 1fr 1.1fr 34px;gap:8px;align-items:end}
 @media (max-width:640px){.fieldrow{grid-template-columns:1fr 1fr;}.fieldrow .del{grid-column:2;justify-self:end}}
 .tiny{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
+.mmrow{display:grid;grid-template-columns:1fr 1fr 34px;gap:8px;align-items:center}
+.warnfield{border-color:var(--warn)!important;background:var(--warn-soft)}
 </style>
 
 </head>
@@ -487,15 +490,44 @@ const KEY = "rcs-scan-station-v2", OLDKEY = "rcs-scan-station-v1";
 const $ = function(id){ return document.getElementById(id); };
 const uid = function(){ return "x" + Math.random().toString(36).slice(2,9); };
 
-function newCat(key, on, manufacturer, models, serial, fields){
-  return {key:key, on:!!on, manufacturer:manufacturer||"Zebra", models:models||[], model:(models&&models[0])||"",
-          serial:!!serial, fields:fields||[]};
+/* Every make+model combination actually present in the RCS inventory export of
+   2026-09-15 (1,230 devices), most-used first so the common ones need the
+   fewest taps. Scanning from this list means the manufacturer and model strings
+   match what is already in the database exactly. Add your own freely — these are
+   a starting point, not a fence. */
+const PRESETS = {
+  battery: [["Zebra","TC21"],["Zebra","TC22"]],
+  scanner: [["Zebra","TC21"],["Zebra","TC22"]],
+  network: [["Meraki","MS125-24P"],["Meraki","MR86"],["UniFi","USW PRO MAX"],["UniFi","U7 Pro Outdoor"],
+            ["Meraki","MS120-8"],["UniFi","UAP-AC-M"],["UniFi","UXG GATEWAY MAX"],["Verizon","XC46BE"],
+            ["UniFi","MESH AP CYL"],["UniFi","USW SWITCH 16 PoE"],["Meraki","MS130-12X"],
+            ["UniFi","USW-WAN HIGH AVAILABILITY"],["UniFi","USW ULTRA 60W"],["UniFi","UXG ENTERPRISE"],
+            ["UniFi","BASE STATION"],["PAX","E600M"],["UniFi","U6 Lite"],
+            ["UniFi","USW SWITCH PRO XG AGGREGATION"],["Inseego","FX4240"]],
+  pos:     [["PAX","E700M"],["Nexus","TM21"],["Sunmi","L3561"],["PAX","E600M"],["PAX","A35"]],
+  printer: [["Epson","M267D"],["Epson","M374C"],["Citizen","CT-E351"]],
+  payment: [["PAX","A35"]],
+  kds:     [["Zebra","TC21"]],
+  kiosk:   [],
+  other:   []
+};
+const ON_BY_DEFAULT = ["battery","scanner","network","pos","printer","payment"];
+/* Zebra batteries carry no serial; everything else does. */
+const NO_SERIAL_BY_DEFAULT = ["battery"];
+
+function newCat(key){
+  return {
+    key: key,
+    on: ON_BY_DEFAULT.indexOf(key) >= 0,
+    models: (PRESETS[key] || []).map(function(p){ return {mf:p[0], md:p[1]}; }),
+    pick: 0,
+    serial: NO_SERIAL_BY_DEFAULT.indexOf(key) < 0,
+    fields: []
+  };
 }
 function defaultCats(){
   const c = {};
-  CATEGORIES.forEach(function(k){ c[k] = newCat(k,false,"Zebra",[],false,[]); });
-  c.battery = newCat("battery", true,  "Zebra", ["TC21","TC22"], false, []);
-  c.scanner = newCat("scanner", true,  "Zebra", ["TC21","TC22"], true,  []);
+  CATEGORIES.forEach(function(k){ c[k] = newCat(k); });
   return c;
 }
 
@@ -519,7 +551,23 @@ function load(){
     try{
       const p = JSON.parse(raw);
       S.rows = Array.isArray(p.rows) ? p.rows : [];
-      if(p.cats){ Object.keys(S.cats).forEach(function(k){ if(p.cats[k]) S.cats[k] = Object.assign(S.cats[k], p.cats[k]); }); }
+      if(p.cats){
+        Object.keys(S.cats).forEach(function(k){
+          const saved = p.cats[k];
+          if(!saved) return;
+          /* Earlier versions kept one manufacturer per category and a list of
+             plain model strings. Fold those into make+model pairs. */
+          if(Array.isArray(saved.models) && saved.models.length && typeof saved.models[0] === "string"){
+            const mf = saved.manufacturer || "";
+            const idx = saved.models.indexOf(saved.model);
+            saved.models = saved.models.map(function(md){ return {mf:mf, md:md}; });
+            saved.pick = idx > 0 ? idx : 0;
+          }
+          delete saved.manufacturer; delete saved.model;
+          S.cats[k] = Object.assign(S.cats[k], saved);
+          if(typeof S.cats[k].pick !== "number") S.cats[k].pick = 0;
+        });
+      }
       S.active = p.active && S.cats[p.active] ? p.active : S.active;
       S.defaults = Object.assign(S.defaults, p.defaults || {});
       S.batch = p.batch || {};
@@ -549,6 +597,7 @@ function load(){
 function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
 
 function cat(){ return S.cats[S.active]; }
+function pick(){ const c = cat(); return (c && c.models && c.models[c.pick]) || {mf:"", md:""}; }
 
 /* ── scan parsing ── a sticker may carry the tag, the serial, or both ── */
 const TAG_RE = /^\d{3,6}$/;
@@ -621,13 +670,14 @@ function commitPending(){
   const p = S.pending;
   if(!p) return;
   const c = S.cats[p.cat];
+  const mm = (c.models && c.models[c.pick]) || {mf:"", md:""};
   const known = knownSet();
   const dupDb = known.has(norm(p.tag));
   const dupSession = S.rows.some(function(r){ return norm(r.tag) === norm(p.tag); });
 
   S.rows.unshift({
     id: uid(), tag:String(p.tag).trim(), serial:String(p.serial||"").trim(),
-    category:p.cat, manufacturer:c.manufacturer, model:c.model,
+    category:p.cat, manufacturer:mm.mf, model:mm.md,
     owner:S.defaults.owner, status:S.defaults.status, venue:"", area:S.defaults.area,
     wantSerial:p.wantSerial,
     extras: p.extras.concat(batchFields(p.cat).map(function(f){
@@ -832,8 +882,9 @@ function render(){
 
   let g = 0;
   for(let i = 0; i < S.rows.length; i++){
-    const r = S.rows[i], c = cat();
-    if(r.category !== S.active || r.model !== c.model || (r.area||"") !== (S.defaults.area||"") || !!r.wantSerial !== serialOn()) break;
+    const r = S.rows[i], mm = pick();
+    if(r.category !== S.active || r.model !== mm.md || r.manufacturer !== mm.mf
+       || (r.area||"") !== (S.defaults.area||"") || !!r.wantSerial !== serialOn()) break;
     g++;
   }
   $("groupCount").textContent = g + " in this group";
@@ -871,13 +922,35 @@ function renderCatSeg(){
     return '<button data-cat="'+k+'" aria-pressed="'+(k===S.active)+'">'+esc(CAT_LABEL[k])+'</button>';
   }).join("") || '<span class="note">No categories switched on — use Edit categories.</span>';
 }
+/* Up to six make+model pairs get tap targets; beyond that (Network has 19) a
+   wall of buttons is worse than a list, so it becomes a dropdown. */
+const SEG_LIMIT = 6;
 function renderModelSeg(){
-  const c = cat(), wrap = $("modelWrap");
-  if(!c || !c.models.length){ wrap.style.display = "none"; return; }
+  const c = cat(), wrap = $("modelWrap"), host = $("modelSeg");
+  if(!c || !c.models.length){
+    wrap.style.display = "";
+    host.className = "";
+    host.innerHTML = '<p class="note" style="margin:0">No makes or models set for this category yet — add them under <b>Edit categories</b>. Rows will import with those fields blank.</p>';
+    return;
+  }
   wrap.style.display = "";
-  $("modelSeg").innerHTML = c.models.map(function(m){
-    return '<button data-model="'+esc(m)+'" aria-pressed="'+(m===c.model)+'">'+esc(m)+'</button>';
-  }).join("");
+  if(c.pick >= c.models.length) c.pick = 0;
+  if(c.models.length <= SEG_LIMIT){
+    host.className = "seg quiet";
+    host.innerHTML = c.models.map(function(m, i){
+      return '<button data-pick="'+i+'" aria-pressed="'+(i===c.pick)+'">'
+        + '<span class="mm">'+esc(m.md || "—")+'</span>'
+        + '<span class="mf">'+esc(m.mf || "no make")+'</span></button>';
+    }).join("");
+  } else {
+    host.className = "";
+    host.innerHTML = '<select id="modelPick" class="inp">' + c.models.map(function(m, i){
+      return '<option value="'+i+'"'+(i===c.pick?" selected":"")+'>'+esc(m.mf)+' · '+esc(m.md)+'</option>';
+    }).join("") + '</select>';
+    $("modelPick").addEventListener("change", function(){
+      cat().pick = parseInt(this.value,10) || 0; render(); save(); refocus();
+    });
+  }
 }
 function renderBatchFields(){
   const c = cat(), bf = c ? batchFields(S.active) : [];
@@ -956,9 +1029,9 @@ $("catSeg").addEventListener("click", function(e){
   render(); save(); refocus();
 });
 $("modelSeg").addEventListener("click", function(e){
-  const b = e.target.closest("button[data-model]");
+  const b = e.target.closest("button[data-pick]");
   if(!b) return;
-  cat().model = b.getAttribute("data-model");
+  cat().pick = parseInt(b.getAttribute("data-pick"),10) || 0;
   render(); save(); refocus();
 });
 $("batchFields").addEventListener("input", function(e){
@@ -1026,9 +1099,18 @@ function renderCats(){
         + '<span class="note mono">'+(c.fields.length ? c.fields.length+" custom field"+(c.fields.length>1?"s":"") : "no custom fields")+'</span>'
       + '</div>'
       + (c.on ? '<div class="b">'
-        + '<div class="grid2">'
-          + '<div class="f"><label>Manufacturer</label><input class="inp" data-manu="'+k+'" value="'+esc(c.manufacturer)+'" list="manuList"></div>'
-          + '<div class="f"><label>Models — comma separated</label><input class="inp" data-models="'+k+'" value="'+esc(c.models.join(", "))+'" placeholder="TC21, TC22"></div>'
+        + '<div>'
+          + '<div class="tiny" style="margin-bottom:6px">Makes &amp; models — the pair is stamped together on every row</div>'
+          + (c.models.length ? '<div class="mmrow" style="margin-bottom:4px"><span class="tiny">Manufacturer</span><span class="tiny">Model</span><span></span></div>' : '')
+          + c.models.map(function(m, i){
+              const bad = m.mf && MANUFACTURERS.indexOf(m.mf) === -1;
+              return '<div class="mmrow" style="margin-bottom:8px">'
+                + '<input class="inp'+(bad?" warnfield":"")+'" data-mf="'+k+'" data-i="'+i+'" value="'+esc(m.mf)+'" list="manuList" placeholder="Zebra">'
+                + '<input class="inp mono" data-md="'+k+'" data-i="'+i+'" value="'+esc(m.md)+'" placeholder="TC21">'
+                + '<button class="x" data-mmdel="'+k+'" data-i="'+i+'" aria-label="Remove this make and model">×</button>'
+              + '</div>';
+            }).join("")
+          + '<button class="btn sm" data-addmm="'+k+'">Add make &amp; model</button>'
         + '</div>'
         + '<label class="toggle" style="padding:0"><input type="checkbox" data-serial="'+k+'"'+(c.serial?" checked":"")+'><span>Ask for a serial by default<em>You can still flip this per batch from the rail.</em></span></label>'
         + '<div>'
@@ -1078,11 +1160,17 @@ $("catList").addEventListener("change", function(e){
 });
 $("catList").addEventListener("input", function(e){
   const t = e.target; let k;
-  if((k = t.getAttribute("data-manu"))){ S.cats[k].manufacturer = t.value.trim(); render(); save(); return; }
-  if((k = t.getAttribute("data-models"))){
-    const list = t.value.split(",").map(function(x){ return x.trim(); }).filter(Boolean);
-    S.cats[k].models = list;
-    if(list.indexOf(S.cats[k].model) === -1) S.cats[k].model = list[0] || "";
+  if((k = t.getAttribute("data-mf")) || (k = t.getAttribute("data-md"))){
+    const i = parseInt(t.getAttribute("data-i"),10);
+    const field = t.getAttribute("data-mf") ? "mf" : "md";
+    const m = S.cats[k].models[i];
+    if(m){
+      m[field] = t.value.trim();
+      if(field === "mf"){
+        const bad = m.mf && MANUFACTURERS.indexOf(m.mf) === -1;
+        t.classList.toggle("warnfield", !!bad);
+      }
+    }
     render(); save(); return;
   }
   const fid = t.getAttribute("data-flabel") || t.getAttribute("data-fkey");
@@ -1105,6 +1193,23 @@ $("catList").addEventListener("input", function(e){
   }
 });
 $("catList").addEventListener("click", function(e){
+  const addmm = e.target.closest("[data-addmm]");
+  if(addmm){
+    const k = addmm.getAttribute("data-addmm");
+    S.cats[k].models.push({mf:"", md:""});
+    renderCats(); render(); save();
+    const ins = document.querySelectorAll('[data-cat="'+k+'"] [data-mf]');
+    if(ins.length) ins[ins.length-1].focus();
+    return;
+  }
+  const mmdel = e.target.closest("[data-mmdel]");
+  if(mmdel){
+    const k = mmdel.getAttribute("data-mmdel"), i = parseInt(mmdel.getAttribute("data-i"),10);
+    S.cats[k].models.splice(i,1);
+    if(S.cats[k].pick >= S.cats[k].models.length) S.cats[k].pick = 0;
+    renderCats(); render(); save();
+    return;
+  }
   const add = e.target.closest("[data-addfield]");
   if(add){
     const k = add.getAttribute("data-addfield");

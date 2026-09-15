@@ -51,6 +51,9 @@
 }
 
 *{box-sizing:border-box}
+html{color-scheme:light dark}
+:root[data-theme="dark"]{color-scheme:dark}
+:root[data-theme="light"]{color-scheme:light}
 body{
   margin:0; background:var(--bg); color:var(--ink);
   font-family:"Barlow",system-ui,-apple-system,"Segoe UI",sans-serif;
@@ -82,9 +85,35 @@ button,input,select,textarea{font:inherit;color:inherit}
 .tally .l{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
 
 .wrap{display:grid;grid-template-columns:minmax(330px,400px) minmax(0,1fr);gap:20px;padding:20px;align-items:start;max-width:1560px;margin:0 auto}
-@media (max-width:1000px){.wrap{grid-template-columns:1fr;padding:14px;gap:14px}}
 .rail{display:flex;flex-direction:column;gap:14px;position:sticky;top:69px}
-@media (max-width:1000px){.rail{position:static}}
+
+/* ── handheld ── the scan slab stays pinned; everything else scrolls under it.
+   Tap targets go up, chrome comes down, and the long settings folds start shut. */
+@media (max-width:1000px){
+  .wrap{grid-template-columns:1fr;padding:10px;gap:10px}
+  .rail{position:static;gap:10px}
+  .top{padding:9px 12px;gap:10px}
+  .mark small{display:none}
+  .mark b{font-size:18px}
+  .tally{gap:14px}
+  .tally .n{font-size:17px}
+  .slab{position:sticky;top:56px;z-index:15;padding:14px}
+  .state{font-size:clamp(24px,7vw,32px)}
+  .substate{font-size:13px;margin-bottom:10px;min-height:0}
+  .gun input{padding:15px 14px;font-size:18px}
+  .slab-acts .btn{flex:1 1 auto;justify-content:center;padding:10px 8px}
+  .seg button{padding:14px 8px;font-size:17px}
+  .seg.quiet button{padding:10px 8px;font-size:14px}
+  .card>header{padding:10px 12px}
+  .card>.body{padding:12px}
+  .f select,.f input,textarea,.inp{padding:11px 10px;font-size:16px}  /* 16px stops iOS/Android zoom-on-focus */
+  details.fold summary{padding:13px 12px}
+  .toggle input{width:20px;height:20px}
+  .sheet{padding:8px}
+  .sheet .panel{margin:6px auto}
+  #csvOut{height:150px}
+  .tablewrap{max-height:none}
+}
 
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
 .card>header{padding:11px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
@@ -180,7 +209,8 @@ textarea{font-family:"IBM Plex Mono",monospace;font-size:12.5px;resize:vertical;
 .toggle span em{display:block;font-style:normal;color:var(--ink-3);font-size:12px;line-height:1.4}
 .toggle.boxed{border:1px solid var(--line-strong);background:var(--surface-2);border-radius:8px;padding:10px 12px;transition:border-color .14s,background .14s}
 .toggle.boxed:hover{border-color:var(--ink-3)}
-.toggle.boxed:has(input:checked){border-color:var(--brand);background:var(--brand-soft)}
+/* .on is set from JS — :has() needs Chrome 105+ and some rugged handhelds ship older */
+.toggle.boxed.on{border-color:var(--brand);background:var(--brand-soft)}
 .toggle.boxed span{font-weight:600}
 .hubline{display:flex;align-items:center;gap:9px;padding:10px 12px;border-radius:8px;font-size:13px;font-weight:500;border:1px solid var(--line-strong);background:var(--surface-2);color:var(--ink-2)}
 .hubline .dot{width:8px;height:8px;border-radius:50%;background:var(--ink-3);flex:none}
@@ -286,6 +316,7 @@ td .cell-edit:focus{border-style:solid;border-color:var(--brand);background:var(
     <div><div class="n" id="tSerial">0</div><div class="l">With serial</div></div>
     <div><div class="n" id="tDup" style="color:var(--bad)">0</div><div class="l">Conflicts</div></div>
   </div>
+  <button class="btn icon" id="btnTheme" title="Dark, light or follow the device" aria-label="Change theme">◐</button>
 </header>
 
 <div class="wrap">
@@ -309,6 +340,7 @@ td .cell-edit:focus{border-style:solid;border-color:var(--brand);background:var(
         <button class="btn ghost-dark sm" id="btnSkipStep" disabled>Skip this step</button>
         <button class="btn ghost-dark sm" id="btnSaveNow" disabled>Save now</button>
         <button class="btn ghost-dark sm" id="btnUndo" disabled>Undo last</button>
+        <button class="btn ghost-dark sm" id="btnKeyboard" hidden>Keyboard</button>
       </div>
     </section>
 
@@ -381,7 +413,13 @@ td .cell-edit:focus{border-style:solid;border-color:var(--brand);background:var(
     </section>
 
     <section class="card">
-      <details class="fold" style="border-top:none">
+      <details class="fold" id="foldDiag" style="border-top:none">
+        <summary>Device check</summary>
+        <div class="body"><div id="diagBody"></div>
+          <p class="note" style="margin:10px 0 0">If the page looks wrong on a device, screenshot this — anything in red is a browser feature the page needs and this device doesn't have.</p>
+        </div>
+      </details>
+      <details class="fold">
         <summary>Running it on a handheld</summary>
         <div class="body">
           <ol class="steps">
@@ -487,7 +525,44 @@ const TARGETS = ["details","secondary_serial","manufacturer_model_code","part_nu
 const TARGET_LABEL = {details:"details.<key>",secondary_serial:"secondary_serial",manufacturer_model_code:"manufacturer_model_code",part_number:"part_number",fcc_id:"fcc_id",ic_id:"ic_id",enclosure_rating:"enclosure_rating",manufactured_date:"manufactured_date",purchase_date:"purchase_date",warranty_expiry:"warranty_expiry"};
 
 const KEY = "rcs-scan-station-v2", OLDKEY = "rcs-scan-station-v1";
+const THEME_KEY = "rcs-scan-theme", KB_KEY = "rcs-scan-keyboard";
 const $ = function(id){ return document.getElementById(id); };
+
+/* ── theme ── the handheld may sit in light mode while the laptop is dark, so
+   this is an explicit choice, remembered, rather than whatever the OS says. */
+const THEMES = ["dark","light","auto"];
+const THEME_GLYPH = {dark:"◗", light:"◖", auto:"◐"};
+const THEME_NAME = {dark:"Dark", light:"Light", auto:"Follow device"};
+let theme = "dark";
+function applyTheme(){
+  const el = document.documentElement;
+  if(theme === "auto") el.removeAttribute("data-theme");
+  else el.setAttribute("data-theme", theme);
+  const b = $("btnTheme");
+  if(b){ b.textContent = THEME_GLYPH[theme]; b.title = THEME_NAME[theme] + " — tap to change"; }
+  const m = document.querySelector('meta[name="theme-color"]');
+  if(m) m.setAttribute("content", theme === "light" ? "#F4F1EE" : "#181312");
+}
+
+/* ── soft keyboard ── a scan gun types like a keyboard, so focusing the input is
+   required; but on Android that also throws up the on-screen keyboard and
+   scrolls the page under your thumb on every single tap. inputmode="none" keeps
+   the focus and loses the keyboard. The button turns it back on for typing. */
+const TOUCH = (("ontouchstart" in window) || navigator.maxTouchPoints > 0);
+let keyboardOn = false;
+function applyKeyboardMode(){
+  const g = $("gun"), b = $("btnKeyboard");
+  if(!g) return;
+  if(TOUCH && !keyboardOn) g.setAttribute("inputmode","none"); else g.removeAttribute("inputmode");
+  if(b){
+    b.hidden = !TOUCH;
+    b.textContent = keyboardOn ? "Hide keyboard" : "Keyboard";
+    b.setAttribute("aria-pressed", keyboardOn ? "true" : "false");
+  }
+  g.placeholder = (TOUCH && !keyboardOn)
+    ? "Pull the trigger to scan"
+    : "Pull the trigger — or type and press Enter";
+}
 const uid = function(){ return "x" + Math.random().toString(36).slice(2,9); };
 
 /* Every make+model combination actually present in the RCS inventory export of
@@ -824,7 +899,13 @@ function fire(){
   gun.value = ""; intervals = []; lastKeyAt = 0;
   if(v) handleScan(v);
 }
-function refocus(){ if(document.activeElement !== gun) gun.focus(); }
+/* preventScroll matters more than it looks: without it every refocus scrolls the
+   gun input into view, which on a handheld yanks the page to the top on each tap. */
+function focusNoScroll(el){
+  if(!el) return;
+  try{ el.focus({preventScroll:true}); }catch(e){ el.focus(); }
+}
+function refocus(){ if(document.activeElement !== gun) focusNoScroll(gun); }
 gun.addEventListener("blur", function(){
   $("gunWrap").classList.add("blurred");
   $("lamp").className = "lamp idle"; $("lampText").textContent = "Scan box not focused";
@@ -856,10 +937,19 @@ function undo(){
   render(); save(); refocus();
 }
 
-/* ── render ── */
+/* ── render ──
+   Every render replaces whole blocks of innerHTML, which on a phone can change
+   document height and yank the page under the operator's thumb. Pin the scroll
+   position across the rebuild so the view never moves on its own. */
 function render(){
+  const sx = window.pageXOffset, sy = window.pageYOffset;
+  renderInner();
+  if(window.pageXOffset !== sx || window.pageYOffset !== sy) window.scrollTo(sx, sy);
+}
+function renderInner(){
   computeFlags();
   renderCatSeg(); renderModelSeg(); renderBatchFields(); renderSlab(); renderTable();
+  syncToggleClasses();
 
   const dup = S.rows.filter(function(r){ return r._flag === "dup"; }).length;
   const inc = S.rows.filter(function(r){ return r._flag === "incomplete"; }).length;
@@ -1000,6 +1090,12 @@ function renderTable(){
     : "Exports the 20 columns the bulk importer expects.";
 }
 function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,function(c){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]; }); }
+function syncToggleClasses(){
+  Array.prototype.forEach.call(document.querySelectorAll(".toggle.boxed"), function(l){
+    const i = l.querySelector("input[type=checkbox]");
+    l.classList.toggle("on", !!(i && i.checked));
+  });
+}
 
 /* ── table interactions ── */
 $("rows").addEventListener("click", function(e){
@@ -1199,7 +1295,7 @@ $("catList").addEventListener("click", function(e){
     S.cats[k].models.push({mf:"", md:""});
     renderCats(); render(); save();
     const ins = document.querySelectorAll('[data-cat="'+k+'"] [data-mf]');
-    if(ins.length) ins[ins.length-1].focus();
+    if(ins.length) focusNoScroll(ins[ins.length-1]);
     return;
   }
   const mmdel = e.target.closest("[data-mmdel]");
@@ -1216,7 +1312,7 @@ $("catList").addEventListener("click", function(e){
     S.cats[k].fields.push({id:uid(), label:"", key:"", target:"details", scope:"device"});
     renderCats(); render(); save();
     const inputs = document.querySelectorAll('[data-cat="'+k+'"] [data-flabel]');
-    if(inputs.length) inputs[inputs.length-1].focus();
+    if(inputs.length) focusNoScroll(inputs[inputs.length-1]);
     return;
   }
   const del = e.target.closest("[data-fdel]");
@@ -1361,7 +1457,7 @@ function openSheet(){
   if(hubState.sentKey !== batchKey() && hubState.status !== "sending") hubState = {status:"idle", msg:"", sentKey:hubState.sentKey, at:hubState.at};
   hubRender();
   $("sheet").setAttribute("open","");
-  $("btnCopy").focus();
+  focusNoScroll($("btnCopy"));
   if(HUB_ENABLED && hubState.sentKey !== batchKey()) hubSend();   // "as soon as it's built"
 }
 function closeSheet(){ $("sheet").removeAttribute("open"); refocus(); }
@@ -1413,7 +1509,52 @@ $("btnSave").addEventListener("click", function(){
   });
 });
 
+$("btnTheme").addEventListener("click", function(){
+  theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
+  applyTheme();
+  try{ localStorage.setItem(THEME_KEY, theme); }catch(e){}
+  toast("Theme: " + THEME_NAME[theme]);
+});
+$("btnKeyboard").addEventListener("click", function(){
+  keyboardOn = !keyboardOn;
+  applyKeyboardMode();
+  try{ localStorage.setItem(KB_KEY, keyboardOn ? "1" : "0"); }catch(e){}
+  $("gun").blur();
+  if(keyboardOn) setTimeout(function(){ $("gun").focus(); }, 30);   // deliberate: the user asked for the keyboard
+});
+
+/* what the device actually reports — so a rendering problem can be diagnosed
+   from a screenshot instead of guessed at */
+function fillDiag(){
+  const ua = navigator.userAgent;
+  const m = ua.match(/Chrome\/(\d+)/);
+  const chrome = m ? parseInt(m[1],10) : 0;
+  const tests = [
+    ["Chrome/WebView", chrome ? chrome : "not Chrome"],
+    ["Screen", window.innerWidth + "×" + window.innerHeight + " @" + (window.devicePixelRatio||1) + "x"],
+    ["Touch", TOUCH ? "yes" : "no"],
+    ["Dark mode preferred", window.matchMedia("(prefers-color-scheme: dark)").matches ? "yes" : "no"],
+    ["Theme setting", THEME_NAME[theme]],
+    ["CSS :has()", (function(){ try{ return CSS.supports("selector(:has(*))") ? "yes" : "NO"; }catch(e){ return "NO"; } })()],
+    ["CSS gap in flex", CSS.supports("gap","1px") ? "yes" : "NO"],
+    ["localStorage", (function(){ try{ localStorage.setItem("_t","1"); localStorage.removeItem("_t"); return "works"; }catch(e){ return "BLOCKED"; } })()],
+    ["Hub reachable", HUB_ENABLED ? "enabled" : "off (not self-hosted)"],
+    ["User agent", ua]
+  ];
+  $("diagBody").innerHTML = tests.map(function(t){
+    const bad = /^(NO|BLOCKED)$/.test(String(t[1]));
+    return '<div style="display:flex;gap:10px;padding:3px 0;font-size:12.5px">'
+      + '<span style="color:var(--ink-3);min-width:150px">' + esc(t[0]) + '</span>'
+      + '<span class="mono" style="word-break:break-all;' + (bad ? "color:var(--bad);font-weight:600" : "") + '">' + esc(t[1]) + '</span></div>';
+  }).join("");
+}
+$("foldDiag").addEventListener("toggle", function(){ if(this.open) fillDiag(); });
+
 /* ── boot ── */
+try{ const t = localStorage.getItem(THEME_KEY); if(THEMES.indexOf(t) >= 0) theme = t; }catch(e){}
+applyTheme();
+try{ keyboardOn = localStorage.getItem(KB_KEY) === "1"; }catch(e){}
+applyKeyboardMode();
 load();
 $("knownTags").value = S.known;
 $("dScanner").value = S.scanner || "";

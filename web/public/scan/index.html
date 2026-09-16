@@ -97,7 +97,7 @@ button,input,select,textarea{font:inherit;color:inherit}
   .mark b{font-size:18px}
   .tally{gap:14px}
   .tally .n{font-size:17px}
-  .slab{position:sticky;top:56px;z-index:15;padding:14px}
+  .slab{padding:14px}
   .state{font-size:clamp(24px,7vw,32px)}
   .substate{font-size:13px;margin-bottom:10px;min-height:0}
   .gun input{padding:15px 14px;font-size:18px}
@@ -114,6 +114,12 @@ button,input,select,textarea{font:inherit;color:inherit}
   #csvOut{height:150px}
   .tablewrap{max-height:none}
 }
+/* The scan slab is deliberately NOT sticky on a handheld. Pinning it meant
+   anything scrolled up behind it stayed visible but stopped taking taps — the
+   control looked fine and did nothing. A reachable scan box is not worth a
+   layer of dead pixels over the settings. */
+/* kill the double-tap zoom delay on every control */
+button,.btn,.seg button,summary,label.toggle{touch-action:manipulation}
 
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow)}
 .card>header{padding:11px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
@@ -192,6 +198,12 @@ button,input,select,textarea{font:inherit;color:inherit}
 .seg.quiet button{font-family:"IBM Plex Mono",monospace;font-size:13px;letter-spacing:.02em;text-transform:none;padding:7px 8px;line-height:1.25}
 .seg.quiet .mm{display:block;font-weight:600}
 .seg.quiet .mf{display:block;font-family:"Barlow",sans-serif;font-size:11px;letter-spacing:.06em;text-transform:uppercase;opacity:.72;margin-top:1px}
+/* long make/model lists scroll in place rather than pushing the page down */
+.seg.scroll{
+  max-height:230px;overflow-y:auto;-webkit-overflow-scrolling:touch;
+  border:1px solid var(--line);border-radius:8px;padding:6px;background:var(--surface-2);
+}
+.seg.scroll button{flex:1 1 100%}
 
 /* ─── fields ─── */
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
@@ -1025,21 +1037,20 @@ function renderModelSeg(){
   }
   wrap.style.display = "";
   if(c.pick >= c.models.length) c.pick = 0;
-  if(c.models.length <= SEG_LIMIT){
-    host.className = "seg quiet";
-    host.innerHTML = c.models.map(function(m, i){
-      return '<button data-pick="'+i+'" aria-pressed="'+(i===c.pick)+'">'
-        + '<span class="mm">'+esc(m.md || "—")+'</span>'
-        + '<span class="mf">'+esc(m.mf || "no make")+'</span></button>';
-    }).join("");
-  } else {
-    host.className = "";
-    host.innerHTML = '<select id="modelPick" class="inp">' + c.models.map(function(m, i){
-      return '<option value="'+i+'"'+(i===c.pick?" selected":"")+'>'+esc(m.mf)+' · '+esc(m.md)+'</option>';
-    }).join("") + '</select>';
-    $("modelPick").addEventListener("change", function(){
-      cat().pick = parseInt(this.value,10) || 0; render(); save(); refocus();
-    });
+  /* Always buttons — never a native <select>. The Android picker a select opens
+     is a system dialog, and on rugged WebViews it frequently refuses to appear
+     at all, leaving a control that looks fine and does nothing. A long list just
+     scrolls inside its own box instead. */
+  const many = c.models.length > SEG_LIMIT;
+  host.className = "seg quiet" + (many ? " scroll" : "");
+  host.innerHTML = c.models.map(function(m, i){
+    return '<button type="button" data-pick="'+i+'" aria-pressed="'+(i===c.pick)+'">'
+      + '<span class="mm">'+esc(m.md || "—")+'</span>'
+      + '<span class="mf">'+esc(m.mf || "no make")+'</span></button>';
+  }).join("");
+  if(many){
+    const sel = host.querySelector('button[aria-pressed="true"]');
+    if(sel) host.scrollTop = Math.max(0, sel.offsetTop - host.clientHeight / 2);
   }
 }
 function renderBatchFields(){

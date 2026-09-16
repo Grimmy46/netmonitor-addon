@@ -321,6 +321,11 @@ td .cell-edit:focus{border-style:solid;border-color:var(--brand);background:var(
 .steprow{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:7px;background:var(--surface-2);font-size:13.5px}
 .steprow .n{flex:none;width:20px;height:20px;border-radius:50%;background:var(--brand-soft);color:var(--brand);font-size:11px;font-weight:600;display:grid;place-items:center}
 .steprow .key{margin-left:auto;font-size:11.5px;color:var(--ink-3)}
+.askbox{flex:none;display:flex;align-items:center;gap:5px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);cursor:pointer;padding:4px 2px}
+.askbox input{width:18px;height:18px;accent-color:var(--brand);margin:0}
+.askbox.fixed{opacity:.5;cursor:default;padding-right:22px}
+.steplist.off{margin-top:6px;opacity:.62}
+.steplist.off .steprow{background:transparent;border:1px dashed var(--line)}
 details.fold summary[data-count]:not([data-count=""])::after{
   content:attr(data-count);margin-left:auto;font-family:"IBM Plex Mono",monospace;
   font-size:11px;letter-spacing:0;text-transform:none;color:var(--brand);font-weight:600;
@@ -590,7 +595,7 @@ const TARGET_LABEL = {details:"details.<key>",secondary_serial:"secondary_serial
 
 /* Stamped in when the file is packaged. Shown in the header so "am I on the
    latest build?" is answerable at a glance instead of by faith. */
-const BUILD = "2026-09-16 18:06";
+const BUILD = "2026-09-16 18:22";
 
 const KEY = "rcs-scan-station-v3", PREVKEY = "rcs-scan-station-v2", OLDKEY = "rcs-scan-station-v1";
 const THEME_KEY = "rcs-scan-theme", KB_KEY = "rcs-scan-keyboard";
@@ -679,7 +684,7 @@ const CAT_DETAILS = {
    stamped on every row — a pallet shares a purchase date, not a MAC address. */
 const ENCLOSURES = ["IP54","IP65","IP67","Type 3S"];
 const BATCH_STD = [
-  {key:"venue",             label:"Venue",            kind:"select", options:null,       group:"Assignment"},
+  {key:"venue",             label:"Venue",            kind:"select", options:null, free:true, group:"Assignment"},
   {key:"enclosure_rating",  label:"Enclosure Rating", kind:"select", options:ENCLOSURES, group:"Assignment"},
   {key:"fcc_id",            label:"FCC ID",           kind:"text",   group:"Compliance"},
   {key:"ic_id",             label:"IC ID",            kind:"text",   group:"Compliance"},
@@ -698,7 +703,7 @@ function newCat(key){
     serial: NO_SERIAL_BY_DEFAULT.indexOf(key) < 0,
     /* every detail field the app offers for this category, asked per device */
     fields: (CAT_DETAILS[key] || []).map(function(d){
-      return {id:uid(), key:d[0], label:d[1], target:"details", scope:"device"};
+      return {id:uid(), key:d[0], label:d[1], target:"details", scope:"device", ask:true};
     })
   };
 }
@@ -811,7 +816,8 @@ function applyConfig(data){
       pick: S.cats[k] ? (S.cats[k].pick || 0) : 0,
       fields: (c && Array.isArray(c.fields) ? c.fields : []).map(function(f){
         return {id: f.id || uid(), key: f.key, label: f.label || f.key,
-                target: f.target || "details", scope: f.scope || "device"};
+                target: f.target || "details", scope: f.scope || "device",
+                ask: f.ask !== false};
       })
     };
     if(next[k].pick >= next[k].models.length) next[k].pick = 0;
@@ -852,7 +858,7 @@ async function pushConfig(){
       label: c.label || CAT_LABEL[k] || k, on: !!c.on, serial: !!c.serial,
       models: c.models.map(function(m){ return {mf:m.mf, md:m.md}; }),
       fields: c.fields.filter(function(f){ return f.key; }).map(function(f){
-        return {key:f.key, label:f.label||f.key, target:f.target||"details", scope:f.scope||"device"};
+        return {key:f.key, label:f.label||f.key, target:f.target||"details", scope:f.scope||"device", ask:f.ask !== false};
       })
     };
   });
@@ -938,7 +944,8 @@ function parseScan(raw){
 
 /* ── capture sequence ── */
 function serialOn(){ return $("optSerial").checked; }
-function deviceFields(c){ return (S.cats[c].fields || []).filter(function(f){ return f.scope === "device"; }); }
+function deviceFields(c){ return (S.cats[c].fields || []).filter(function(f){ return f.scope === "device" && f.ask !== false; }); }
+function offFields(c){ return (S.cats[c].fields || []).filter(function(f){ return f.scope === "device" && f.ask === false; }); }
 function batchFields(c){ return (S.cats[c].fields || []).filter(function(f){ return f.scope === "batch"; }); }
 
 function stepsFor(c, wantSerial){
@@ -1287,6 +1294,27 @@ function renderStd(){
     host.innerHTML = BATCH_STD.filter(function(f){ return f.group === g; }).map(function(f){
       const v = S.std[f.key] || "";
       if(f.kind === "select"){
+        /* Venue is free text with the known ones as suggestions — a new lot or
+           office shouldn't need a code change before it can be scanned. Anything
+           the app doesn't know yet is flagged rather than blocked. */
+        if(f.free){
+          /* a text box plus the known values as buttons. Deliberately NOT a
+             <datalist> — the rugged handhelds run an old WebView where native
+             dropdowns don't open, which is the same bug that killed <select>. */
+          const list = f.options || VENUES;
+          const unknown = v && list.indexOf(v) === -1;
+          return '<div class="f"><label for="std-'+f.key+'">'+esc(f.label)+'</label>'
+            + '<input id="std-'+f.key+'" data-std="'+f.key+'" value="'+esc(v)+'"'
+            + ' placeholder="type a new one, or pick below"'
+            + (unknown ? ' class="inp warnfield"' : ' class="inp"') + '>'
+            + (unknown ? '<span class="note" style="color:var(--warn);font-weight:600">New — add it in the app under Settings → Dropdown Options before you import</span>' : '')
+            + '<div class="seg quiet scroll" data-stdpick="'+f.key+'">'
+            + '<button type="button" data-val=""'+(v?"":' aria-pressed="true"')+'>— none —</button>'
+            + list.map(function(o){
+                return '<button type="button" data-val="'+esc(o)+'"'+(o===v?' aria-pressed="true"':'')+'>'+esc(o)+'</button>';
+              }).join("")
+            + '</div></div>';
+        }
         const opts = f.options || VENUES;
         return '<div class="f"><label for="std-'+f.key+'">'+esc(f.label)+'</label>'
           + '<select id="std-'+f.key+'" data-std="'+f.key+'">'
@@ -1298,6 +1326,11 @@ function renderStd(){
         + '<input id="std-'+f.key+'" data-std="'+f.key+'" type="'+(f.kind==="date"?"date":"text")+'" value="'+esc(v)+'"'
         + (f.kind==="date"?'':' placeholder="'+esc(f.label)+'"') + '></div>';
     }).join("");
+    /* bring the chosen value into view in the pick list */
+    Array.prototype.forEach.call(host.querySelectorAll("[data-stdpick]"), function(w){
+      const sel = w.querySelector('button[aria-pressed="true"]');
+      if(sel) w.scrollTop = Math.max(0, sel.offsetTop - w.clientHeight / 2);
+    });
   });
   const set = BATCH_STD.filter(function(f){ return S.std[f.key]; }).length;
   [["foldAssignment","Assignment"],["foldCompliance","Compliance"],["foldDates","Dates"]];
@@ -1316,12 +1349,23 @@ function renderStepList(){
   const host = $("stepList");
   if(!host) return;
   const steps = stepsFor(S.active, serialOn());
+  const off = offFields(S.active);
   host.innerHTML = '<div class="steplist">' + steps.map(function(s, i){
+    const key = s.kind === "field" ? s.field.key : (s.kind === "tag" ? "asset_tag" : "primary_serial");
     return '<div class="steprow"><span class="n mono">'+(i+1)+'</span><span>'+esc(s.label)+'</span>'
-      + (s.kind === "field" ? '<span class="mono key">'+esc(s.field.key)+'</span>' : '<span class="mono key">'+(s.kind==="tag"?"asset_tag":"primary_serial")+'</span>')
+      + '<span class="mono key">'+esc(key)+'</span>'
+      + (s.kind === "field"
+          ? '<label class="askbox"><input type="checkbox" data-ask="'+s.field.id+'" checked><span>ask</span></label>'
+          : '<span class="askbox fixed">always</span>')
       + '</div>';
   }).join("") + '</div>'
-  + '<p class="note" style="margin:8px 0 0">' + steps.length + ' trigger' + (steps.length===1?"":"s") + ' per device for ' + esc(catLabel(S.active)) + '.</p>';
+  + (off.length ? '<div class="steplist off">' + off.map(function(f){
+      return '<div class="steprow"><span class="n mono">\u2014</span><span>'+esc(f.label||f.key)+'</span>'
+        + '<span class="mono key">'+esc(f.key)+'</span>'
+        + '<label class="askbox"><input type="checkbox" data-ask="'+f.id+'"><span>ask</span></label></div>';
+    }).join("") + '</div>' : "")
+  + '<p class="note" style="margin:8px 0 0">' + steps.length + ' trigger' + (steps.length===1?"":"s") + ' per device for ' + esc(catLabel(S.active))
+  + (off.length ? ' \u2014 ' + off.length + ' field' + (off.length===1?"":"s") + ' switched off. Changes here save to the hub for every handheld.' : '. Untick a field to stop it being asked for.') + '</p>';
 }
 
 function extraKeys(){
@@ -1437,6 +1481,16 @@ $("dScanner").addEventListener("input", function(){ S.scanner = this.value; save
   };
   host.addEventListener("input", handler);
   host.addEventListener("change", handler);
+  /* the pick-buttons beside a free-text field */
+  host.addEventListener("click", function(e){
+    const b = e.target.closest ? e.target.closest("[data-val]") : null;
+    if(!b) return;
+    const wrap = b.closest("[data-stdpick]");
+    if(!wrap || !host.contains(wrap)) return;
+    const k = wrap.getAttribute("data-stdpick");
+    S.std[k] = b.getAttribute("data-val") || "";
+    save(); render(); refocus();
+  });
 });
 
 function fillSelect(el, values, labels){
@@ -1518,6 +1572,17 @@ function renderCats(){
   }).join("") + '<datalist id="manuList">' + MANUFACTURERS.map(function(m){ return '<option value="'+esc(m)+'">'; }).join("") + '</datalist>';
 }
 function slug(s){ return String(s||"").toLowerCase().trim().replace(/[^a-z0-9]+/g,"_").replace(/^_+|_+$/g,""); }
+
+/* switching a detail field on or off for a category. This writes to the hub,
+   so a handheld never keeps a private idea of what it should be asking for. */
+$("stepList").addEventListener("change", function(e){
+  const fid = e.target.getAttribute && e.target.getAttribute("data-ask");
+  if(!fid) return;
+  const f = (S.cats[S.active].fields || []).find(function(x){ return x.id === fid; });
+  if(!f) return;
+  f.ask = e.target.checked;
+  render(); save(); pushConfig(); refocus();
+});
 
 $("catList").addEventListener("change", function(e){
   const t = e.target;
@@ -1612,7 +1677,7 @@ $("catList").addEventListener("click", function(e){
   const add = e.target.closest("[data-addfield]");
   if(add){
     const k = add.getAttribute("data-addfield");
-    S.cats[k].fields.push({id:uid(), label:"", key:"", target:"details", scope:"device"});
+    S.cats[k].fields.push({id:uid(), label:"", key:"", target:"details", scope:"device", ask:true});
     renderCats(); render(); save();
     const inputs = document.querySelectorAll('#catList .catrow[data-cat="'+k+'"] [data-flabel]');
     if(inputs.length) focusNoScroll(inputs[inputs.length-1]);
@@ -1754,6 +1819,11 @@ function refreshCsv(){
   S.rows.forEach(function(r){ if(r.category && APP_CATEGORIES.indexOf(r.category) === -1) badCat[r.category] = 1; });
   Object.keys(badCat).forEach(function(cKey){
     notes.push('<div class="warnline" style="margin:0"><span>\u25c6</span><span>Category <b>'+esc(cKey)+'</b> is not one the RCS importer knows \u2014 add it there first, or import these rows into your other asset manager.</span></div>');
+  });
+  const badVenue = {};
+  S.rows.forEach(function(r){ if(r.venue && VENUES.indexOf(r.venue) === -1) badVenue[r.venue] = 1; });
+  Object.keys(badVenue).forEach(function(vn){
+    notes.push('<div class="warnline" style="margin:0"><span>◆</span><span>Venue <b>'+esc(vn)+'</b> is new — add it in the app under Settings → Dropdown Options → Venue before you import.</span></div>');
   });
   const badManu = {};
   S.rows.forEach(function(r){ if(r.manufacturer && MANUFACTURERS.indexOf(r.manufacturer) === -1) badManu[r.manufacturer] = 1; });

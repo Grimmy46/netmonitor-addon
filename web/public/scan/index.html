@@ -184,6 +184,9 @@ button,.btn,.seg button,summary,label.toggle{touch-action:manipulation}
 .btn.armed{background:var(--bad-soft);border-color:var(--bad);color:var(--bad)}
 .btn.armed:hover{background:var(--bad-soft);filter:brightness(.97)}
 .btn.icon{padding:5px 9px}
+.buildchip{font-family:"IBM Plex Mono",monospace;font-size:11.5px;font-weight:500;letter-spacing:0;padding:5px 9px;color:var(--ink-3)}
+.buildchip.stale{background:var(--warn-soft);border-color:var(--warn);color:var(--warn);font-weight:700}
+.buildchip.current{border-color:var(--ok);color:var(--ok)}
 
 /* ─── segmented pickers ─── */
 .seg{display:flex;flex-wrap:wrap;gap:6px}
@@ -337,6 +340,7 @@ details.fold summary[data-count]:not([data-count=""])::after{
     <div><div class="n" id="tDup" style="color:var(--bad)">0</div><div class="l">Conflicts</div></div>
   </div>
   <button class="btn icon" id="btnTheme" title="Dark, light or follow the device" aria-label="Change theme">◐</button>
+  <button class="btn sm buildchip" id="btnBuild" title="Which build this is — tap to fetch the newest">build …</button>
 </header>
 
 <div class="wrap">
@@ -536,6 +540,7 @@ details.fold summary[data-count]:not([data-count=""])::after{
     <div class="phead">
       <span class="eyebrow" id="catTitle">Categories &amp; fields</span>
       <div style="flex:1"></div>
+      <button class="btn sm" id="btnResetCats">Reset to app defaults</button>
       <button class="btn sm" id="btnAddCat">Add category</button>
       <button class="btn sm" id="btnCloseCats">Done</button>
     </div>
@@ -564,6 +569,10 @@ const HEADERS = ["asset_tag","category","status","manufacturer","model","manufac
 /* standard columns a custom field may be mapped onto (the rest are set elsewhere) */
 const TARGETS = ["details","secondary_serial","manufacturer_model_code","part_number","fcc_id","ic_id","enclosure_rating","manufactured_date","purchase_date","warranty_expiry"];
 const TARGET_LABEL = {details:"details.<key>",secondary_serial:"secondary_serial",manufacturer_model_code:"manufacturer_model_code",part_number:"part_number",fcc_id:"fcc_id",ic_id:"ic_id",enclosure_rating:"enclosure_rating",manufactured_date:"manufactured_date",purchase_date:"purchase_date",warranty_expiry:"warranty_expiry"};
+
+/* Stamped in when the file is packaged. Shown in the header so "am I on the
+   latest build?" is answerable at a glance instead of by faith. */
+const BUILD = "2026-09-16 17:33";
 
 const KEY = "rcs-scan-station-v3", PREVKEY = "rcs-scan-station-v2", OLDKEY = "rcs-scan-station-v1";
 const THEME_KEY = "rcs-scan-theme", KB_KEY = "rcs-scan-keyboard";
@@ -1481,6 +1490,33 @@ function closeCats(){
 }
 $("btnCats").addEventListener("click", openCats);
 $("btnCloseCats").addEventListener("click", closeCats);
+/* Throws away an edited or carried-over category config and rebuilds it from
+   the inventory app's own schema. Captured rows are untouched — this is for
+   when the makes, models or fields have drifted from what the app expects. */
+let resetArmed = false, resetTimer = null;
+$("btnResetCats").addEventListener("click", function(){
+  const b = this;
+  if(!resetArmed){
+    resetArmed = true;
+    b.textContent = "Reset — tap again";
+    b.classList.add("armed");
+    clearTimeout(resetTimer);
+    resetTimer = setTimeout(function(){
+      resetArmed = false; b.textContent = "Reset to app defaults"; b.classList.remove("armed");
+    }, 4000);
+    return;
+  }
+  clearTimeout(resetTimer);
+  resetArmed = false; b.textContent = "Reset to app defaults"; b.classList.remove("armed");
+  S.cats = defaultCats();
+  if(!S.cats[S.active] || !S.cats[S.active].on){
+    S.active = CATEGORIES.find(function(k){ return S.cats[k].on; }) || "battery";
+  }
+  $("optSerial").checked = !!(cat() && cat().serial);
+  renderCats(); render(); save();
+  toast("Categories rebuilt from the app's schema — your " + S.rows.length + " scanned rows are untouched");
+});
+
 $("btnAddCat").addEventListener("click", function(){
   const off = CATEGORIES.find(function(k){ return !S.cats[k].on; });
   if(!off){ toast("All nine categories are already switched on"); return; }
@@ -1662,6 +1698,40 @@ $("btnSave").addEventListener("click", function(){
     else { toast("Couldn't save the file — use Copy to clipboard instead"); }
   });
 });
+
+/* ── build identity ──────────────────────────────────────────────────────
+   A cached page can look current and be weeks old. This asks the server what
+   the newest build is and says plainly whether this page is it. */
+function shortBuild(){ return BUILD.replace(/^build /,"").slice(0,16); }
+$("btnBuild").textContent = shortBuild();
+
+async function checkBuild(announce){
+  const chip = $("btnBuild");
+  try{
+    const res = await fetch(location.pathname + "?probe=" + Date.now(), {cache:"no-store"});
+    const txt = await res.text();
+    const m = txt.match(/const BUILD = "([^"]*)"/);
+    const latest = m ? m[1] : null;
+    if(!latest){ return; }
+    if(latest === BUILD){
+      chip.className = "btn sm buildchip current";
+      chip.textContent = shortBuild();
+      if(announce) toast("This is the newest build");
+    } else {
+      chip.className = "btn sm buildchip stale";
+      chip.textContent = "update →";
+      chip.title = "Running " + BUILD + " · newest is " + latest;
+      if(announce){
+        toast("Newer build found — loading it");
+        setTimeout(function(){ location.replace(location.pathname + "?b=" + Date.now()); }, 700);
+      } else {
+        toast("A newer build is available — tap “update”");
+      }
+    }
+  }catch(e){ /* offline on a lot: leave the chip as-is */ }
+}
+$("btnBuild").addEventListener("click", function(){ checkBuild(true); });
+setTimeout(function(){ checkBuild(false); }, 1500);
 
 $("btnTheme").addEventListener("click", function(){
   theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];

@@ -81,10 +81,16 @@ $DOMAIN {
     handle @api {
         reverse_proxy 127.0.0.1:8010
     }
-    # The scan pages are operational tools on handhelds: a cached copy means a
-    # device keeps running a version we already replaced. Always revalidate.
-    @scan path /scan /scan/*
-    header @scan Cache-Control "no-cache, must-revalidate"
+    # The scan pages are operational tools on handhelds, so they get their own
+    # handler: a bare /scan used to fall through to the SPA and land a scanner
+    # on the login screen. Never cached either - a cached copy means a device
+    # keeps running a version we already replaced.
+    handle /scan* {
+        root * $APP/web/dist
+        header Cache-Control "no-cache, must-revalidate"
+        try_files {path} {path}/index.html /scan/index.html
+        file_server
+    }
 
     handle {
         root * $APP/web/dist

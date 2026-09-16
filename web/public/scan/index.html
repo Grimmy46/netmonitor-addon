@@ -341,6 +341,7 @@ details.fold summary[data-count]:not([data-count=""])::after{
   </div>
   <button class="btn icon" id="btnTheme" title="Dark, light or follow the device" aria-label="Change theme">◐</button>
   <button class="btn sm buildchip" id="btnBuild" title="Which build this is — tap to fetch the newest">build …</button>
+  <button class="btn sm buildchip" id="cfgChip" title="Where the categories came from">schema …</button>
 </header>
 
 <div class="wrap">
@@ -572,7 +573,7 @@ const TARGET_LABEL = {details:"details.<key>",secondary_serial:"secondary_serial
 
 /* Stamped in when the file is packaged. Shown in the header so "am I on the
    latest build?" is answerable at a glance instead of by faith. */
-const BUILD = "2026-09-16 17:33";
+const BUILD = "2026-09-16 17:50";
 
 const KEY = "rcs-scan-station-v3", PREVKEY = "rcs-scan-station-v2", OLDKEY = "rcs-scan-station-v1";
 const THEME_KEY = "rcs-scan-theme", KB_KEY = "rcs-scan-keyboard";
@@ -705,29 +706,11 @@ let S = {
 /* ── storage ── */
 function applySaved(p, freshFields){
   S.rows = Array.isArray(p.rows) ? p.rows : [];
-  if(p.cats){
-    Object.keys(S.cats).forEach(function(k){
-      const saved = p.cats[k];
-      if(!saved) return;
-      /* Earlier versions kept one manufacturer per category and a list of
-         plain model strings. Fold those into make+model pairs. */
-      if(Array.isArray(saved.models) && saved.models.length && typeof saved.models[0] === "string"){
-        const mf = saved.manufacturer || "";
-        const idx = saved.models.indexOf(saved.model);
-        saved.models = saved.models.map(function(md){ return {mf:mf, md:md}; });
-        saved.pick = idx > 0 ? idx : 0;
-      }
-      delete saved.manufacturer; delete saved.model;
-      /* On the v2→v3 upgrade the category gains the app's detail fields. Keep
-         anything the operator added themselves, but don't lose the new ones. */
-      let fields = S.cats[k].fields;
-      if(!freshFields){ fields = Array.isArray(saved.fields) ? saved.fields : fields; }
-      else if(Array.isArray(saved.fields) && saved.fields.length){
-        const known = fields.map(function(f){ return f.key; });
-        fields = fields.concat(saved.fields.filter(function(f){ return known.indexOf(f.key) === -1; }));
-      }
-      S.cats[k] = Object.assign(S.cats[k], saved, {fields:fields});
-      if(typeof S.cats[k].pick !== "number") S.cats[k].pick = 0;
+  /* Any `cats` in an old saved blob is deliberately ignored — the schema comes
+     from the server now. Only the operator's last model choice is worth keeping. */
+  if(p.picks){
+    Object.keys(p.picks).forEach(function(k){
+      if(S.cats[k] && typeof p.picks[k] === "number") S.cats[k].pick = p.picks[k];
     });
   }
   S.active = p.active && S.cats[p.active] ? p.active : S.active;
@@ -765,7 +748,117 @@ function load(){
     if(typeof p.known === "string") S.known = p.known;
   }catch(e){}
 }
-function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
+/* The category schema is NOT saved here. It lives on the server and is fetched
+   on every open. Keeping a copy per device is what let one handheld end up
+   offering a PAX E700M under Battery with no way to shift it. Only the
+   operator's own in-progress work is local. */
+function save(){
+  try{
+    localStorage.setItem(KEY, JSON.stringify({
+      rows: S.rows, active: S.active, scanner: S.scanner,
+      defaults: S.defaults, std: S.std, batch: S.batch,
+      opts: S.opts, known: S.known,
+      picks: (function(){ const o = {}; Object.keys(S.cats).forEach(function(k){ o[k] = S.cats[k].pick || 0; }); return o; })()
+    }));
+  }catch(e){}
+}
+
+/* ── the schema comes from the server ─────────────────────────────────────
+   One copy, on the hub, for every handheld. The bundled presets above are only
+   a fallback for a device that cannot reach the hub, and when that happens the
+   page says so rather than pretending. */
+const CONFIG_PATH = "/scan-config";
+let configVersion = null, configSource = "bundled";
+
+function applyConfig(data){
+  if(!data || !data.categories) return false;
+  const next = {};
+  CATEGORIES.forEach(function(k){
+    const c = data.categories[k];
+    next[k] = {
+      key: k,
+      on: c ? !!c.on : false,
+      serial: c ? !!c.serial : true,
+      models: (c && Array.isArray(c.models) ? c.models : []).map(function(m){
+        return {mf: m.mf || "", md: m.md || ""};
+      }),
+      pick: S.cats[k] ? (S.cats[k].pick || 0) : 0,
+      fields: (c && Array.isArray(c.fields) ? c.fields : []).map(function(f){
+        return {id: f.id || uid(), key: f.key, label: f.label || f.key,
+                target: f.target || "details", scope: f.scope || "device"};
+      })
+    };
+    if(next[k].pick >= next[k].models.length) next[k].pick = 0;
+  });
+  S.cats = next;
+  if(!S.cats[S.active] || !S.cats[S.active].on){
+    S.active = CATEGORIES.find(function(k){ return S.cats[k].on; }) || "battery";
+  }
+  return true;
+}
+
+async function fetchConfig(announce){
+  try{
+    const res = await fetch(CONFIG_PATH + "?t=" + Date.now(), {
+      cache: "no-store", headers: {"X-Scan-Token": HUB.token}
+    });
+    if(!res.ok) throw new Error("hub returned " + res.status);
+    const body = await res.json();
+    if(!applyConfig(body.data)) throw new Error("hub sent an unusable config");
+    configVersion = body.version; configSource = "hub";
+    $("optSerial").checked = !!(cat() && cat().serial);
+    render(); renderConfigChip();
+    if(announce) toast("Categories reloaded from the hub (v" + configVersion + ")");
+    return true;
+  }catch(e){
+    configSource = "bundled";
+    renderConfigChip();
+    if(announce) toast("Can't reach the hub — using the built-in schema");
+    return false;
+  }
+}
+
+async function pushConfig(){
+  const data = {order: CATEGORIES.slice(), categories: {}};
+  CATEGORIES.forEach(function(k){
+    const c = S.cats[k];
+    data.categories[k] = {
+      label: CAT_LABEL[k], on: !!c.on, serial: !!c.serial,
+      models: c.models.map(function(m){ return {mf:m.mf, md:m.md}; }),
+      fields: c.fields.filter(function(f){ return f.key; }).map(function(f){
+        return {key:f.key, label:f.label||f.key, target:f.target||"details", scope:f.scope||"device"};
+      })
+    };
+  });
+  try{
+    const res = await fetch(CONFIG_PATH, {
+      method: "PUT",
+      headers: {"Content-Type":"application/json", "X-Scan-Token": HUB.token},
+      body: JSON.stringify({data: data})
+    });
+    if(!res.ok) throw new Error("hub returned " + res.status);
+    const body = await res.json();
+    configVersion = body.version; configSource = "hub";
+    renderConfigChip();
+    toast("Saved to the hub — every handheld picks this up (v" + configVersion + ")");
+  }catch(e){
+    toast("Couldn't save to the hub — this change is local only");
+  }
+}
+
+function renderConfigChip(){
+  const el = $("cfgChip");
+  if(!el) return;
+  if(configSource === "hub"){
+    el.className = "btn sm buildchip current";
+    el.textContent = "schema v" + configVersion;
+    el.title = "Categories are coming from the hub. Tap to reload them.";
+  } else {
+    el.className = "btn sm buildchip stale";
+    el.textContent = "offline schema";
+    el.title = "Can't reach the hub — showing the schema built into this page. Tap to retry.";
+  }
+}
 
 function cat(){ return S.cats[S.active]; }
 function pick(){ const c = cat(); return (c && c.models && c.models[c.pick]) || {mf:"", md:""}; }
@@ -1049,7 +1142,7 @@ function renderInner(){
   computeFlags();
   renderCatSeg(); renderModelSeg(); renderBatchFields(); renderStd(); renderStepList();
   renderSlab(); renderTable();
-  syncToggleClasses();
+  syncToggleClasses(); renderConfigChip();
 
   const dup = S.rows.filter(function(r){ return r._flag === "dup"; }).length;
   const inc = S.rows.filter(function(r){ return r._flag === "incomplete"; }).length;
@@ -1487,6 +1580,7 @@ function openCats(){ renderCats(); $("catSheet").setAttribute("open",""); }
 function closeCats(){
   CATEGORIES.forEach(function(k){ S.cats[k].fields = S.cats[k].fields.filter(function(f){ return f.key; }); });
   $("catSheet").removeAttribute("open"); render(); save(); refocus();
+  if(HUB_ENABLED) pushConfig();   // one schema for every handheld
 }
 $("btnCats").addEventListener("click", openCats);
 $("btnCloseCats").addEventListener("click", closeCats);
@@ -1508,13 +1602,24 @@ $("btnResetCats").addEventListener("click", function(){
   }
   clearTimeout(resetTimer);
   resetArmed = false; b.textContent = "Reset to app defaults"; b.classList.remove("armed");
-  S.cats = defaultCats();
-  if(!S.cats[S.active] || !S.cats[S.active].on){
-    S.active = CATEGORIES.find(function(k){ return S.cats[k].on; }) || "battery";
-  }
-  $("optSerial").checked = !!(cat() && cat().serial);
-  renderCats(); render(); save();
-  toast("Categories rebuilt from the app's schema — your " + S.rows.length + " scanned rows are untouched");
+  /* Reset on the hub, not just here — so every handheld is corrected at once
+     rather than each one needing to be found and fixed. */
+  fetch(CONFIG_PATH + "/reset", {method:"POST", headers:{"X-Scan-Token": HUB.token}})
+    .then(function(r){ if(!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function(){ return fetchConfig(false); })
+    .then(function(){
+      renderCats(); render(); save();
+      toast("Schema reset on the hub — all handhelds corrected. Your " + S.rows.length + " rows are untouched.");
+    })
+    .catch(function(){
+      S.cats = defaultCats();
+      if(!S.cats[S.active] || !S.cats[S.active].on){
+        S.active = CATEGORIES.find(function(k){ return S.cats[k].on; }) || "battery";
+      }
+      $("optSerial").checked = !!(cat() && cat().serial);
+      renderCats(); render(); save();
+      toast("Hub unreachable — reset locally only");
+    });
 });
 
 $("btnAddCat").addEventListener("click", function(){
@@ -1793,7 +1898,17 @@ if(!S.cats[S.active] || !S.cats[S.active].on){
 }
 $("optSerial").checked = !!(cat() && cat().serial);
 render();
+renderConfigChip();
 setTimeout(refocus, 60);
+
+/* Categories come from the hub. Render immediately with what's bundled so the
+   page is usable at once, then correct it from the server. */
+if(HUB_ENABLED){
+  fetchConfig(false);
+  $("cfgChip").addEventListener("click", function(){ fetchConfig(true); });
+} else {
+  $("cfgChip").style.display = "none";
+}
 })();
 </script>
 

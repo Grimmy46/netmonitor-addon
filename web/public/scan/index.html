@@ -311,6 +311,14 @@ td .cell-edit:focus{border-style:solid;border-color:var(--brand);background:var(
 @media (max-width:640px){.fieldrow{grid-template-columns:1fr 1fr;}.fieldrow .del{grid-column:2;justify-self:end}}
 .tiny{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
 .mmrow{display:grid;grid-template-columns:1fr 1fr 34px;gap:8px;align-items:center}
+.steplist{display:flex;flex-direction:column;gap:4px}
+.steprow{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:7px;background:var(--surface-2);font-size:13.5px}
+.steprow .n{flex:none;width:20px;height:20px;border-radius:50%;background:var(--brand-soft);color:var(--brand);font-size:11px;font-weight:600;display:grid;place-items:center}
+.steprow .key{margin-left:auto;font-size:11.5px;color:var(--ink-3)}
+details.fold summary[data-count]:not([data-count=""])::after{
+  content:attr(data-count);margin-left:auto;font-family:"IBM Plex Mono",monospace;
+  font-size:11px;letter-spacing:0;text-transform:none;color:var(--brand);font-weight:600;
+}
 .warnfield{border-color:var(--warn)!important;background:var(--warn-soft)}
 </style>
 
@@ -391,14 +399,34 @@ td .cell-edit:focus{border-style:solid;border-color:var(--brand);background:var(
         <p class="note" style="margin:0">Each row keeps the category, model, area and fields that were set the moment it was scanned. Change them mid-session and only later scans pick up the new values.</p>
       </div>
 
-      <details class="fold" id="foldDefaults">
-        <summary>Fixed for this batch</summary>
+      <details class="fold" id="foldAssign">
+        <summary>Assignment</summary>
         <div class="body">
           <div class="grid2">
             <div class="f"><label for="dOwner">Owner</label><select id="dOwner"></select></div>
             <div class="f"><label for="dStatus">Status</label><select id="dStatus"></select></div>
           </div>
-          <p class="note" style="margin:10px 0 0">Manufacturer comes from the category. Venue is left blank on every row — assign it in the app once these are in.</p>
+          <div class="grid2" style="margin-top:10px" id="stdAssignment"></div>
+          <p class="note" style="margin:10px 0 0">Manufacturer and model come from the category above. Area is in the main panel because it changes most often.</p>
+        </div>
+      </details>
+
+      <details class="fold" id="foldCompliance">
+        <summary>Compliance</summary>
+        <div class="body"><div class="grid2" id="stdCompliance"></div>
+          <p class="note" style="margin:10px 0 0">Stamped on every row from here forward — right for a pallet that shares an approval, wrong if they differ per device.</p>
+        </div>
+      </details>
+
+      <details class="fold" id="foldDates">
+        <summary>Dates</summary>
+        <div class="body"><div class="grid2" id="stdDates"></div></div>
+      </details>
+
+      <details class="fold" id="foldSteps">
+        <summary>Details asked per device</summary>
+        <div class="body"><div id="stepList"></div>
+          <p class="note" style="margin:10px 0 0">These mirror the app's <b>Details (&lt;Category&gt;)</b> section and are asked as extra triggers on every device. Switch any of them off — or change one to a batch value — under <b>Edit categories</b>.</p>
         </div>
       </details>
 
@@ -529,6 +557,7 @@ const CATEGORIES = ["battery","kds","kiosk","network","other","payment","pos","p
 const CAT_LABEL = {battery:"Battery",kds:"KDS",kiosk:"Kiosk",network:"Network",other:"Other",payment:"Payment",pos:"POS",printer:"Printer",scanner:"Scanner"};
 const MANUFACTURERS = ["Zebra","Citizen","Epson","Inseego","Meraki","Nexus","PAX","Starlink","Sunmi","TPlink","UniFi","Verizon"];
 const OWNERS = ["RCS Technology","RCS Corporate","2G3B Concessions","ARH Concessions","BBrews","FunPass+","J&A Concessions","Odyssey Foods","Trinity Concessions"];
+const VENUES = ["2026 OCF","2026 USF","ARK","Big Dogs","Biggy's 2","Candy Factory","Cookie Joint","Corn Shack","Cowboy Kettle Corn","Enzo's Pizza","Fried a fair 1","Fried a fair 2","Funnel Cake 1","Funnel Cake 2","Glo","Lemonade Shake Up","Michelagua 1","Michelagua 2","Michelagua 3","Michelagua 4","Mini Donuts","Mustards","NOA","OJ House Phoenix","OJ House Trailer","Pineapple Express","Squeezers 1","Squeezers 2","Squeezers 3","Squeezers 4","Streat Fair","Sweet Dreams","Sweeties","Swirl Icecream","Ticketing office"];
 const STATUSES = ["active","in_repair","retired","in_transit","in_storage","missing","sold"];
 const STATUS_LABEL = {active:"Active",in_repair:"In Repair",retired:"Retired",in_transit:"In Transit",in_storage:"In Storage",missing:"Missing",sold:"Sold"};
 const HEADERS = ["asset_tag","category","status","manufacturer","model","manufacturer_model_code","part_number","primary_serial","secondary_serial","fcc_id","ic_id","contains_fcc_id","contains_ic_id","manufactured_date","purchase_date","warranty_expiry","enclosure_rating","owner","venue","area"];
@@ -536,7 +565,7 @@ const HEADERS = ["asset_tag","category","status","manufacturer","model","manufac
 const TARGETS = ["details","secondary_serial","manufacturer_model_code","part_number","fcc_id","ic_id","enclosure_rating","manufactured_date","purchase_date","warranty_expiry"];
 const TARGET_LABEL = {details:"details.<key>",secondary_serial:"secondary_serial",manufacturer_model_code:"manufacturer_model_code",part_number:"part_number",fcc_id:"fcc_id",ic_id:"ic_id",enclosure_rating:"enclosure_rating",manufactured_date:"manufactured_date",purchase_date:"purchase_date",warranty_expiry:"warranty_expiry"};
 
-const KEY = "rcs-scan-station-v2", OLDKEY = "rcs-scan-station-v1";
+const KEY = "rcs-scan-station-v3", PREVKEY = "rcs-scan-station-v2", OLDKEY = "rcs-scan-station-v1";
 const THEME_KEY = "rcs-scan-theme", KB_KEY = "rcs-scan-keyboard";
 const $ = function(id){ return document.getElementById(id); };
 
@@ -602,6 +631,36 @@ const ON_BY_DEFAULT = ["battery","scanner","network","pos","printer","payment"];
 /* Zebra batteries carry no serial; everything else does. */
 const NO_SERIAL_BY_DEFAULT = ["battery"];
 
+/* The inventory app's own "Details (<Category>)" section, field for field and
+   key for key, read off its Add-device form. Capturing these here means a
+   scanned row carries the same detail keys the app would have written. */
+const CAT_DETAILS = {
+  battery: [],
+  scanner: [["wifi_mac","Wi-Fi MAC"],["bluetooth_mac","Bluetooth MAC"],["firmware_version","Firmware Version"]],
+  pos:     [["lan_mac","LAN MAC"],["wifi_mac","Wi-Fi MAC"],["imei","IMEI"]],
+  network: [["wifi_mac","Wi-Fi MAC"],["lan_mac","LAN MAC"],["imei","IMEI"],
+            ["carrier","Carrier"],["ip_address","IP Address"],["firmware_version","Firmware Version"]],
+  printer: [["lan_mac","LAN MAC"],["wifi_mac","Wi-Fi MAC"],["paper_spec","Paper Spec"],["ribbon_spec","Ribbon Spec"]],
+  payment: [["lan_mac","LAN MAC"],["wifi_mac","Wi-Fi MAC"],["imei","IMEI"],
+            ["merchant_id","Merchant ID"],["terminal_id","Terminal ID"],["pci_compliance_date","PCI Compliance Date"]],
+  kds:     [["wifi_mac","Wi-Fi MAC"],["firmware_version","Firmware Version"],["os_version","OS Version"],["screen_size","Screen Size"]],
+  kiosk:   [["wifi_mac","Wi-Fi MAC"],["firmware_version","Firmware Version"],["os_version","OS Version"],["screen_size","Screen Size"]],
+  other:   []   // the app takes free-form Key/Value here; add your own below
+};
+
+/* The app's Assignment / Compliance / Dates fields. Set once in the rail and
+   stamped on every row — a pallet shares a purchase date, not a MAC address. */
+const ENCLOSURES = ["IP54","IP65","IP67","Type 3S"];
+const BATCH_STD = [
+  {key:"venue",             label:"Venue",            kind:"select", options:null,       group:"Assignment"},
+  {key:"enclosure_rating",  label:"Enclosure Rating", kind:"select", options:ENCLOSURES, group:"Assignment"},
+  {key:"fcc_id",            label:"FCC ID",           kind:"text",   group:"Compliance"},
+  {key:"ic_id",             label:"IC ID",            kind:"text",   group:"Compliance"},
+  {key:"manufactured_date", label:"Manufactured",     kind:"date",   group:"Dates"},
+  {key:"purchase_date",     label:"Purchased",        kind:"date",   group:"Dates"},
+  {key:"warranty_expiry",   label:"Warranty Expiry",  kind:"date",   group:"Dates"}
+];
+
 function newCat(key){
   return {
     key: key,
@@ -609,7 +668,10 @@ function newCat(key){
     models: (PRESETS[key] || []).map(function(p){ return {mf:p[0], md:p[1]}; }),
     pick: 0,
     serial: NO_SERIAL_BY_DEFAULT.indexOf(key) < 0,
-    fields: []
+    /* every detail field the app offers for this category, asked per device */
+    fields: (CAT_DETAILS[key] || []).map(function(d){
+      return {id:uid(), key:d[0], label:d[1], target:"details", scope:"device"};
+    })
   };
 }
 function defaultCats(){
@@ -624,6 +686,7 @@ let S = {
   cats: defaultCats(),
   active: "battery",
   defaults: { owner:"RCS Technology", status:"active", area:"" },
+  std: {},                   // the app's Assignment/Compliance/Dates fields, batch-wide
   batch: {},                 // {catKey:{fieldId:value}}
   opts: { smart:true, idle:true, beep:true },
   known: "",
@@ -631,39 +694,51 @@ let S = {
 };
 
 /* ── storage ── */
+function applySaved(p, freshFields){
+  S.rows = Array.isArray(p.rows) ? p.rows : [];
+  if(p.cats){
+    Object.keys(S.cats).forEach(function(k){
+      const saved = p.cats[k];
+      if(!saved) return;
+      /* Earlier versions kept one manufacturer per category and a list of
+         plain model strings. Fold those into make+model pairs. */
+      if(Array.isArray(saved.models) && saved.models.length && typeof saved.models[0] === "string"){
+        const mf = saved.manufacturer || "";
+        const idx = saved.models.indexOf(saved.model);
+        saved.models = saved.models.map(function(md){ return {mf:mf, md:md}; });
+        saved.pick = idx > 0 ? idx : 0;
+      }
+      delete saved.manufacturer; delete saved.model;
+      /* On the v2→v3 upgrade the category gains the app's detail fields. Keep
+         anything the operator added themselves, but don't lose the new ones. */
+      let fields = S.cats[k].fields;
+      if(!freshFields){ fields = Array.isArray(saved.fields) ? saved.fields : fields; }
+      else if(Array.isArray(saved.fields) && saved.fields.length){
+        const known = fields.map(function(f){ return f.key; });
+        fields = fields.concat(saved.fields.filter(function(f){ return known.indexOf(f.key) === -1; }));
+      }
+      S.cats[k] = Object.assign(S.cats[k], saved, {fields:fields});
+      if(typeof S.cats[k].pick !== "number") S.cats[k].pick = 0;
+    });
+  }
+  S.active = p.active && S.cats[p.active] ? p.active : S.active;
+  S.defaults = Object.assign(S.defaults, p.defaults || {});
+  S.std = p.std || {};
+  S.batch = p.batch || {};
+  S.opts = Object.assign(S.opts, p.opts || {});
+  S.known = typeof p.known === "string" ? p.known : "";
+  S.scanner = typeof p.scanner === "string" ? p.scanner : "";
+}
+
 function load(){
   let raw = null;
   try{ raw = localStorage.getItem(KEY); }catch(e){}
-  if(raw){
-    try{
-      const p = JSON.parse(raw);
-      S.rows = Array.isArray(p.rows) ? p.rows : [];
-      if(p.cats){
-        Object.keys(S.cats).forEach(function(k){
-          const saved = p.cats[k];
-          if(!saved) return;
-          /* Earlier versions kept one manufacturer per category and a list of
-             plain model strings. Fold those into make+model pairs. */
-          if(Array.isArray(saved.models) && saved.models.length && typeof saved.models[0] === "string"){
-            const mf = saved.manufacturer || "";
-            const idx = saved.models.indexOf(saved.model);
-            saved.models = saved.models.map(function(md){ return {mf:mf, md:md}; });
-            saved.pick = idx > 0 ? idx : 0;
-          }
-          delete saved.manufacturer; delete saved.model;
-          S.cats[k] = Object.assign(S.cats[k], saved);
-          if(typeof S.cats[k].pick !== "number") S.cats[k].pick = 0;
-        });
-      }
-      S.active = p.active && S.cats[p.active] ? p.active : S.active;
-      S.defaults = Object.assign(S.defaults, p.defaults || {});
-      S.batch = p.batch || {};
-      S.opts = Object.assign(S.opts, p.opts || {});
-      S.known = typeof p.known === "string" ? p.known : "";
-      S.scanner = typeof p.scanner === "string" ? p.scanner : "";
-    }catch(e){}
-    return;
-  }
+  if(raw){ try{ applySaved(JSON.parse(raw), false); }catch(e){} return; }
+  /* v2 session: carry it forward and fold in the new per-category detail fields */
+  try{
+    const prev = localStorage.getItem(PREVKEY);
+    if(prev){ applySaved(JSON.parse(prev), true); return; }
+  }catch(e){}
   /* migrate a v1 session so an in-progress batch is never lost */
   try{
     const old = localStorage.getItem(OLDKEY);
@@ -765,7 +840,10 @@ function commitPending(){
   S.rows.unshift({
     id: uid(), tag:String(p.tag).trim(), serial:String(p.serial||"").trim(),
     category:p.cat, manufacturer:mm.mf, model:mm.md,
-    owner:S.defaults.owner, status:S.defaults.status, venue:"", area:S.defaults.area,
+    owner:S.defaults.owner, status:S.defaults.status, area:S.defaults.area,
+    /* the app's Assignment/Compliance/Dates values as they stand right now */
+    std: (function(){ const o = {}; BATCH_STD.forEach(function(f){ if(S.std[f.key]) o[f.key] = S.std[f.key]; }); return o; })(),
+    venue: S.std.venue || "",
     wantSerial:p.wantSerial,
     extras: p.extras.concat(batchFields(p.cat).map(function(f){
       return {key:f.key, label:f.label||f.key, target:f.target||"details", value:(S.batch[p.cat]&&S.batch[p.cat][f.id])||""};
@@ -960,7 +1038,8 @@ function render(){
 }
 function renderInner(){
   computeFlags();
-  renderCatSeg(); renderModelSeg(); renderBatchFields(); renderSlab(); renderTable();
+  renderCatSeg(); renderModelSeg(); renderBatchFields(); renderStd(); renderStepList();
+  renderSlab(); renderTable();
   syncToggleClasses();
 
   const dup = S.rows.filter(function(r){ return r._flag === "dup"; }).length;
@@ -1065,6 +1144,52 @@ function renderBatchFields(){
     }).join("") + '</div></div>';
 }
 
+/* the app's Assignment / Compliance / Dates fields, rendered into their sections */
+function renderStd(){
+  const groups = {Assignment:"stdAssignment", Compliance:"stdCompliance", Dates:"stdDates"};
+  Object.keys(groups).forEach(function(g){
+    const host = $(groups[g]);
+    if(!host) return;
+    host.innerHTML = BATCH_STD.filter(function(f){ return f.group === g; }).map(function(f){
+      const v = S.std[f.key] || "";
+      if(f.kind === "select"){
+        const opts = f.options || VENUES;
+        return '<div class="f"><label for="std-'+f.key+'">'+esc(f.label)+'</label>'
+          + '<select id="std-'+f.key+'" data-std="'+f.key+'">'
+          + '<option value="">— none —</option>'
+          + opts.map(function(o){ return '<option value="'+esc(o)+'"'+(o===v?" selected":"")+'>'+esc(o)+'</option>'; }).join("")
+          + '</select></div>';
+      }
+      return '<div class="f"><label for="std-'+f.key+'">'+esc(f.label)+'</label>'
+        + '<input id="std-'+f.key+'" data-std="'+f.key+'" type="'+(f.kind==="date"?"date":"text")+'" value="'+esc(v)+'"'
+        + (f.kind==="date"?'':' placeholder="'+esc(f.label)+'"') + '></div>';
+    }).join("");
+  });
+  const set = BATCH_STD.filter(function(f){ return S.std[f.key]; }).length;
+  [["foldAssignment","Assignment"],["foldCompliance","Compliance"],["foldDates","Dates"]];
+  const badge = function(id, g){
+    const el = $(id); if(!el) return;
+    const n = BATCH_STD.filter(function(f){ return f.group === g && S.std[f.key]; }).length;
+    const s = el.querySelector("summary");
+    if(s) s.dataset.count = n ? n + " set" : "";
+  };
+  badge("foldAssign","Assignment"); badge("foldCompliance","Compliance"); badge("foldDates","Dates");
+  return set;
+}
+
+/* a plain read-out of what each device will be asked for, in order */
+function renderStepList(){
+  const host = $("stepList");
+  if(!host) return;
+  const steps = stepsFor(S.active, serialOn());
+  host.innerHTML = '<div class="steplist">' + steps.map(function(s, i){
+    return '<div class="steprow"><span class="n mono">'+(i+1)+'</span><span>'+esc(s.label)+'</span>'
+      + (s.kind === "field" ? '<span class="mono key">'+esc(s.field.key)+'</span>' : '<span class="mono key">'+(s.kind==="tag"?"asset_tag":"primary_serial")+'</span>')
+      + '</div>';
+  }).join("") + '</div>'
+  + '<p class="note" style="margin:8px 0 0">' + steps.length + ' trigger' + (steps.length===1?"":"s") + ' per device for ' + esc(CAT_LABEL[S.active]||S.active) + '.</p>';
+}
+
 function extraKeys(){
   const seen = [];
   S.rows.forEach(function(r){ (r.extras||[]).forEach(function(e){ if(seen.indexOf(e.key) === -1) seen.push(e.key); }); });
@@ -1163,6 +1288,22 @@ $("btnClearKnown").addEventListener("click", function(){ $("knownTags").value = 
 $("knownTags").addEventListener("input", function(){ S.known = this.value; render(); save(); });
 $("dArea").addEventListener("input", function(){ S.defaults.area = this.value; render(); save(); });
 $("dScanner").addEventListener("input", function(){ S.scanner = this.value; save(); });
+
+/* Assignment / Compliance / Dates inputs are rebuilt on every render, so listen
+   on their containers rather than the fields themselves. */
+["stdAssignment","stdCompliance","stdDates"].forEach(function(id){
+  const host = $(id);
+  if(!host) return;
+  const handler = function(e){
+    const k = e.target.getAttribute && e.target.getAttribute("data-std");
+    if(!k) return;
+    S.std[k] = e.target.value;
+    save();
+    if(e.type === "change") render();
+  };
+  host.addEventListener("input", handler);
+  host.addEventListener("change", handler);
+});
 
 function fillSelect(el, values, labels){
   el.innerHTML = values.map(function(v){ return '<option value="'+esc(v)+'">'+esc(labels ? labels[v] : v)+'</option>'; }).join("");
@@ -1374,6 +1515,8 @@ function buildCsv(cleanOnly){
       asset_tag:r.tag, category:r.category, status:r.status, manufacturer:r.manufacturer,
       model:r.model, primary_serial:r.serial, owner:r.owner, venue:r.venue || "", area:r.area
     };
+    /* Assignment / Compliance / Dates — each maps straight onto its own column */
+    Object.keys(r.std || {}).forEach(function(k){ if(r.std[k]) map[k] = r.std[k]; });
     (r.extras||[]).forEach(function(e){
       if(e.value === "") return;
       const t = e.target || "details";

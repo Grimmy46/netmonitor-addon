@@ -314,6 +314,9 @@ td .cell-edit:focus{border-style:solid;border-color:var(--brand);background:var(
 @media (max-width:640px){.fieldrow{grid-template-columns:1fr 1fr;}.fieldrow .del{grid-column:2;justify-self:end}}
 .tiny{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);font-weight:600}
 .mmrow{display:grid;grid-template-columns:1fr 1fr 34px;gap:8px;align-items:center}
+.newcat{display:flex;gap:10px;align-items:flex-end;padding:12px;border:1px solid var(--line-strong);border-radius:var(--r);background:var(--surface-2);margin-bottom:12px}
+.newcat .btn{flex:none}
+.catrow .custom{font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:999px;background:var(--warn-soft);border:1px solid var(--warn);color:var(--warn);font-weight:700}
 .steplist{display:flex;flex-direction:column;gap:4px}
 .steprow{display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:7px;background:var(--surface-2);font-size:13.5px}
 .steprow .n{flex:none;width:20px;height:20px;border-radius:50%;background:var(--brand-soft);color:var(--brand);font-size:11px;font-weight:600;display:grid;place-items:center}
@@ -542,11 +545,17 @@ details.fold summary[data-count]:not([data-count=""])::after{
       <span class="eyebrow" id="catTitle">Categories &amp; fields</span>
       <div style="flex:1"></div>
       <button class="btn sm" id="btnResetCats">Reset to app defaults</button>
-      <button class="btn sm" id="btnAddCat">Add category</button>
       <button class="btn sm" id="btnCloseCats">Done</button>
     </div>
     <div style="padding:14px">
-      <p class="note" style="margin:0 0 14px">Categories must be ones the inventory app already knows, or the import is rejected — so the list below is fixed to its nine. Everything else here is yours: which ones show as buttons, the models each offers, whether it asks for a serial, and any extra fields to capture.</p>
+      <div class="newcat">
+        <div class="f" style="flex:1">
+          <label for="newCatName">Add a category of your own</label>
+          <input id="newCatName" placeholder="e.g. Tablet, Cable, Radio" autocomplete="off" maxlength="40">
+        </div>
+        <button class="btn primary" id="btnAddCat">Add</button>
+      </div>
+      <p class="note" style="margin:0 0 14px">The inventory app validates <b>category</b> on import and only accepts its own nine. A category you add here works fully — it scans, it exports, and it goes to your other asset manager — but the RCS importer will reject those rows until the same category exists there. Anything unknown to the app is flagged amber below and again at export, so it never surprises you at upload.</p>
       <div id="catList"></div>
     </div>
   </div>
@@ -559,8 +568,16 @@ details.fold summary[data-count]:not([data-count=""])::after{
 "use strict";
 
 /* ── vocabularies, read from the app's own pickers ── */
-const CATEGORIES = ["battery","kds","kiosk","network","other","payment","pos","printer","scanner"];
+/* The nine the inventory app validates on import. A category outside this list
+   still works here and still exports — the app will reject those rows unless the
+   category is added there too, so the page says so rather than hiding it. */
+const APP_CATEGORIES = ["battery","kds","kiosk","network","other","payment","pos","printer","scanner"];
+/* The categories that actually exist right now: the app's nine plus any of your
+   own. Order is kept so the buttons don't jump around. */
+let CAT_ORDER = APP_CATEGORIES.slice();
+function CATS(){ return CAT_ORDER; }
 const CAT_LABEL = {battery:"Battery",kds:"KDS",kiosk:"Kiosk",network:"Network",other:"Other",payment:"Payment",pos:"POS",printer:"Printer",scanner:"Scanner"};
+function catLabel(k){ return (S.cats && S.cats[k] && S.cats[k].label) || CAT_LABEL[k] || k || ""; }
 const MANUFACTURERS = ["Zebra","Citizen","Epson","Inseego","Meraki","Nexus","PAX","Starlink","Sunmi","TPlink","UniFi","Verizon"];
 const OWNERS = ["RCS Technology","RCS Corporate","2G3B Concessions","ARH Concessions","BBrews","FunPass+","J&A Concessions","Odyssey Foods","Trinity Concessions"];
 const VENUES = ["2026 OCF","2026 USF","ARK","Big Dogs","Biggy's 2","Candy Factory","Cookie Joint","Corn Shack","Cowboy Kettle Corn","Enzo's Pizza","Fried a fair 1","Fried a fair 2","Funnel Cake 1","Funnel Cake 2","Glo","Lemonade Shake Up","Michelagua 1","Michelagua 2","Michelagua 3","Michelagua 4","Mini Donuts","Mustards","NOA","OJ House Phoenix","OJ House Trailer","Pineapple Express","Squeezers 1","Squeezers 2","Squeezers 3","Squeezers 4","Streat Fair","Sweet Dreams","Sweeties","Swirl Icecream","Ticketing office"];
@@ -573,7 +590,7 @@ const TARGET_LABEL = {details:"details.<key>",secondary_serial:"secondary_serial
 
 /* Stamped in when the file is packaged. Shown in the header so "am I on the
    latest build?" is answerable at a glance instead of by faith. */
-const BUILD = "2026-09-16 17:50";
+const BUILD = "2026-09-16 18:06";
 
 const KEY = "rcs-scan-station-v3", PREVKEY = "rcs-scan-station-v2", OLDKEY = "rcs-scan-station-v1";
 const THEME_KEY = "rcs-scan-theme", KB_KEY = "rcs-scan-keyboard";
@@ -674,6 +691,7 @@ const BATCH_STD = [
 function newCat(key){
   return {
     key: key,
+    label: CAT_LABEL[key] || key,
     on: ON_BY_DEFAULT.indexOf(key) >= 0,
     models: (PRESETS[key] || []).map(function(p){ return {mf:p[0], md:p[1]}; }),
     pick: 0,
@@ -686,7 +704,7 @@ function newCat(key){
 }
 function defaultCats(){
   const c = {};
-  CATEGORIES.forEach(function(k){ c[k] = newCat(k); });
+  APP_CATEGORIES.forEach(function(k){ c[k] = newCat(k); });
   return c;
 }
 
@@ -773,10 +791,18 @@ let configVersion = null, configSource = "bundled";
 function applyConfig(data){
   if(!data || !data.categories) return false;
   const next = {};
-  CATEGORIES.forEach(function(k){
+  /* Drive off the config's own keys so categories you added are kept, and keep
+     the app's nine present even if the hub has never heard of one. */
+  const keys = [];
+  (Array.isArray(data.order) ? data.order : []).forEach(function(k){ if(keys.indexOf(k) < 0) keys.push(k); });
+  Object.keys(data.categories).forEach(function(k){ if(keys.indexOf(k) < 0) keys.push(k); });
+  APP_CATEGORIES.forEach(function(k){ if(keys.indexOf(k) < 0) keys.push(k); });
+  CAT_ORDER = keys;
+  keys.forEach(function(k){
     const c = data.categories[k];
     next[k] = {
       key: k,
+      label: (c && c.label) || CAT_LABEL[k] || k,
       on: c ? !!c.on : false,
       serial: c ? !!c.serial : true,
       models: (c && Array.isArray(c.models) ? c.models : []).map(function(m){
@@ -792,7 +818,7 @@ function applyConfig(data){
   });
   S.cats = next;
   if(!S.cats[S.active] || !S.cats[S.active].on){
-    S.active = CATEGORIES.find(function(k){ return S.cats[k].on; }) || "battery";
+    S.active = CATS().find(function(k){ return S.cats[k].on; }) || "battery";
   }
   return true;
 }
@@ -819,11 +845,11 @@ async function fetchConfig(announce){
 }
 
 async function pushConfig(){
-  const data = {order: CATEGORIES.slice(), categories: {}};
-  CATEGORIES.forEach(function(k){
+  const data = {order: CATS().slice(), categories: {}};
+  CATS().forEach(function(k){
     const c = S.cats[k];
     data.categories[k] = {
-      label: CAT_LABEL[k], on: !!c.on, serial: !!c.serial,
+      label: c.label || CAT_LABEL[k] || k, on: !!c.on, serial: !!c.serial,
       models: c.models.map(function(m){ return {mf:m.mf, md:m.md}; }),
       fields: c.fields.filter(function(f){ return f.key; }).map(function(f){
         return {key:f.key, label:f.label||f.key, target:f.target||"details", scope:f.scope||"device"};
@@ -1153,6 +1179,12 @@ function renderInner(){
   let a = "";
   if(dup) a += '<div class="warnline bad"><span>◆</span><span><b>'+dup+'</b> row'+(dup>1?"s":"")+' would collide with a tag already in the database or scanned twice here. Fix or drop them — the importer rejects duplicate asset tags.</span></div>';
   if(inc) a += '<div class="warnline"><span>◆</span><span><b>'+inc+'</b> row'+(inc>1?"s":"")+' captured without a serial. That still imports; the serial can be filled in later.</span></div>';
+  const badCat = {};
+  S.rows.forEach(function(r){ if(r.category && APP_CATEGORIES.indexOf(r.category) === -1) badCat[r.category] = (badCat[r.category]||0)+1; });
+  Object.keys(badCat).forEach(function(cKey){
+    const n = badCat[cKey];
+    a += '<div class="warnline"><span>\u25c6</span><span><b>'+n+'</b> row'+(n>1?"s":"")+' '+(n>1?"use":"uses")+' the category <b>'+esc(cKey)+'</b>, which is one of yours rather than one of the app\u2019s nine. '+(n>1?"They":"It")+' export'+(n>1?"":"s")+' fine and suit'+(n>1?"":"s")+' your other asset manager, but the RCS importer will reject '+(n>1?"them":"it")+' until that category exists there too.</span></div>';
+  });
   const badManu = {};
   S.rows.forEach(function(r){ if(r.manufacturer && MANUFACTURERS.indexOf(r.manufacturer) === -1) badManu[r.manufacturer] = (badManu[r.manufacturer]||0)+1; });
   Object.keys(badManu).forEach(function(m){
@@ -1200,9 +1232,9 @@ function renderSlab(){
 
 function renderCatSeg(){
   const el = $("catSeg");
-  const on = CATEGORIES.filter(function(k){ return S.cats[k].on; });
+  const on = CATS().filter(function(k){ return S.cats[k].on; });
   el.innerHTML = on.map(function(k){
-    return '<button data-cat="'+k+'" aria-pressed="'+(k===S.active)+'">'+esc(CAT_LABEL[k])+'</button>';
+    return '<button data-cat="'+k+'" aria-pressed="'+(k===S.active)+'">'+esc(catLabel(k))+'</button>';
   }).join("") || '<span class="note">No categories switched on — use Edit categories.</span>';
 }
 /* Up to six make+model pairs get tap targets; beyond that (Network has 19) a
@@ -1289,7 +1321,7 @@ function renderStepList(){
       + (s.kind === "field" ? '<span class="mono key">'+esc(s.field.key)+'</span>' : '<span class="mono key">'+(s.kind==="tag"?"asset_tag":"primary_serial")+'</span>')
       + '</div>';
   }).join("") + '</div>'
-  + '<p class="note" style="margin:8px 0 0">' + steps.length + ' trigger' + (steps.length===1?"":"s") + ' per device for ' + esc(CAT_LABEL[S.active]||S.active) + '.</p>';
+  + '<p class="note" style="margin:8px 0 0">' + steps.length + ' trigger' + (steps.length===1?"":"s") + ' per device for ' + esc(catLabel(S.active)) + '.</p>';
 }
 
 function extraKeys(){
@@ -1312,7 +1344,7 @@ function renderTable(){
       + '<td class="stripe"><i></i></td>'
       + '<td class="tag"><input class="cell-edit mono" data-field="tag" value="'+esc(r.tag)+'" aria-label="Asset tag"></td>'
       + '<td class="ser'+(!r.serial && r.wantSerial ? " empty" : "")+'"><input class="cell-edit mono" data-field="serial" value="'+esc(r.serial)+'" placeholder="'+(r.wantSerial?"— add serial —":"— not needed —")+'" aria-label="Serial"></td>'
-      + '<td><span class="chip">'+esc(CAT_LABEL[r.category]||r.category)+'</span></td>'
+      + '<td><span class="chip">'+esc(catLabel(r.category))+'</span></td>'
       + '<td class="mono" style="color:var(--ink-2);font-size:13px">'+esc(r.model || "—")+'</td>'
       + '<td style="color:var(--ink-2);font-size:13px">'+esc(r.area || "—")+'</td>'
       + keys.map(function(k){ return '<td class="mono" style="color:var(--ink-2);font-size:13px">'+esc(ex[k] || "—")+'</td>'; }).join("")
@@ -1440,13 +1472,15 @@ $("btnClearAll").addEventListener("click", function(){
 
 /* ── category editor ── */
 function renderCats(){
-  $("catList").innerHTML = CATEGORIES.map(function(k){
+  $("catList").innerHTML = CATS().map(function(k){
     const c = S.cats[k];
     return '<div class="catrow'+(c.on?"":" off")+'" data-cat="'+k+'">'
       + '<div class="h">'
-        + '<label class="toggle" style="padding:0"><input type="checkbox" data-on="'+k+'"'+(c.on?" checked":"")+'><span class="name">'+esc(CAT_LABEL[k])+'</span></label>'
+        + '<label class="toggle" style="padding:0"><input type="checkbox" data-on="'+k+'"'+(c.on?" checked":"")+'><span class="name">'+esc(catLabel(k))+'</span></label>'
+        + (APP_CATEGORIES.indexOf(k) < 0 ? ' <span class="custom" title="Not one of the inventory app\'s nine — those rows need the category adding there before they import">yours · '+esc(k)+'</span>' : '')
         + '<div class="spacer"></div>'
         + '<span class="note mono">'+(c.fields.length ? c.fields.length+" custom field"+(c.fields.length>1?"s":"") : "no custom fields")+'</span>'
+        + (APP_CATEGORIES.indexOf(k) < 0 ? '<button class="x" data-catdel="'+k+'" aria-label="Remove this category">×</button>' : '')
       + '</div>'
       + (c.on ? '<div class="b">'
         + '<div>'
@@ -1491,17 +1525,17 @@ $("catList").addEventListener("change", function(e){
   if((k = t.getAttribute("data-on"))){
     S.cats[k].on = t.checked;
     if(!t.checked && S.active === k){
-      const first = CATEGORIES.find(function(x){ return S.cats[x].on; });
+      const first = CATS().find(function(x){ return S.cats[x].on; });
       if(first){ S.active = first; $("optSerial").checked = !!S.cats[first].serial; }
     }
-    if(t.checked && !CATEGORIES.some(function(x){ return S.cats[x].on && x !== k; })) S.active = k;
+    if(t.checked && !CATS().some(function(x){ return S.cats[x].on && x !== k; })) S.active = k;
     renderCats(); render(); save(); return;
   }
   if((k = t.getAttribute("data-serial"))){ S.cats[k].serial = t.checked; if(k===S.active) $("optSerial").checked = t.checked; render(); save(); return; }
   const fid = t.getAttribute("data-ftarget") || t.getAttribute("data-fscope");
   if(fid){
     const which = t.getAttribute("data-ftarget") ? "target" : "scope";
-    CATEGORIES.forEach(function(ck){
+    CATS().forEach(function(ck){
       const f = S.cats[ck].fields.find(function(x){ return x.id === fid; });
       if(f) f[which] = t.value;
     });
@@ -1526,7 +1560,7 @@ $("catList").addEventListener("input", function(e){
   const fid = t.getAttribute("data-flabel") || t.getAttribute("data-fkey");
   if(fid){
     const isLabel = !!t.getAttribute("data-flabel");
-    CATEGORIES.forEach(function(ck){
+    CATS().forEach(function(ck){
       const f = S.cats[ck].fields.find(function(x){ return x.id === fid; });
       if(!f) return;
       if(isLabel){
@@ -1543,12 +1577,27 @@ $("catList").addEventListener("input", function(e){
   }
 });
 $("catList").addEventListener("click", function(e){
+  const catdel = e.target.closest("[data-catdel]");
+  if(catdel){
+    const k = catdel.getAttribute("data-catdel");
+    if(APP_CATEGORIES.indexOf(k) >= 0) return;          // never remove the app's own
+    const label = catLabel(k);
+    delete S.cats[k];
+    CAT_ORDER = CAT_ORDER.filter(function(x){ return x !== k; });
+    if(S.active === k){
+      S.active = CATS().find(function(x){ return S.cats[x].on; }) || APP_CATEGORIES[0];
+      $("optSerial").checked = !!(cat() && cat().serial);
+    }
+    renderCats(); render(); save();
+    toast(label + " removed");
+    return;
+  }
   const addmm = e.target.closest("[data-addmm]");
   if(addmm){
     const k = addmm.getAttribute("data-addmm");
     S.cats[k].models.push({mf:"", md:""});
     renderCats(); render(); save();
-    const ins = document.querySelectorAll('[data-cat="'+k+'"] [data-mf]');
+    const ins = document.querySelectorAll('#catList .catrow[data-cat="'+k+'"] [data-mf]');
     if(ins.length) focusNoScroll(ins[ins.length-1]);
     return;
   }
@@ -1565,20 +1614,20 @@ $("catList").addEventListener("click", function(e){
     const k = add.getAttribute("data-addfield");
     S.cats[k].fields.push({id:uid(), label:"", key:"", target:"details", scope:"device"});
     renderCats(); render(); save();
-    const inputs = document.querySelectorAll('[data-cat="'+k+'"] [data-flabel]');
+    const inputs = document.querySelectorAll('#catList .catrow[data-cat="'+k+'"] [data-flabel]');
     if(inputs.length) focusNoScroll(inputs[inputs.length-1]);
     return;
   }
   const del = e.target.closest("[data-fdel]");
   if(del){
     const fid = del.getAttribute("data-fdel");
-    CATEGORIES.forEach(function(ck){ S.cats[ck].fields = S.cats[ck].fields.filter(function(f){ return f.id !== fid; }); });
+    CATS().forEach(function(ck){ S.cats[ck].fields = S.cats[ck].fields.filter(function(f){ return f.id !== fid; }); });
     renderCats(); render(); save();
   }
 });
 function openCats(){ renderCats(); $("catSheet").setAttribute("open",""); }
 function closeCats(){
-  CATEGORIES.forEach(function(k){ S.cats[k].fields = S.cats[k].fields.filter(function(f){ return f.key; }); });
+  CATS().forEach(function(k){ S.cats[k].fields = S.cats[k].fields.filter(function(f){ return f.key; }); });
   $("catSheet").removeAttribute("open"); render(); save(); refocus();
   if(HUB_ENABLED) pushConfig();   // one schema for every handheld
 }
@@ -1614,7 +1663,7 @@ $("btnResetCats").addEventListener("click", function(){
     .catch(function(){
       S.cats = defaultCats();
       if(!S.cats[S.active] || !S.cats[S.active].on){
-        S.active = CATEGORIES.find(function(k){ return S.cats[k].on; }) || "battery";
+        S.active = CATS().find(function(k){ return S.cats[k].on; }) || "battery";
       }
       $("optSerial").checked = !!(cat() && cat().serial);
       renderCats(); render(); save();
@@ -1622,12 +1671,39 @@ $("btnResetCats").addEventListener("click", function(){
     });
 });
 
-$("btnAddCat").addEventListener("click", function(){
-  const off = CATEGORIES.find(function(k){ return !S.cats[k].on; });
-  if(!off){ toast("All nine categories are already switched on"); return; }
-  S.cats[off].on = true; renderCats(); render(); save();
-  const row = document.querySelector('[data-cat="'+off+'"]');
+function addCategory(){
+  const input = $("newCatName");
+  const name = (input.value || "").trim();
+  if(!name){ input.focus(); toast("Give the category a name first"); return; }
+  const key = slug(name);
+  if(!key){ toast("That name has no letters or numbers in it"); return; }
+
+  if(S.cats[key]){
+    /* already exists — switch it on rather than refusing */
+    S.cats[key].on = true;
+    if(CAT_ORDER.indexOf(key) < 0) CAT_ORDER.push(key);
+    input.value = "";
+    renderCats(); render(); save();
+    toast(catLabel(key) + " was already there — switched on");
+    const row = document.querySelector('#catList .catrow[data-cat="'+key+'"]');
+    if(row) row.scrollIntoView({block:"center", behavior:"smooth"});
+    return;
+  }
+
+  S.cats[key] = {key:key, label:name, on:true, serial:true, models:[], pick:0, fields:[]};
+  CAT_ORDER.push(key);
+  S.active = key;
+  $("optSerial").checked = true;
+  input.value = "";
+  renderCats(); render(); save();
+  const known = APP_CATEGORIES.indexOf(key) >= 0;
+  toast(known ? name + " added" : name + ' added — the RCS importer won’t accept "' + key + '" until it exists there too');
+  const row = document.querySelector('#catList .catrow[data-cat="'+key+'"]');
   if(row) row.scrollIntoView({block:"center", behavior:"smooth"});
+}
+$("btnAddCat").addEventListener("click", addCategory);
+$("newCatName").addEventListener("keydown", function(e){
+  if(e.key === "Enter"){ e.preventDefault(); addCategory(); }
 });
 $("catSheet").addEventListener("click", function(e){ if(e.target === this) closeCats(); });
 
@@ -1674,6 +1750,11 @@ function refreshCsv(){
   $("btnSave").textContent = "Save .csv file (" + out.count + " row" + (out.count===1?"":"s") + ")";
   const notes = [];
   if(out.detail.length) notes.push('<div class="warnline" style="margin:0;background:var(--ok-soft);border-color:var(--ok);color:var(--ok)"><span>◆</span><span>Custom fields appended as <b>'+out.detail.map(function(k){return "details."+k;}).join(", ")+'</b>.</span></div>');
+  const badCat = {};
+  S.rows.forEach(function(r){ if(r.category && APP_CATEGORIES.indexOf(r.category) === -1) badCat[r.category] = 1; });
+  Object.keys(badCat).forEach(function(cKey){
+    notes.push('<div class="warnline" style="margin:0"><span>\u25c6</span><span>Category <b>'+esc(cKey)+'</b> is not one the RCS importer knows \u2014 add it there first, or import these rows into your other asset manager.</span></div>');
+  });
   const badManu = {};
   S.rows.forEach(function(r){ if(r.manufacturer && MANUFACTURERS.indexOf(r.manufacturer) === -1) badManu[r.manufacturer] = 1; });
   Object.keys(badManu).forEach(function(m){
@@ -1893,7 +1974,7 @@ $("dOwner").value = S.defaults.owner || "";
 $("dStatus").value = S.defaults.status || "active";
 $("optSmart").checked = S.opts.smart; $("optIdle").checked = S.opts.idle; $("optBeep").checked = S.opts.beep;
 if(!S.cats[S.active] || !S.cats[S.active].on){
-  const first = CATEGORIES.find(function(k){ return S.cats[k].on; });
+  const first = CATS().find(function(k){ return S.cats[k].on; });
   if(first) S.active = first;
 }
 $("optSerial").checked = !!(cat() && cat().serial);

@@ -235,6 +235,75 @@ export interface ConsoleSyncResult {
   errors: { console: string; error: string }[];
 }
 
+// ── Network map (self-building topology) + Main health strip ────────────────
+export type WanLink = {
+  key: string;                 // WAN1 | WAN2
+  ifname: string | null;
+  up: boolean;
+  status: string | null;       // gateway's own verdict: online | offline
+  active: boolean;             // carrying traffic right now
+  ip: string | null;
+  latency_ms: number | null;
+  availability: number | null;
+  speed_mbps: number | null;
+  media: string | null;
+};
+export type WanState = {
+  gateway: string | null;
+  gateway_model: string | null;
+  ha_units: number;
+  links: WanLink[];
+  age_seconds: number | null;
+  stale: boolean;
+};
+export type Outage = {
+  root_id: string;
+  root_name: string;
+  root_type: string | null;
+  since: string | null;
+  down_seconds: number | null;
+  affected_count: number;
+  affected: { id: string; name: string; type: string | null }[];
+  parent_id: string | null;
+  parent_name: string | null;
+  parent_online: boolean | null;
+  uplink_port: number | null;
+  uplink_type: string | null;
+  summary: string;
+};
+export type TopoNode = {
+  id: string;
+  name: string;
+  model: string | null;
+  type: string | null;         // switch | ap | gateway | other
+  mac: string | null;
+  ip: string | null;
+  is_online: boolean | null;
+  dormant: boolean;
+  down_seconds: number | null;
+  local_reachable: boolean | null;
+  parent_id: string | null;
+  uplink_port: number | null;  // port on the parent
+  local_port: number | null;   // this device's own uplink port
+  uplink_type: string | null;  // wire | wireless
+  uplink_speed_mbps: number | null;
+  depth: number | null;
+  ports_up: number | null;
+  ports_total: number | null;
+  outage_root_id: string | null;
+};
+type Count = { online: number; total: number };
+export type NetworkOverview = {
+  site_id: string;
+  site_name: string;
+  wan: WanState | null;
+  counts: { switch: Count; ap: Count; gateway: Count };
+  outages: Outage[];
+  unreachable: { id: string; name: string; type: string | null }[];
+  topology_at: string | null;
+};
+export type SiteTopology = NetworkOverview & { nodes: TopoNode[] };
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -261,6 +330,8 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => req<{ status: string; version: string }>("/health"),
+  networkOverview: () => req<NetworkOverview>("/network/overview"),
+  siteTopology: (siteId: string) => req<SiteTopology>(`/network/sites/${siteId}/topology`),
   sites: () => req<Site[]>("/sites"),
   site: (siteId: string) => req<Site>(`/sites/${siteId}`),
   devices: (siteId: string, status: DeviceStatusFilter = "active") =>

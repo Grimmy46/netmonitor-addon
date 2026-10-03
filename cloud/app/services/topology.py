@@ -1,0 +1,256 @@
+"""Self-building network map: who plugs into whom, WAN link health, root cause.
+
+The Network Integration API (used by sync.py) gives device up/down but no
+uplinks. The SAME console API key also works on the controller's classic
+endpoint `GET /proxy/network/api/s/<site>/stat/device`, which returns, per
+device, its uplink (parent MAC + the parent's port number + our own port), and
+for the gateway the live state of WAN1/WAN2. This module:
+
+* `refresh_site_topology` — pulls that once per site and stores the uplink of
+  every device (the LAST KNOWN uplink is kept while a device is offline, which
+  is exactly what's needed to say where an outage starts) and the site's WAN
+  link status.
+* `analyze` — pure function: turns a site's devices into a tree (nodes + edges)
+  and groups every offline device under the highest offline device above it,
+  so "12 things are down" becomes "the Fender switch is down (12 behind it),
+  plugged into Kiosk 8 port 24".
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Any
+from urllib.parse import urlparse
+
+import httpx
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import get_settings
+from app.core.security import decrypt
+from app.models import Device, Site, StatusEvent, UnifiConsole
+from app.services.sync import _apply_online_state
+
+logger = logging.getLogger("netmonitor.topology")
+
+GATEWAY_TYPES = {"uxg", "ugw", "udm", "usg"}
+TYPE_MAP = {"usw": "switch", "uap": "ap", "uxg": "gateway", "ugw": "gateway",
+            "udm": "gateway", "usg": "gateway"}
+
+
+def _norm_mac(mac: Any) -> str | None:
+    return str(mac).strip().lower() if mac else None
+
+
+def _int(v: Any) -> int | None:
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+# ── Fetch ──────────────────────────────────────────────────────────────────
+async def fetch_site_devices(console: UnifiConsole, site_ref: str) -> list[dict]:
+    """Classic controller device list for one site (uplinks, ports, WAN)."""
+    p = urlparse(console.base_url)
+    url = f"{p.scheme}://{p.netloc}/proxy/network/api/s/{site_ref}/stat/device"
+    headers = {"X-API-KEY": decrypt(console.encrypted_api_key), "Accept": "application/json"}
+    async with httpx.AsyncClient(timeout=30.0, verify=console.verify_tls) as client:
+        resp = await client.get(url, headers=headers)
+    resp.raise_for_status()
+    data = resp.json()
+    return data.get("data", []) if isinstance(data, dict) else []
+
+
+# ── WAN ────────────────────────────────────────────────────────────────────
+def _wan_links(gw: dict) -> list[dict]:
+    uptime = gw.get("uptime_stats") or {}
+    last = gw.get("last_wan_status") or {}
+    links = []
+    for key, field_name, stats_key in (("WAN1", "wan1", "WAN"), ("WAN2", "wan2", "WAN2")):
+        w = gw.get(field_name)
+        if not isinstance(w, dict) or not w.get("enable", True):
+            continue
+        st = uptime.get(stats_key) or {}
+        links.append({
+            "key": key,
+            "ifname": w.get("ifname") or w.get("name"),
+            "up": bool(w.get("up")),
+            "status": last.get(stats_key),          # "online" / "offline" per the gateway
+            "active": bool(w.get("is_uplink")),     # carrying traffic right now
+            "ip": w.get("ip"),
+            "latency_ms": w.get("latency"),
+            "availability": st.get("availability", w.get("availability")),
+            "speed_mbps": w.get("speed"),
+            "media": w.get("media"),
+        })
+    return links
+
+
+def _pick_gateway(raw: list[dict]) -> dict | None:
+    """With an HA pair, the active unit is the one whose WANs are up."""
+    gws = [d for d in raw if d.get("type") in GATEWAY_TYPES]
+    if not gws:
+        return None
+    def score(g):
+        links = _wan_links(g)
+        return (g.get("state") == 1, sum(1 for x in links if x["up"]), bool(g.get("last_wan_status")))
+    return max(gws, key=score)
+
+
+# ── Refresh one site ───────────────────────────────────────────────────────
+async def refresh_site_topology(db: AsyncSession, console: UnifiConsole, site: Site,
+                                now: datetime) -> dict:
+    raw = await fetch_site_devices(console, site.unifi_site_ref)
+    by_mac = {_norm_mac(d.get("mac")): d for d in raw if d.get("mac")}
+
+    # Lock this site's device rows in primary-key order (same order the kiosk
+    # device-report uses) so the two writers can never deadlock.
+    devices = (
+        await db.execute(
+            select(Device).where(Device.site_id == site.id)
+            .order_by(Device.id).with_for_update()
+        )
+    ).scalars().all()
+
+    updated = 0
+    for dev in devices:
+        rd = by_mac.get(_norm_mac(dev.mac))
+        if rd is None:
+            continue
+        # Faster up/down than the 5-minute inventory sync: 1 = connected,
+        # 0 = disconnected; transitional states (upgrading, provisioning…) are
+        # left alone.
+        state = rd.get("state")
+        if state == 1:
+            _apply_online_state(dev, True, now)
+        elif state == 0:
+            _apply_online_state(dev, False, now)
+
+        up = rd.get("uplink") if isinstance(rd.get("uplink"), dict) else {}
+        if (not up.get("uplink_mac") and state != 1 and rd.get("type") not in GATEWAY_TYPES
+                and isinstance(rd.get("last_uplink"), dict)):
+            up = rd["last_uplink"]   # offline: remember where it WAS plugged in
+        if up.get("uplink_mac"):
+            dev.uplink_mac = _norm_mac(up.get("uplink_mac"))
+            dev.uplink_port = _int(up.get("uplink_remote_port"))
+            dev.local_port = _int(up.get("port_idx"))
+            dev.uplink_type = up.get("type") or dev.uplink_type
+            dev.uplink_speed_mbps = _int(up.get("speed")) or dev.uplink_speed_mbps
+        elif rd.get("type") in GATEWAY_TYPES:
+            dev.uplink_mac, dev.uplink_port, dev.local_port = None, None, None
+        if rd.get("uplink_depth") is not None:
+            dev.uplink_depth = _int(rd.get("uplink_depth"))
+        ports = rd.get("port_table")
+        if isinstance(ports, list) and ports:
+            dev.ports_total = len(ports)
+            dev.ports_up = sum(1 for p in ports if p.get("up"))
+        if rd.get("type") in TYPE_MAP and not dev.device_type:
+            dev.device_type = TYPE_MAP[rd["type"]]
+        dev.topology_at = now
+        updated += 1
+
+    # WAN links from the (active) gateway, with up/down transitions logged.
+    gw = _pick_gateway(raw)
+    if gw is not None:
+        links = _wan_links(gw)
+        prev = {x["key"]: x.get("up") for x in ((site.wan_status or {}).get("links") or [])}
+        for link in links:
+            was = prev.get(link["key"])
+            if was is not None and was != link["up"]:
+                db.add(StatusEvent(
+                    account_id=site.account_id, site_id=site.id,
+                    name=f"{site.name} {link['key']}", kind="wan",
+                    event="online" if link["up"] else "offline", ts=now,
+                ))
+        site.wan_status = {
+            "gateway": gw.get("name") or gw.get("model"),
+            "gateway_model": gw.get("model"),
+            "ha_units": sum(1 for d in raw if d.get("type") in GATEWAY_TYPES),
+            "links": links,
+        }
+        site.wan_status_at = now
+    await db.commit()
+    return {"devices": updated, "wan": bool(gw)}
+
+
+async def refresh_all(db: AsyncSession) -> dict:
+    now_ = datetime.now(tz=timezone.utc)
+    # Plain tuples up front: a failed site rolls the session back, which
+    # expires every loaded object, so each site is re-loaded with `get`.
+    todo = (
+        await db.execute(select(Site.id, Site.console_id, Site.name).where(
+            Site.unifi_site_ref.is_not(None), Site.console_id.is_not(None)))
+    ).all()
+    out = {"sites": 0, "devices": 0, "errors": 0}
+    for site_id, console_id, name in todo:
+        try:
+            c = await db.get(UnifiConsole, console_id)
+            s = await db.get(Site, site_id)
+            if c is None or s is None:
+                continue
+            r = await refresh_site_topology(db, c, s, now_)
+            out["sites"] += 1
+            out["devices"] += r["devices"]
+        except Exception as exc:
+            await db.rollback()
+            out["errors"] += 1
+            logger.warning("Topology refresh failed for %s: %s", name, exc)
+    return out
+
+
+# ── Analysis (pure) ────────────────────────────────────────────────────────
+@dataclass
+class Outage:
+    root: Device
+    affected: list[Device] = field(default_factory=list)   # root + everything behind it
+    parent: Device | None = None
+
+
+def is_dormant(d: Device, now: datetime) -> bool:
+    if d.manual_dormant:
+        return True
+    days = get_settings().dormant_after_days
+    return d.is_online is False and d.offline_since is not None and \
+        d.offline_since <= now - timedelta(days=days)
+
+
+def analyze(devices: list[Device], now: datetime) -> dict:
+    by_mac = {_norm_mac(d.mac): d for d in devices if d.mac}
+    parent_of = {d.id: by_mac.get(d.uplink_mac) if d.uplink_mac else None for d in devices}
+
+    def down(d: Device) -> bool:
+        return d.is_online is False and not is_dormant(d, now)
+
+    def root_of(d: Device) -> Device:
+        root, seen, cur = d, {d.id}, parent_of.get(d.id)
+        while cur is not None and cur.id not in seen and down(cur):
+            root = cur
+            seen.add(cur.id)
+            cur = parent_of.get(cur.id)
+        return root
+
+    groups: dict = {}
+    for d in devices:
+        if down(d):
+            r = root_of(d)
+            g = groups.setdefault(r.id, Outage(root=r, parent=parent_of.get(r.id)))
+            g.affected.append(d)
+    outages = sorted(groups.values(), key=lambda o: (-len(o.affected), o.root.name or ""))
+    return {"outages": outages, "parent_of": parent_of, "root_of": root_of, "down": down}
+
+
+def describe_outage(o: Outage) -> str:
+    """One plain-English line: what is down and where to look."""
+    r, p = o.root, o.parent
+    what = r.name or r.model or r.mac or "device"
+    behind = len(o.affected) - 1
+    tail = f" — {behind} device{'s' if behind != 1 else ''} behind it also down" if behind else ""
+    if p is None:
+        return f"{what} is offline{tail} (no uplink on record)"
+    via = "over wireless mesh" if r.uplink_type == "wireless" else (
+        f"on port {r.uplink_port}" if r.uplink_port else "")
+    return f"{what} is offline{tail}. Its uplink is {p.name or p.model} {via}".rstrip() + \
+        (" — check power at the device and that cable." if r.uplink_type != "wireless"
+         else " — check power and line of sight.")

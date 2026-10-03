@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, isAdmin, type Device, type MetricPoint, type Site } from "../api/client";
 import { DeviceTable } from "../components/DeviceTable";
 import { LatencyChart } from "../components/LatencyChart";
+import { NetworkMap } from "../components/NetworkMap";
 import { StatusPill } from "../components/StatusPill";
 
 function fmt(n: number | null | undefined, digits = 0): number | null {
@@ -177,6 +178,9 @@ export function SitePage({ siteId, onBack }: { siteId: string; onBack: () => voi
           <StatCard value={fmt(site?.uptime_pct, 1)} label="Uptime" unit="%" />
         </div>
       </div>
+
+      {/* ── Self-building network map (uplinks from UniFi) ─────────────── */}
+      <NetworkMap siteId={siteId} />
 
       {/* ── WAN latency trend ──────────────────────────────────────────── */}
       <section className="panel">

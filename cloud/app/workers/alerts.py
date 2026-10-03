@@ -37,6 +37,7 @@ from app.models import (
     WanIncident,
 )
 from app.services.notify import send_push
+from app.services.topology import analyze, describe_outage
 
 logger = logging.getLogger("netmonitor.alerts")
 
@@ -488,7 +489,7 @@ async def sweep(db: AsyncSession) -> dict:
     if site_ids:
         devices = (
             await db.execute(select(Device).where(Device.site_id.in_(site_ids)))
-        ).scalars()
+        ).scalars().all()
         dormant_cutoff_secs = st.dormant_after_days * 86400
         probe_fresh = max(600, 3 * st.agent_probe_interval_seconds)
         for d in devices:
@@ -545,6 +546,50 @@ async def sweep(db: AsyncSession) -> dict:
                         tag=f"device-{d.id}", url=f"/#/site/{d.site_id}",
                     ))
                 d.alert_state, d.alert_state_at = None, None
+
+        # ── Root cause: one push per failure point, not one per victim ─────
+        # A switch going down takes everything behind it offline too. Group
+        # each fresh "offline" fault under the highest offline device above it
+        # (from the network map's uplink data): the root gets a single push
+        # naming what's behind it and where it plugs in; the rest go quiet
+        # (and recover quietly) instead of flooding the phone.
+        rc = analyze(devices, now)
+        root_of, down_fn = rc["root_of"], rc["down"]
+        outage_by_root = {o.root.id: o for o in rc["outages"]}
+        grouped: dict = {}
+        keep: list[_Fault] = []
+        for f in faults:
+            d = f.entity
+            if isinstance(d, Device) and down_fn(d):
+                r = root_of(d)
+                if r.id != d.id and r.alert_state in ("notified", "suppressed", "stale"):
+                    d.alert_state, d.alert_state_at = "suppressed", now  # root already told
+                    continue
+                grouped.setdefault(r.id, []).append(f)
+            else:
+                keep.append(f)
+        for rid, fs in grouped.items():
+            o = outage_by_root.get(rid)
+            root_fault = next((f for f in fs if f.entity.id == rid), None)
+            if o is None or (len(o.affected) <= 1 and root_fault is not None):
+                if o is not None and o.parent is not None:
+                    for f in fs:         # a lone device: say where it plugs in
+                        f.body = describe_outage(o) + " · Main"
+                keep.extend(fs)
+                continue
+            for f in fs:
+                if f is not root_fault:
+                    f.entity.alert_state, f.entity.alert_state_at = "suppressed", now
+            root = o.root
+            behind = len(o.affected) - 1
+            keep.append(_Fault(
+                entity=root,
+                title=f"🔴 {root.name or 'Device'} went down"
+                      + (f" — {behind} more behind it" if behind else ""),
+                body=describe_outage(o) + " · Main",
+                tag=f"device-{root.id}", url=f"/#/site/{root.site_id}",
+            ))
+        faults = keep
 
     # ── Whole sites: witnessed online→offline transitions (EVERY site) ─────
     # A site that has never been seen online (packed-up / retired venues stay
@@ -607,9 +652,59 @@ async def sweep(db: AsyncSession) -> dict:
     def _is_suppressed(entity) -> bool:
         return _site_suppressed(entity) if isinstance(entity, Site) else _entity_suppressed(entity)
 
+    # ── WAN links (WAN1 / WAN2 on the alert site's gateway) ────────────────
+    # From the network-map refresher (site.wan_status). A link must read down
+    # for alert_wan_confirm_seconds before it pushes; recovery pushes once.
+    wan_pushes: list[tuple] = []   # (site, title, body, tag)
+    for sid in site_ids:
+        s = sites_by_id.get(sid)
+        ws = (s.wan_status or {}) if s else {}
+        fresh_ws = s is not None and s.wan_status_at is not None and \
+            (now - s.wan_status_at).total_seconds() < 5 * st.topology_interval_seconds
+        if not fresh_ws:
+            continue   # no trustworthy reading — never alert on stale data
+        links = ws.get("links") or []
+        state = dict(s.wan_alert_state or {})
+        for link in links:
+            key = link.get("key")
+            cur = dict(state.get(key) or {"state": "ok"})
+            others_up = [x["key"] for x in links if x.get("key") != key and x.get("up")]
+            if not link.get("up"):
+                if cur["state"] == "ok":
+                    # Remember whether it was carrying traffic before it dropped
+                    # (after a failover the gateway flips is_uplink to the survivor).
+                    cur = {"state": "pending", "at": now.isoformat(),
+                           "was_active": cur.get("was_active", link.get("active"))}
+                elif cur["state"] == "pending":
+                    since = _parse_iso(cur.get("at")) or now
+                    if (now - since).total_seconds() >= st.alert_wan_confirm_seconds:
+                        cur["state"] = "notified"
+                        if not others_up:
+                            body = "NO WAN is up — the site is offline to the internet"
+                        elif cur.get("was_active"):
+                            body = f"Traffic should fail over to {', '.join(others_up)}"
+                        else:
+                            body = f"Backup link lost — {', '.join(others_up)} still carrying traffic"
+                        wan_pushes.append((s, f"🔴 {s.name} {key} is DOWN", body + f" · {ws.get('gateway') or 'gateway'}",
+                                           f"wan-{s.id}-{key}"))
+            else:
+                if cur["state"] == "notified":
+                    wan_pushes.append((s, f"🟢 {s.name} {key} is back up",
+                                       f"{key} online again" + (f" · {link.get('latency_ms')} ms" if link.get("latency_ms") is not None else ""),
+                                       f"wan-{s.id}-{key}"))
+                cur = {"state": "ok", "was_active": bool(link.get("active"))}
+            state[key] = cur
+        s.wan_alert_state = state
+
     # ── Deliver ────────────────────────────────────────────────────────────
     pushed = 0
     suppressed = 0
+    for s, title, body, tag in wan_pushes:
+        if _site_suppressed(s):
+            suppressed += 1
+            continue
+        pushed += await send_push(db, {"title": title, "body": body, "tag": tag,
+                                       "url": f"/#/site/{s.id}"})
     for f in site_faults:
         if _site_suppressed(f.entity):
             f.entity.alert_state, f.entity.alert_state_at = "suppressed", now

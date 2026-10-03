@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -22,6 +23,15 @@ class Site(Base, UUIDPk, Timestamps):
     unifi_site_id: Mapped[str | None] = mapped_column(index=True, default=None)
 
     name: Mapped[str] = mapped_column(default="")
+    # Classic-API site name ("default", "exp1kawo"…) — the Network Integration
+    # API's internalReference. Needed for uplink/WAN data (topology service).
+    unifi_site_ref: Mapped[str | None] = mapped_column(default=None)
+    # Live WAN links from the site gateway: {"gateway": ..., "links": [...]}.
+    wan_status: Mapped[dict | None] = mapped_column(JSONB, default=None)
+    wan_status_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    wan_alert_state: Mapped[dict | None] = mapped_column(JSONB, default=None)
     isp_name: Mapped[str | None] = mapped_column(default=None)
     gateway_mac: Mapped[str | None] = mapped_column(default=None)
     status: Mapped[str] = mapped_column(default="unknown")  # online | offline | unknown

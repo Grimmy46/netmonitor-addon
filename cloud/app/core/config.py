@@ -143,6 +143,11 @@ class Settings(BaseSettings):
     # How often the retention worker runs once it has caught up.
     ping_retention_interval_seconds: int = 600
 
+    # Network map: how often to pull uplinks + WAN link state from each console.
+    topology_interval_seconds: int = 60
+    # A WAN link must read down this long before it pushes an alert.
+    alert_wan_confirm_seconds: int = 90
+
     @property
     def database_url(self) -> str:
         return (

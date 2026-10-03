@@ -283,6 +283,7 @@ async def sync_unifi_console(db: AsyncSession, console: UnifiConsole) -> dict:
         site.account_id = account.id
         site.console_id = console.id
         site.name = name
+        site.unifi_site_ref = rs.get("internalReference") or site.unifi_site_ref
         db.add(site)
         await db.flush()  # ensure site.id for device FKs
 

@@ -6,7 +6,7 @@ create duplicates or break history.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey
+from sqlalchemy import DateTime, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -62,6 +62,22 @@ class Device(Base, UUIDPk, Timestamps):
     # (fault predates the alerting feature / was too old to alert on).
     alert_state: Mapped[str | None] = mapped_column(default=None)
     alert_state_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+
+    # ── Topology (self-building network map; app/services/topology.py) ──────
+    # Where this device plugs in, from the controller's own uplink/LLDP data.
+    # Kept as the LAST KNOWN uplink while the device is offline, which is what
+    # lets an outage be traced to "switch X, port N".
+    uplink_mac: Mapped[str | None] = mapped_column(default=None, index=True)
+    uplink_port: Mapped[int | None] = mapped_column(Integer, default=None)
+    local_port: Mapped[int | None] = mapped_column(Integer, default=None)
+    uplink_type: Mapped[str | None] = mapped_column(default=None)  # wire | wireless
+    uplink_speed_mbps: Mapped[int | None] = mapped_column(Integer, default=None)
+    uplink_depth: Mapped[int | None] = mapped_column(Integer, default=None)
+    ports_up: Mapped[int | None] = mapped_column(Integer, default=None)
+    ports_total: Mapped[int | None] = mapped_column(Integer, default=None)
+    topology_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
 

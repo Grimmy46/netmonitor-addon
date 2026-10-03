@@ -5,6 +5,7 @@ import { TeardownPlanner } from "../components/TeardownPlanner";
 import { PulseLogo } from "../components/PulseLogo";
 import { AgentsView } from "../components/AgentsView";
 import { DormantView } from "../components/DormantView";
+import { MainHealth } from "../components/MainHealth";
 import { LiveView } from "../components/LiveView";
 import { NotifyBell } from "../components/NotifyBell";
 import { SettingsModal } from "../components/SettingsModal";
@@ -26,7 +27,7 @@ const FLEET_FILTERS: { key: FleetFilter; label: string; match: (s: Site) => bool
 
 // Minimal hash router: "#/site/<id>" → that site's page; anything else → fleet.
 function siteIdFromHash(): string | null {
-  const m = window.location.hash.match(/^#\/site\/([^/]+)/);
+  const m = window.location.hash.match(/^#\/site\/([^/?]+)/);
   return m ? decodeURIComponent(m[1]) : null;
 }
 
@@ -201,7 +202,10 @@ export function Dashboard() {
         {error ? <div className="banner err">{error}</div> : null}
 
         {view === "live" ? (
-          <LiveView onOpenSettings={isAdmin() ? openSettings : undefined} />
+          <>
+            <MainHealth />
+            <LiveView onOpenSettings={isAdmin() ? openSettings : undefined} />
+          </>
         ) : !configured ? (
           <div className="empty">
             <p style={{ fontSize: 16, color: "var(--ink-secondary)" }}>

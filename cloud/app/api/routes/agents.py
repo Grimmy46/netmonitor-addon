@@ -723,9 +723,26 @@ async def agent_device_report(
     now = datetime.now(tz=timezone.utc)
     grace = get_settings().probe_positive_grace_seconds
     updated = 0
+    # Lock every device row this report touches in ONE query, in primary-key
+    # order. ~50 kiosks at a site report on the same rows concurrently; locking
+    # them one by one in arrival order made two reports grab rows in opposite
+    # orders and deadlock (hundreds of 500s a day). A single ordered
+    # SELECT ... FOR UPDATE gives every transaction the same lock order.
+    ids = sorted({r.id for r in report.results}, key=str)
+    devices: dict = {}
+    if ids:
+        rows = (
+            await db.execute(
+                select(Device)
+                .where(Device.id.in_(ids), Device.site_id == agent.site_id)
+                .order_by(Device.id)
+                .with_for_update()
+            )
+        ).scalars()
+        devices = {d.id: d for d in rows}
     for r in report.results:
-        dev = await db.get(Device, r.id)
-        if dev is None or dev.site_id != agent.site_id:
+        dev = devices.get(r.id)
+        if dev is None:
             continue
         if r.reachable:
             dev.local_reachable = True

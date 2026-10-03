@@ -535,7 +535,10 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
 .promap .hl-missed .hl-beat { stroke: var(--warning) !important; }
 .pm-label { font-size: 11px; fill: var(--ink-secondary); paint-order: stroke; stroke: var(--surface-1); stroke-width: 3px; stroke-linejoin: round; pointer-events: none; }
 .pm-label.gw { font-size: 12px; font-weight: 600; fill: var(--ink-primary); }
-.hl-down .pm-label { fill: var(--critical); font-weight: 600; }
+.pm-down .pm-label { fill: var(--critical); font-weight: 600; }
+.pm-missed .pm-label { fill: var(--warning); }
+.pm-leader { stroke: var(--baseline); stroke-width: 0.8; }
+.pm-labels .on .pm-label { fill: var(--accent); font-weight: 600; }
 .promap .hl-leader { stroke: var(--baseline); }
 .promap .hl-card-bg { fill: var(--surface-1); stroke: var(--border); stroke-opacity: 1; filter: drop-shadow(0 4px 12px rgba(0,0,0,0.18)); }
 .promap .hl-card-title { fill: var(--ink-primary); font-size: 16px; letter-spacing: 0; }
@@ -550,3 +553,132 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
 .promap-legend .lg { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
 .promap-legend .lg.up { background: var(--good); } .promap-legend .lg.down { background: var(--critical); }
 .promap-legend .lg.missed, .promap-legend .lg.unreach { background: var(--warning); }
+
+/* ════════════════════════════════════════════════════════════════════════
+   HOLO skin — the JARVIS HUD look for the whole app (toggle: header button
+   or the map's Holo switch). Everything below is scoped to data-skin="holo"
+   and sits last so it wins over light/dark tokens.
+   ════════════════════════════════════════════════════════════════════════ */
+:root[data-skin="holo"] {
+  color-scheme: dark;
+  --surface-1: rgba(3, 20, 38, 0.78);
+  --page: #01060d;
+  --ink-primary: #e6feff;
+  --ink-secondary: #9fe3f0;
+  --ink-muted: #4f9fb8;
+  --grid: rgba(0, 229, 255, 0.08);
+  --baseline: rgba(0, 229, 255, 0.32);
+  --border: rgba(0, 229, 255, 0.22);
+  --accent: #00c8ff;
+  --good: #35f0d2;
+  --warning: #ff9a3c;
+  --critical: #ff4b3a;
+  --radius: 4px;
+  --shadow: 0 0 0 1px rgba(0, 229, 255, 0.06), 0 0 28px rgba(0, 150, 255, 0.07);
+  --font: "Rajdhani", "Segoe UI", system-ui, sans-serif;
+}
+:root[data-skin="holo"] body {
+  background:
+    radial-gradient(1200px 800px at 50% -10%, rgba(0, 120, 255, 0.18), transparent 60%),
+    radial-gradient(900px 600px at 100% 100%, rgba(0, 229, 255, 0.07), transparent 60%),
+    linear-gradient(rgba(0, 229, 255, 0.035) 1px, transparent 1px) 0 0 / 40px 40px,
+    linear-gradient(90deg, rgba(0, 229, 255, 0.035) 1px, transparent 1px) 0 0 / 40px 40px,
+    #01060d;
+  background-attachment: fixed;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+}
+:root[data-skin="holo"] body::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 9999;
+  background: repeating-linear-gradient(0deg, rgba(0, 229, 255, 0.025) 0 1px, transparent 1px 3px);
+}
+/* Header */
+:root[data-skin="holo"] .app-header {
+  background: rgba(1, 10, 22, 0.85); backdrop-filter: blur(6px);
+  border-bottom: 1px solid rgba(0, 229, 255, 0.35);
+  box-shadow: 0 1px 0 rgba(0, 229, 255, 0.15), 0 8px 30px rgba(0, 120, 255, 0.08);
+}
+:root[data-skin="holo"] .app-header h1 { font-family: "Orbitron", var(--font); letter-spacing: 0.12em; text-transform: uppercase; font-size: 17px; text-shadow: 0 0 12px rgba(0, 229, 255, 0.6); }
+/* Surfaces: thin cyan frame, glow, corner brackets */
+:root[data-skin="holo"] .panel,
+:root[data-skin="holo"] .card,
+:root[data-skin="holo"] .site-hero,
+:root[data-skin="holo"] .modal,
+:root[data-skin="holo"] .banner {
+  position: relative;
+  background: linear-gradient(180deg, rgba(4, 26, 48, 0.82), rgba(2, 14, 28, 0.82));
+  border: 1px solid rgba(0, 229, 255, 0.25);
+  box-shadow: inset 0 0 24px rgba(0, 160, 255, 0.06), 0 0 18px rgba(0, 120, 255, 0.05);
+  backdrop-filter: blur(2px);
+}
+:root[data-skin="holo"] .panel::before,
+:root[data-skin="holo"] .card::before,
+:root[data-skin="holo"] .site-hero::before {
+  content: ""; position: absolute; inset: -1px; pointer-events: none;
+  background:
+    linear-gradient(#7df9ff, #7df9ff) top left / 14px 2px no-repeat,
+    linear-gradient(#7df9ff, #7df9ff) top left / 2px 14px no-repeat,
+    linear-gradient(#7df9ff, #7df9ff) bottom right / 14px 2px no-repeat,
+    linear-gradient(#7df9ff, #7df9ff) bottom right / 2px 14px no-repeat;
+  opacity: 0.85;
+}
+:root[data-skin="holo"] .card:hover { border-color: rgba(0, 229, 255, 0.6); box-shadow: 0 0 22px rgba(0, 200, 255, 0.18); }
+:root[data-skin="holo"] .panel-title,
+:root[data-skin="holo"] .mh-label,
+:root[data-skin="holo"] .hstat-lbl,
+:root[data-skin="holo"] .tile .lbl,
+:root[data-skin="holo"] table.devices th {
+  color: #7df9ff; letter-spacing: 0.18em; font-weight: 700;
+}
+:root[data-skin="holo"] .hero-title { font-family: "Orbitron", var(--font); letter-spacing: 0.1em; text-transform: uppercase; text-shadow: 0 0 14px rgba(0, 229, 255, 0.5); }
+/* Big numbers glow */
+:root[data-skin="holo"] .mh-value,
+:root[data-skin="holo"] .hstat-val,
+:root[data-skin="holo"] .tile .val { font-family: "Orbitron", var(--font); letter-spacing: 0.04em; text-shadow: 0 0 12px currentColor; }
+:root[data-skin="holo"] .mh-tile { background: rgba(0, 30, 56, 0.55); border-color: rgba(0, 229, 255, 0.22); border-radius: 3px; }
+:root[data-skin="holo"] .mh-issue, :root[data-skin="holo"] .nm-outage { background: rgba(40, 6, 8, 0.45); }
+/* Controls */
+:root[data-skin="holo"] .btn,
+:root[data-skin="holo"] .chip,
+:root[data-skin="holo"] .tab,
+:root[data-skin="holo"] .seg {
+  background: rgba(0, 40, 70, 0.35); color: #9ffcff; border: 1px solid rgba(0, 229, 255, 0.35);
+  border-radius: 3px; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 600;
+}
+:root[data-skin="holo"] .seg button { color: #9ffcff; letter-spacing: 0.1em; }
+:root[data-skin="holo"] .btn:hover,
+:root[data-skin="holo"] .chip:hover,
+:root[data-skin="holo"] .tab:hover { border-color: #7df9ff; box-shadow: 0 0 12px rgba(0, 229, 255, 0.35); }
+:root[data-skin="holo"] .btn-primary,
+:root[data-skin="holo"] .chip.active,
+:root[data-skin="holo"] .tab.active,
+:root[data-skin="holo"] .seg button.on,
+:root[data-skin="holo"] .nl-aps.open {
+  background: linear-gradient(180deg, #33e6ff, #009dd6); color: #001521; border-color: transparent;
+  box-shadow: 0 0 16px rgba(0, 229, 255, 0.45);
+}
+:root[data-skin="holo"] input,
+:root[data-skin="holo"] select,
+:root[data-skin="holo"] textarea,
+:root[data-skin="holo"] .search {
+  background: rgba(0, 18, 34, 0.8); color: #e6feff; border: 1px solid rgba(0, 229, 255, 0.3); border-radius: 3px;
+}
+:root[data-skin="holo"] input:focus, :root[data-skin="holo"] .search:focus { outline: none; border-color: #7df9ff; box-shadow: 0 0 10px rgba(0, 229, 255, 0.35); }
+:root[data-skin="holo"] a { color: #7df9ff; }
+/* Status dots glow */
+:root[data-skin="holo"] .pill .dot,
+:root[data-skin="holo"] .hb,
+:root[data-skin="holo"] .hb-static { box-shadow: 0 0 8px currentColor; }
+:root[data-skin="holo"] .hb { color: var(--good); }
+:root[data-skin="holo"] .hb-down, :root[data-skin="holo"] .hb-static.down { color: var(--critical); }
+:root[data-skin="holo"] .hb-missed { color: var(--warning); }
+:root[data-skin="holo"] .hb-ring { border-color: #9ffcff; }
+/* Lists / tables */
+:root[data-skin="holo"] .nl-list, :root[data-skin="holo"] .table-scroll { background: rgba(0, 14, 28, 0.55); }
+:root[data-skin="holo"] .nl-row:hover, :root[data-skin="holo"] table.devices tr:hover td { background: rgba(0, 229, 255, 0.06); }
+:root[data-skin="holo"] .nl-bar > span { background: #35f0d2; box-shadow: 0 0 6px #35f0d2; }
+:root[data-skin="holo"] .overlay { background: rgba(0, 6, 14, 0.75); backdrop-filter: blur(3px); }
+:root[data-skin="holo"] ::selection { background: rgba(0, 229, 255, 0.35); }
+:root[data-skin="holo"] ::-webkit-scrollbar { width: 10px; height: 10px; }
+:root[data-skin="holo"] ::-webkit-scrollbar-thumb { background: rgba(0, 229, 255, 0.25); border-radius: 5px; }
+:root[data-skin="holo"] ::-webkit-scrollbar-track { background: transparent; }

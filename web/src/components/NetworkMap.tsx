@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type SiteTopology, type TopoNode } from "../api/client";
 import { humanizeDuration } from "../lib/duration";
 import { splitName } from "../lib/names";
+import { getSkin, onSkinChange, setSkin as setGlobalSkin } from "../lib/skin";
 
 /**
  * Self-building network map for one site. The server re-reads every device's
@@ -67,8 +68,9 @@ export function NetworkMap({ siteId }: { siteId: string }) {
   const [topo, setTopo] = useState<SiteTopology | null>(null);
   const [err, setErr] = useState("");
   const [mode, setMode] = useState<"map" | "list">(focusFromHash() ? "list" : "map");
-  const [skin, setSkinState] = useState<MapSkin>(() => (localStorage.getItem("nm-map-skin") === "pro" ? "pro" : "holo"));
-  const setSkin = (v: MapSkin) => { setSkinState(v); localStorage.setItem("nm-map-skin", v); };
+  const [skin, setSkinState] = useState<MapSkin>(getSkin());
+  useEffect(() => onSkinChange(setSkinState), []);
+  const setSkin = (v: MapSkin) => setGlobalSkin(v);
   const [q, setQ] = useState("");
   const [showDormant, setShowDormant] = useState(false);
   const [focus, setFocus] = useState<string | null>(focusFromHash());
@@ -203,7 +205,7 @@ function RadialMap({ roots, kids, byId, beats, poll, onPick, topo, skin }: {
   const timer = useRef<number | null>(null);
   const SIZE = 1000, C = SIZE / 2;
 
-  const { placed, step, maxDepth } = useMemo(() => {
+  const { placed, step, maxDepth, leaves } = useMemo(() => {
     // An HA standby gateway hanging off the active one is drawn as a second
     // core beside it — two AIs side by side — instead of on the first ring.
     const isTwin = (n: TopoNode) => n.type === "gateway" && !!n.parent_id &&
@@ -257,7 +259,7 @@ function RadialMap({ roots, kids, byId, beats, poll, onPick, topo, skin }: {
       place(r, 0, cur, cur + span);
       cur += span;
     }
-    return { placed: out, step, maxDepth };
+    return { placed: out, step, maxDepth, leaves };
   }, [roots, kids, byId, C]);
 
   const enter = (id: string) => {
@@ -276,6 +278,7 @@ function RadialMap({ roots, kids, byId, beats, poll, onPick, topo, skin }: {
   for (let p = hp; p; p = p.parent) pathIds.add(p.n.id);
 
   const radius = (n: TopoNode) => (n.type === "gateway" ? 15 : n.type === "switch" ? 7 : 4);
+  const labels = useMemo(() => (holo ? null : layoutLabels(placed, leaves, SIZE)), [holo, placed, leaves]);
   const liveNodes = placed.filter((p) => !p.n.dormant);
   const online = liveNodes.filter((p) => p.n.is_online !== false).length;
   const links = topo.wan?.links ?? [];
@@ -379,10 +382,21 @@ function RadialMap({ roots, kids, byId, beats, poll, onPick, topo, skin }: {
               {holo && p.n.type === "switch" ? <circle r={r + 4} className="hl-switch-ring" /> : null}
               {ring ? <circle key={ringKey} r={r} className="hl-beat" /> : null}
               <circle r={gw ? (holo ? r * 0.55 : 10) : r} className="hl-core" filter={holo ? "url(#hl-glow)" : undefined} />
-              {!holo && (p.n.type === "switch" || (gw && !p.parent)) ? <PlainLabel p={p} r={gw ? 10 : r} C={C} /> : null}
             </g>
           );
         })}
+
+        {/* Pro: collision-free switch labels, drawn above every dot */}
+        {labels ? (
+          <g className="pm-labels">
+            {labels.shown.map((l) => (
+              <g key={`l${l.id}`} className={`${l.cls} ${hover === l.id || pathIds.has(l.id) ? "on" : ""}`}>
+                {l.leader ? <line x1={l.leader[0]} y1={l.leader[1]} x2={l.leader[2]} y2={l.leader[3]} className="pm-leader" /> : null}
+                <text x={l.x} y={l.y} textAnchor={l.anchor} className={`pm-label ${l.gw ? "gw" : ""}`}>{l.text}</text>
+              </g>
+            ))}
+          </g>
+        ) : null}
 
         {/* HUD corners */}
         {holo ? <g className="hl-hud">
@@ -409,28 +423,86 @@ function RadialMap({ roots, kids, byId, beats, poll, onPick, topo, skin }: {
         <span><i className="lg missed" /> missed</span>
         <span><i className="lg down" /> down</span>
         <span><i className="lg unreach" /> no kiosk ping</span>
-        <span className="dim">{holo ? "large = switch · small = AP · center = core gateway" : "labelled = switch · small = AP · hover any dot for details"}</span>
+        <span className="dim">{holo ? "large = switch · small = AP · center = core gateway" : `labelled = switch · small = AP${labels && labels.hidden ? ` · ${labels.hidden} label${labels.hidden > 1 ? "s" : ""} tucked away to avoid overlap` : ""} · hover any dot for details`}</span>
       </div>
     </div>
   );
 }
 
-/** Pro mode: a switch's short name, pushed outward from the centre. */
-function PlainLabel({ p, r, C }: { p: Placed; r: number; C: number }) {
-  const nm = splitName(p.n.name);
-  const t = nm.label.length > 18 ? nm.label.slice(0, 17) + "…" : nm.label;
-  if (p.depth === 0) {
-    return <text y={r + 16} textAnchor="middle" className="pm-label gw">{t}</text>;
+/**
+ * Pro mode labels. Greedy placement: most important switches first (down ones,
+ * then those with the most behind them); each label tries a ring of positions
+ * around its dot — outward first — and takes the first that overlaps no other
+ * label and no dot. Labels that can't fit stay hidden (hover still shows them).
+ */
+type LabelBox = { x0: number; y0: number; x1: number; y1: number };
+type PlacedLabel = {
+  id: string; x: number; y: number; anchor: "start" | "middle" | "end"; text: string;
+  gw: boolean; cls: string; leader?: [number, number, number, number];
+};
+const CHAR_W = 6.1, LABEL_H = 13;
+
+function layoutLabels(placed: Placed[], leaves: Map<string, number>, size: number) {
+  const dotR = (n: TopoNode) => (n.type === "gateway" ? 10 : n.type === "switch" ? 7 : 4);
+  const boxes: LabelBox[] = placed.map((p) => {
+    const r = dotR(p.n) + 1.5;
+    return { x0: p.x - r, y0: p.y - r, x1: p.x + r, y1: p.y + r };
+  });
+  const hit = (b: LabelBox) => boxes.some((o) => b.x0 < o.x1 && b.x1 > o.x0 && b.y0 < o.y1 && b.y1 > o.y0);
+  const inside = (b: LabelBox) => b.x0 > 4 && b.x1 < size - 4 && b.y0 > 4 && b.y1 < size - 4;
+
+  const sev = (n: TopoNode) => (n.is_online === false && !n.dormant ? 2 : n.seen_age_s != null && n.seen_age_s > MISSED_AFTER_S ? 1 : 0);
+  const cands = placed
+    .filter((p) => p.n.type === "switch" || (p.n.type === "gateway" && !p.parent))
+    .sort((a, b) =>
+      (a.n.type === "gateway" ? -1 : 0) - (b.n.type === "gateway" ? -1 : 0) ||
+      sev(b.n) - sev(a.n) ||
+      (leaves.get(b.n.id) ?? 1) - (leaves.get(a.n.id) ?? 1) ||
+      a.depth - b.depth);
+
+  const shown: PlacedLabel[] = [];
+  let hidden = 0;
+  for (const p of cands) {
+    const full = splitName(p.n.name).label;
+    const r = dotR(p.n);
+    const gw = p.n.type === "gateway";
+    const h = health(p.n);
+    const cls = h === "down" ? "pm-down" : h === "missed" ? "pm-missed" : "";
+    // Try the full name, then a shorter one, before giving up.
+    const texts = [full.length > 18 ? full.slice(0, 17) + "…" : full];
+    if (full.length > 11) texts.push(full.slice(0, 10) + "…");
+    const out = p.depth === 0 ? Math.PI / 2 : p.a;
+    const offsets = [0, 0.55, -0.55, 1.1, -1.1, 1.65, -1.65, Math.PI];
+    let done = false;
+    for (const text of texts) {
+      const w = text.length * CHAR_W;
+      for (const dist of [r + 5, r + 16, r + 28]) {
+        for (const off of offsets) {
+          const ang = out + off;
+          const dx = Math.cos(ang), dy = Math.sin(ang);
+          const ax = p.x + dx * dist, ay = p.y + dy * dist;
+          const anchor: PlacedLabel["anchor"] = Math.abs(dx) < 0.35 ? "middle" : dx > 0 ? "start" : "end";
+          const x0 = anchor === "start" ? ax : anchor === "end" ? ax - w : ax - w / 2;
+          // Vertically centre side labels; sit above/below for top/bottom ones.
+          const yBase = Math.abs(dx) < 0.35 ? (dy > 0 ? ay + LABEL_H - 2 : ay - 2) : ay + 4;
+          const b = { x0: x0 - 2, y0: yBase - LABEL_H + 2, x1: x0 + w + 2, y1: yBase + 3 };
+          if (!inside(b) || hit(b)) continue;
+          boxes.push(b);
+          const far = dist > r + 6;
+          shown.push({
+            id: p.n.id, x: ax, y: yBase, anchor, text, gw, cls,
+            leader: far ? [p.x + dx * (r + 1), p.y + dy * (r + 1), p.x + dx * (dist - 2), p.y + dy * (dist - 2)] : undefined,
+          });
+          done = true;
+          break;
+        }
+        if (done) break;
+      }
+      if (done) break;
+    }
+    if (!done) hidden++;
   }
-  const dx = Math.cos(p.a), dy = Math.sin(p.a);
-  const off = r + 5;
-  const anchor = Math.abs(dx) < 0.3 ? "middle" : dx > 0 ? "start" : "end";
-  void C;
-  return (
-    <text x={dx * off} y={dy * off + (Math.abs(dx) < 0.3 ? (dy > 0 ? 9 : -3) : 4)} textAnchor={anchor} className="pm-label">
-      {t}
-    </text>
-  );
+  return { shown, hidden };
 }
 
 function HoverCard({ p, parent, size, holo }: { p: Placed; parent?: TopoNode; size: number; holo: boolean }) {

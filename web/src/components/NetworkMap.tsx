@@ -22,7 +22,7 @@ type Kids = Map<string | null, TopoNode[]>;
 type Health = "up" | "missed" | "down" | "dormant" | "unreach";
 
 function health(n: TopoNode): Health {
-  if (n.dormant) return "dormant";
+  if (n.dormant || n.closed_down) return "dormant";
   if (n.is_online === false) return "down";
   if (n.seen_age_s != null && n.seen_age_s > MISSED_AFTER_S) return "missed";
   if (n.local_reachable === false) return "unreach";
@@ -149,9 +149,12 @@ export function NetworkMap({ siteId }: { siteId: string }) {
         ) : null}
       </div>
 
-      {topo.outages.length ? (
+      {topo.closure?.phase === "closed" && topo.outages.some((o) => o.closed_down) ? (
+        <div className="nm-closed">Closed — {topo.outages.filter((o) => o.closed_down).reduce((a, o) => a + o.affected_count, 0)} devices powered down for the closure are shown grey, not as faults.</div>
+      ) : null}
+      {topo.outages.some((o) => !o.closed_down) ? (
         <div className="nm-outages">
-          {topo.outages.map((o) => {
+          {topo.outages.filter((o) => !o.closed_down).map((o) => {
             const r = splitName(o.root_name);
             const p = o.parent_name ? splitName(o.parent_name) : null;
             return (
@@ -519,7 +522,8 @@ function HoverCard({ p, parent, size, holo }: { p: Placed; parent?: TopoNode; si
   if (n.ip) rows.push(["IP", n.ip]);
   if (n.ports_total) rows.push(["PORTS", `${n.ports_up}/${n.ports_total} UP`]);
   rows.push(["STATUS",
-    h === "down" ? `DOWN ${humanizeDuration(n.down_seconds)}`
+    n.closed_down ? `SWITCHED OFF FOR CLOSURE · ${humanizeDuration(n.down_seconds)}`
+      : h === "down" ? `DOWN ${humanizeDuration(n.down_seconds)}`
       : n.seen_age_s != null ? `BEAT ${Math.round(n.seen_age_s)}S AGO${h === "missed" ? " · MISSED" : ""}`
         : "NO BEAT DATA"]);
   const W = 400, LH = 20, H = 50 + rows.length * LH, cut = 14;

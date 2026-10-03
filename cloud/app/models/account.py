@@ -54,6 +54,16 @@ class Account(Base, UUIDPk, Timestamps):
         DateTime(timezone=True), default=None
     )
 
+    # Planned closure (app/services/closure.py): alerts pause, the dormant
+    # clock freezes, and a single "what didn't come back" push is sent after
+    # reopening (closure_report_sent_at marks it done).
+    closure_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    closure_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    closure_note: Mapped[str | None] = mapped_column(default=None)
+    closure_report_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+
     # WAN brownout confirm timer: set when the internet first looks degraded
     # (while the LAN is fine) and no incident is open yet; once it persists past
     # the confirm window the alert sweep opens a WanIncident and clears this.

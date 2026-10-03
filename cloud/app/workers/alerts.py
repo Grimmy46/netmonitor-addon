@@ -36,6 +36,7 @@ from app.models import (
     Site,
     WanIncident,
 )
+from app.services import closure
 from app.services.notify import send_push
 from app.services.topology import analyze, describe_outage
 
@@ -366,6 +367,60 @@ async def _maybe_fire_site_teardowns(db: AsyncSession, now: datetime) -> None:
         await db.commit()
 
 
+async def _maybe_send_reopen_report(db: AsyncSession, now: datetime) -> None:
+    """Once per closure, right after the reopen grace ends: one push listing
+    what's still down on Main, grouped by root cause, plus silent kiosks."""
+    w = closure.window()
+    acc = (await db.execute(select(Account).limit(1))).scalar_one_or_none()
+    if w is None or acc is None or acc.closure_report_sent_at is not None or now < w[1]:
+        return
+    # Don't fire for closures that ended long ago (e.g. right after a deploy).
+    if (now - closure.reopen_until()).total_seconds() > 6 * 3600:
+        acc.closure_report_sent_at = now
+        await db.commit()
+        return
+    acc.closure_report_sent_at = now
+    title, body = await closure_report_text(db, now)
+    await db.commit()
+    try:
+        await send_push(db, {"title": title, "body": body, "tag": "closure-report", "url": "/"})
+    except Exception:  # noqa: BLE001
+        logger.exception("closure report push failed")
+    acc.rollout_notice = f"{title} — {body}"
+    acc.rollout_notice_at = now
+    await db.commit()
+
+
+async def closure_report_text(db: AsyncSession, now: datetime) -> tuple[str, str]:
+    from app.services import topology as topo
+    site_ids = await _alert_site_ids(db)
+    devs = list((await db.execute(select(Device).where(Device.site_id.in_(site_ids)))).scalars()) if site_ids else []
+    live = [d for d in devs if not topo.is_dormant(d, now)]
+    up = sum(1 for d in live if d.is_online is not False)
+    res = topo.analyze(live, now)
+    roots = res.get("outages", [])
+    parts = []
+    for o in roots[:3]:
+        try:
+            parts.append(topo.describe_outage(o))
+        except Exception:  # noqa: BLE001
+            parts.append(o.root.name or "device")
+    kiosks_txt = ""
+    try:
+        agents = list((await db.execute(select(Agent))).scalars())
+        agents = [a for a in agents if a.status != "pending"]
+        fresh = [a for a in agents if a.status == "online"]
+        if agents:
+            kiosks_txt = f" · kiosks {len(fresh)}/{len(agents)} reporting"
+    except Exception:  # noqa: BLE001
+        pass
+    if not roots:
+        return "✅ Reopened: everything is back", f"{up}/{len(live)} devices up{kiosks_txt}"
+    more = f" (+{len(roots) - 3} more)" if len(roots) > 3 else ""
+    return (f"⚠️ Reopened: {len(live) - up} devices didn't come back",
+            f"{up}/{len(live)} up{kiosks_txt}. " + " | ".join(parts) + more)
+
+
 async def sweep(db: AsyncSession) -> dict:
     """One pass. Returns counts (also handy for tests)."""
     st = get_settings()
@@ -377,6 +432,13 @@ async def sweep(db: AsyncSession) -> dict:
     await _maybe_fire_wan_brownout(db, now)
     # Teardown: global manual toggle + per-site scheduled teardowns.
     quiet = await _maybe_expire_teardown(db, now)
+    # Planned closure: pause alerts through the closure + reopen grace, then
+    # send one "what didn't come back" summary.
+    await closure.refresh(db)
+    if closure.alerts_paused(now):
+        quiet = True
+    else:
+        await _maybe_send_reopen_report(db, now)
     await _maybe_fire_site_teardowns(db, now)
 
     # No ears, no alarms: skip all work until someone has enabled notifications.
@@ -497,7 +559,8 @@ async def sweep(db: AsyncSession) -> dict:
                 (now - d.offline_since).total_seconds() if d.offline_since else None
             )
             dormant = d.manual_dormant or (
-                offline_age is not None and offline_age >= dormant_cutoff_secs
+                offline_age is not None
+                and closure.effective_offline_seconds(d.offline_since, now) >= dormant_cutoff_secs
             )
             if dormant:
                 # Parked/aged-out gear is silent; drop any pending state so a

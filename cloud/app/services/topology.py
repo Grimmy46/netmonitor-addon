@@ -214,9 +214,10 @@ class Outage:
 def is_dormant(d: Device, now: datetime) -> bool:
     if d.manual_dormant:
         return True
-    days = get_settings().dormant_after_days
+    # Closure-aware: time inside a planned closure doesn't count.
+    from app.services import closure
     return d.is_online is False and d.offline_since is not None and \
-        d.offline_since <= now - timedelta(days=days)
+        closure.device_dormant(False, d.is_online, d.offline_since, now)
 
 
 def analyze(devices: list[Device], now: datetime) -> dict:

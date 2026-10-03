@@ -270,6 +270,7 @@ export type Outage = {
   uplink_port: number | null;
   uplink_type: string | null;
   summary: string;
+  closed_down?: boolean;        // powered down for a planned closure
 };
 export type TopoNode = {
   id: string;
@@ -293,6 +294,14 @@ export type TopoNode = {
   outage_root_id: string | null;
   last_seen: string | null;    // last UniFi check-in (heartbeat)
   seen_age_s: number | null;
+  closed_down?: boolean;
+};
+export type Closure = {
+  phase: "scheduled" | "closed" | "reopening";
+  start: string;
+  end: string;
+  reopen_until: string;
+  note: string | null;
 };
 type Count = { online: number; total: number };
 export type NetworkOverview = {
@@ -303,6 +312,7 @@ export type NetworkOverview = {
   outages: Outage[];
   unreachable: { id: string; name: string; type: string | null }[];
   topology_at: string | null;
+  closure?: Closure | null;
 };
 export type SiteTopology = NetworkOverview & { nodes: TopoNode[] };
 
@@ -334,6 +344,12 @@ export const api = {
   health: () => req<{ status: string; version: string }>("/health"),
   networkOverview: () => req<NetworkOverview>("/network/overview"),
   siteTopology: (siteId: string) => req<SiteTopology>(`/network/sites/${siteId}/topology`),
+  setClosure: (start: string, end: string, note: string) =>
+    req<{ closure: Closure | null }>("/network/closure", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ start, end, note }),
+    }),
+  endClosure: () => req<{ closure: Closure | null }>("/network/closure", { method: "DELETE" }),
   sites: () => req<Site[]>("/sites"),
   site: (siteId: string) => req<Site>(`/sites/${siteId}`),
   devices: (siteId: string, status: DeviceStatusFilter = "active") =>

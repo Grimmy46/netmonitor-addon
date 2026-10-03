@@ -2,6 +2,8 @@
 
 GET /network/overview                — the landing strip: Main's WAN1/WAN2,
                                         switches/APs online, outages with cause.
+GET/PUT/DELETE /network/closure     — planned closure (alerts pause, dormant
+                                        clock freezes, reopen report). Admin.
 GET /network/sites/{site_id}/topology — the self-building map for one site:
                                         every device, what it plugs into (and on
                                         which port), and outages grouped by root.
@@ -10,13 +12,15 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import current_user
+from app.core.auth import current_user, require_admin
 from app.core.config import get_settings
 from app.core.db import get_db
-from app.models import Device, Site
+from app.models import Account, Device, Site
+from app.services import closure
 from app.services.topology import analyze, describe_outage, is_dormant
 
 router = APIRouter(prefix="/network", tags=["network"])
@@ -41,6 +45,7 @@ def _node(d: Device, parent: Device | None, root_id, now: datetime) -> dict:
         "outage_root_id": str(root_id) if root_id else None,
         "last_seen": d.unifi_last_seen.isoformat() if d.unifi_last_seen else None,
         "seen_age_s": (now - d.unifi_last_seen).total_seconds() if d.unifi_last_seen else None,
+        "closed_down": closure.powered_down_for_closure(d, now),
     }
 
 
@@ -58,6 +63,7 @@ def _outage(o, now: datetime) -> dict:
         "parent_online": o.parent.is_online if o.parent else None,
         "uplink_port": r.uplink_port, "uplink_type": r.uplink_type,
         "summary": describe_outage(o),
+        "closed_down": closure.powered_down_for_closure(r, now),
     }
 
 
@@ -93,7 +99,68 @@ async def _site_view(db: AsyncSession, site: Site) -> dict:
         "unreachable": unreachable,
         "nodes": nodes,
         "topology_at": max((d.topology_at for d in devices if d.topology_at), default=None),
+        "closure": await _closure_out(db, now),
     }
+
+
+async def _closure_out(db: AsyncSession, now: datetime | None = None) -> dict | None:
+    now = now or _now()
+    await closure.refresh(db)
+    ph = closure.phase(now)
+    if ph is None:
+        return None
+    acc = (await db.execute(select(Account).limit(1))).scalar_one_or_none()
+    start, end = closure.window()  # type: ignore[misc]
+    return {"phase": ph, "start": start.isoformat(), "end": end.isoformat(),
+            "reopen_until": closure.reopen_until().isoformat(),
+            "note": acc.closure_note if acc else None}
+
+
+class ClosureIn(BaseModel):
+    start: datetime
+    end: datetime
+    note: str | None = None
+
+
+@router.get("/closure")
+async def get_closure(db: AsyncSession = Depends(get_db), _user=Depends(current_user)) -> dict:
+    return {"closure": await _closure_out(db)}
+
+
+@router.put("/closure")
+async def set_closure(body: ClosureIn, db: AsyncSession = Depends(get_db),
+                      _admin=Depends(require_admin)) -> dict:
+    start = body.start if body.start.tzinfo else body.start.replace(tzinfo=timezone.utc)
+    end = body.end if body.end.tzinfo else body.end.replace(tzinfo=timezone.utc)
+    if end <= start:
+        raise HTTPException(status_code=422, detail="End must be after start")
+    if (end - start).days > 30:
+        raise HTTPException(status_code=422, detail="Closures are capped at 30 days")
+    acc = (await db.execute(select(Account).limit(1))).scalar_one_or_none()
+    if acc is None:
+        raise HTTPException(status_code=404, detail="No account")
+    acc.closure_start, acc.closure_end = start, end
+    acc.closure_note = (body.note or "").strip()[:120] or None
+    acc.closure_report_sent_at = None
+    await db.commit()
+    return {"closure": await _closure_out(db)}
+
+
+@router.delete("/closure")
+async def clear_closure(db: AsyncSession = Depends(get_db), _admin=Depends(require_admin)) -> dict:
+    """Cancel (or end early). Ending early still gets the reopen report: the
+    end moves to now, so the grace window + summary push run as normal."""
+    acc = (await db.execute(select(Account).limit(1))).scalar_one_or_none()
+    now = _now()
+    if acc and acc.closure_start and acc.closure_end:
+        if acc.closure_start > now:            # not started yet: just cancel
+            acc.closure_start = acc.closure_end = acc.closure_note = None
+        elif acc.closure_end > now:            # in progress: reopen now
+            acc.closure_end = now
+        else:                                  # in the reopen grace: finish it
+            acc.closure_start = acc.closure_end = acc.closure_note = None
+        await db.commit()
+    return {"closure": await _closure_out(db)}
 
 
 @router.get("/overview")

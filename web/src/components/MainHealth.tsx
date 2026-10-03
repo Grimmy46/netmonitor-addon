@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type NetworkOverview, type WanLink } from "../api/client";
+import { api, isAdmin, type Closure, type NetworkOverview, type WanLink } from "../api/client";
 import { humanizeDuration } from "../lib/duration";
 
 /**
@@ -45,10 +45,111 @@ function wanTile(l: WanLink | undefined, key: string, stale: boolean) {
   return <Tile key={key} color={color} label={key} value={stale ? "?" : l.up ? "UP" : "DOWN"} detail={bits} />;
 }
 
+const fmtWhen = (iso: string) =>
+  new Date(iso).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+
+/** datetime-local value (local time) for a Date. */
+const toLocalInput = (d: Date) => {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+
+/**
+ * Planned closure ("dark until Tuesday"): alerts pause, the dormant clock
+ * freezes so gear that's off for days doesn't age out of view, and one push
+ * after reopening lists anything that didn't come back.
+ */
+function ClosureBar({ c, onChange }: { c: Closure | null | undefined; onChange: () => void }) {
+  const admin = isAdmin();
+  const [editing, setEditing] = useState(false);
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const openForm = () => {
+    const now = new Date();
+    now.setSeconds(0, 0);
+    const e = new Date(now.getTime() + 3 * 86400000);
+    e.setHours(10, 0, 0, 0);
+    setStart(c ? toLocalInput(new Date(c.start)) : toLocalInput(now));
+    setEnd(c ? toLocalInput(new Date(c.end)) : toLocalInput(e));
+    setNote(c?.note ?? "");
+    setErr("");
+    setEditing(true);
+  };
+  const save = async () => {
+    setBusy(true); setErr("");
+    try {
+      await api.setClosure(new Date(start).toISOString(), new Date(end).toISOString(), note);
+      setEditing(false); onChange();
+    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    setBusy(false);
+  };
+  const end_ = async () => {
+    const msg = c?.phase === "closed"
+      ? "Reopen now? Alerts resume after the reopen check, and you'll get one summary of anything still down."
+      : c?.phase === "scheduled" ? "Cancel this scheduled closure?" : "Finish the reopen check now?";
+    if (!window.confirm(msg)) return;
+    setBusy(true);
+    try { await api.endClosure(); onChange(); } finally { setBusy(false); }
+  };
+
+  if (editing) {
+    return (
+      <div className="mh-closure edit">
+        <strong>Plan a closure</strong>
+        <label>Closes <input type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} /></label>
+        <label>Reopens <input type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)} /></label>
+        <input type="text" placeholder="Note (optional), e.g. Fair closed Mon–Wed" value={note} onChange={(e) => setNote(e.target.value)} />
+        <div className="mh-closure-help sub">
+          Alerts pause, and days spent closed don't count toward "dormant", so nothing quietly drops off the map.
+          About 3 h after reopening you get one push listing anything that didn't come back.
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn btn-primary" disabled={busy || !start || !end} onClick={save}>Save</button>
+          <button className="btn" onClick={() => setEditing(false)}>Cancel</button>
+          {err ? <span style={{ color: BAD, fontSize: 12, alignSelf: "center" }}>{err}</span> : null}
+        </div>
+      </div>
+    );
+  }
+  if (!c) {
+    return admin ? (
+      <div className="mh-closure-link">
+        <button className="btn" style={{ fontSize: 12, padding: "3px 10px" }} onClick={openForm}>Plan a closure…</button>
+      </div>
+    ) : null;
+  }
+  const text =
+    c.phase === "scheduled" ? <>Closure planned: <strong>{fmtWhen(c.start)}</strong> → <strong>{fmtWhen(c.end)}</strong>. Alerts will pause automatically.</>
+    : c.phase === "closed" ? <><strong>Closed until {fmtWhen(c.end)}.</strong> Alerts paused · dormant clock frozen · gear switched off shows grey.</>
+    : <><strong>Reopen check</strong>: waiting for gear to power up until {fmtWhen(c.reopen_until)}, then one summary push of anything still down. Anything red below hasn't come back yet.</>;
+  return (
+    <div className={`mh-closure ${c.phase}`}>
+      <span className="mh-closure-icon">{c.phase === "reopening" ? "↻" : "⏸"}</span>
+      <div style={{ flex: 1 }}>
+        {text}
+        {c.note ? <div className="sub" style={{ fontSize: 12 }}>{c.note}</div> : null}
+      </div>
+      {admin ? (
+        <div style={{ display: "flex", gap: 6 }}>
+          {c.phase !== "reopening" ? <button className="btn" style={{ fontSize: 12, padding: "3px 10px" }} onClick={openForm}>Edit</button> : null}
+          <button className="btn" style={{ fontSize: 12, padding: "3px 10px" }} disabled={busy} onClick={end_}>
+            {c.phase === "closed" ? "Reopen now" : c.phase === "scheduled" ? "Cancel" : "Finish"}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function MainHealth() {
   const [ov, setOv] = useState<NetworkOverview | null>(null);
   const [err, setErr] = useState("");
 
+  const [tick, setTick] = useState(0);
   useEffect(() => {
     let alive = true;
     const load = () =>
@@ -58,7 +159,7 @@ export function MainHealth() {
     load();
     const id = setInterval(load, 15000);
     return () => { alive = false; clearInterval(id); };
-  }, []);
+  }, [tick]);
 
   if (err && !ov) return <div className="banner err" style={{ marginBottom: 14 }}>Main status unavailable: {err}</div>;
   if (!ov) return <div className="panel mh-panel"><span className="hint">Checking Main…</span></div>;
@@ -70,8 +171,12 @@ export function MainHealth() {
   const stale = ov.wan?.stale ?? true;
   const sw = ov.counts.switch;
   const ap = ov.counts.ap;
-  const swColor = sw.total === 0 ? MUTED : sw.online === sw.total ? GOOD : BAD;
-  const apColor = ap.total === 0 ? MUTED : ap.online === ap.total ? GOOD : WARN;
+  const closed = ov.closure?.phase === "closed";
+  const closedOut = ov.outages.filter((o) => o.closed_down);
+  const outages = ov.outages.filter((o) => !o.closed_down);
+  const closedCount = closedOut.reduce((a, o) => a + o.affected_count, 0);
+  const swColor = sw.total === 0 ? MUTED : sw.online === sw.total ? GOOD : closed && !outages.length ? MUTED : BAD;
+  const apColor = ap.total === 0 ? MUTED : ap.online === ap.total ? GOOD : closed && !outages.length ? MUTED : WARN;
   const allGood = !stale && links.every((l) => l.up) && ov.outages.length === 0 && ov.unreachable.length === 0;
 
   return (
@@ -97,11 +202,17 @@ export function MainHealth() {
           detail={ap.online === ap.total ? "all online" : `${ap.total - ap.online} down`} onClick={() => open()} />
       </div>
 
+      <ClosureBar c={ov.closure} onChange={() => setTick((t) => t + 1)} />
+
+      {closed && closedCount ? (
+        <div className="mh-ok" style={{ color: MUTED }}>⏸ {closedCount} device{closedCount === 1 ? "" : "s"} switched off for the closure (not counted as faults).</div>
+      ) : null}
+
       {allGood ? (
         <div className="mh-ok">● Everything on {ov.site_name} is up.</div>
       ) : null}
 
-      {ov.outages.map((o) => (
+      {outages.map((o) => (
         <button key={o.root_id} type="button" className="mh-issue" style={{ borderLeftColor: BAD }} onClick={() => open(o.root_id)}>
           <div className="mh-issue-title">
             <span style={{ color: BAD }}>●</span> {o.root_name}
@@ -124,7 +235,7 @@ export function MainHealth() {
         </button>
       ))}
 
-      {ov.unreachable.length ? (
+      {ov.unreachable.length && !closed ? (
         <button type="button" className="mh-issue" style={{ borderLeftColor: WARN }} onClick={() => open()}>
           <div className="mh-issue-title">
             <span style={{ color: WARN }}>●</span> {ov.unreachable.length} up in UniFi but not answering kiosks' pings

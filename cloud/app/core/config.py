@@ -147,6 +147,9 @@ class Settings(BaseSettings):
     topology_interval_seconds: int = 20
     # A WAN link must read down this long before it pushes an alert.
     alert_wan_confirm_seconds: int = 90
+    # Planned closures: after reopening, wait this long for gear to power up
+    # before the one "what didn't come back" summary push.
+    closure_reopen_grace_hours: int = 3
 
     @property
     def database_url(self) -> str:

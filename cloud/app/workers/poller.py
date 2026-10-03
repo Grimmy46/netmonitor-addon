@@ -62,6 +62,14 @@ async def poller_lifespan(_app):
     from app.workers.retention import run_retention
     from app.workers.topology import run_topology
 
+    # Load any planned closure before the first request computes dormancy.
+    try:
+        from app.services import closure
+        async with SessionLocal() as db:
+            await closure.refresh(db)
+    except Exception:  # noqa: BLE001
+        logger.exception("closure refresh at startup failed")
+
     tasks = [
         asyncio.create_task(run_unifi_poller()),
         asyncio.create_task(run_alert_sweeper()),

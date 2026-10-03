@@ -19,6 +19,7 @@ from app.schemas import (
     StatusEventOut,
     WanMetricSeries,
 )
+from app.services import closure
 from app.services.sync import PRIMARY_WAN_LABELS, is_primary_wan
 
 
@@ -28,8 +29,7 @@ def _site_dormant(site: Site, now: datetime) -> bool:
         return True
     if site.offline_since is None:
         return False
-    hours = get_settings().site_dormant_after_hours
-    return (now - site.offline_since).total_seconds() >= hours * 3600
+    return closure.site_dormant_age_ok(site.offline_since, now)
 
 router = APIRouter(prefix="/sites", tags=["sites"])
 
@@ -45,10 +45,8 @@ def _dormant_cutoff() -> datetime:
 
 def _dormant_sql(cutoff: datetime):
     """SQL predicate for effective dormancy: manually parked OR auto-aged out."""
-    return or_(
-        Device.manual_dormant.is_(True),
-        and_(Device.offline_since.is_not(None), Device.offline_since <= cutoff),
-    )
+    # Closure-aware: time inside a planned closure doesn't age devices.
+    return closure.dormant_sql()
 
 
 async def _latest_metrics_by_site(db: AsyncSession) -> dict:
@@ -109,9 +107,7 @@ def _device_out(dev: Device, now: datetime, cutoff: datetime) -> DeviceOut:
     down_seconds = (
         int((now - dev.offline_since).total_seconds()) if dev.offline_since else None
     )
-    dormant = dev.manual_dormant or (
-        dev.offline_since is not None and dev.offline_since <= cutoff
-    )
+    dormant = closure.device_dormant(dev.manual_dormant, dev.is_online, dev.offline_since, now)
     return DeviceOut(
         id=dev.id,
         name=dev.name,

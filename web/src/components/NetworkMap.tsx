@@ -15,7 +15,7 @@ import { splitName } from "../lib/names";
  */
 const POLL_MS = 10000;
 const MISSED_AFTER_S = 120; // no check-in for this long while "online" = missed heartbeat
-const HOVER_DELAY_MS = 900;
+const HOVER_DELAY_MS = 150;
 
 type Kids = Map<string | null, TopoNode[]>;
 type Health = "up" | "missed" | "down" | "dormant" | "unreach";
@@ -160,7 +160,7 @@ export function NetworkMap({ siteId }: { siteId: string }) {
       ) : null}
 
       {mode === "map" ? (
-        <RadialMap roots={tree.roots} kids={tree.kids} byId={tree.byId} beats={hb.beats} poll={hb.poll} onPick={pick} />
+        <RadialMap roots={tree.roots} kids={tree.kids} byId={tree.byId} beats={hb.beats} poll={hb.poll} onPick={pick} topo={topo} />
       ) : (
         <ListView tree={tree} q={q} focus={focus} setFocus={setFocus} beats={hb.beats} poll={hb.poll} />
       )}
@@ -182,38 +182,42 @@ function Beat({ n, beat, poll }: { n: TopoNode; beat: number; poll: number }) {
   );
 }
 
-/* ── Radial live map ───────────────────────────────────────────────────── */
+/* ── Radial live map — holographic "JARVIS" style ─────────────────────── */
 type Placed = { n: TopoNode; x: number; y: number; depth: number; parent?: Placed };
 
-function RadialMap({ roots, kids, byId, beats, poll, onPick }: {
+function RadialMap({ roots, kids, byId, beats, poll, onPick, topo }: {
   roots: TopoNode[]; kids: Kids; byId: Map<string, TopoNode>;
-  beats: Map<string, number>; poll: number; onPick: (id: string) => void;
+  beats: Map<string, number>; poll: number; onPick: (id: string) => void; topo: SiteTopology;
 }) {
   const [hover, setHover] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
   const SIZE = 1000, C = SIZE / 2;
 
-  const placed = useMemo(() => {
-    // Leaf counts → angular span; depth → ring.
+  const { placed, step, maxDepth } = useMemo(() => {
+    // An HA standby gateway hanging off the active one is drawn as a second
+    // core beside it — two AIs side by side — instead of on the first ring.
+    const isTwin = (n: TopoNode) => n.type === "gateway" && !!n.parent_id &&
+      byId.get(n.parent_id)?.type === "gateway";
+    const kidsOf = (id: string) => (kids.get(id) ?? []).filter((k) => !isTwin(k));
     const leaves = new Map<string, number>();
     const seen = new Set<string>();
     const count = (n: TopoNode): number => {
       if (seen.has(n.id)) return 0;
       seen.add(n.id);
-      const ch = kids.get(n.id) ?? [];
-      const c = ch.length ? ch.reduce((a, k) => a + count(k), 0) : 1;
-      leaves.set(n.id, Math.max(c, 1));
-      return Math.max(c, 1);
+      const ch = kidsOf(n.id);
+      const c = Math.max(ch.length ? ch.reduce((a, k) => a + count(k), 0) : 1, 1);
+      leaves.set(n.id, c);
+      return c;
     };
-    // Active gateway first; an HA standby already hangs under it.
     const total = roots.reduce((a, r) => a + count(r), 0) || 1;
     let maxDepth = 1;
-    const depthOf = (n: TopoNode, d: number, s: Set<string>) => {
-      if (s.has(n.id)) return; s.add(n.id); maxDepth = Math.max(maxDepth, d);
-      for (const k of kids.get(n.id) ?? []) depthOf(k, d + 1, s);
+    const ds = new Set<string>();
+    const depthOf = (n: TopoNode, d: number) => {
+      if (ds.has(n.id)) return; ds.add(n.id); maxDepth = Math.max(maxDepth, d);
+      for (const k of kidsOf(n.id)) depthOf(k, d + 1);
     };
-    const ds = new Set<string>(); roots.forEach((r) => depthOf(r, 0, ds));
-    const step = (C - 40) / maxDepth;
+    roots.forEach((r) => depthOf(r, 0));
+    const step = (C - 70) / maxDepth;
     const out: Placed[] = [];
     const done = new Set<string>();
     const place = (n: TopoNode, depth: number, a0: number, a1: number, parent?: Placed) => {
@@ -222,8 +226,16 @@ function RadialMap({ roots, kids, byId, beats, poll, onPick }: {
       const r = depth * step;
       const p: Placed = { n, depth, parent, x: C + r * Math.cos(a), y: C + r * Math.sin(a) };
       out.push(p);
+      if (depth === 0) {
+        const twins = (kids.get(n.id) ?? []).filter(isTwin);
+        twins.forEach((t, i) => {
+          done.add(t.id);
+          out.push({ n: t, depth: 0, parent: p, x: C + 46 * (i + 1), y: C });
+          p.x = C - 23 * twins.length; // shift the active core left so the pair is centred
+        });
+      }
       let cur = a0;
-      for (const k of kids.get(n.id) ?? []) {
+      for (const k of kidsOf(n.id)) {
         const span = ((leaves.get(k.id) ?? 1) / (leaves.get(n.id) ?? 1)) * (a1 - a0);
         place(k, depth + 1, cur, cur + span, p);
         cur += span;
@@ -235,8 +247,8 @@ function RadialMap({ roots, kids, byId, beats, poll, onPick }: {
       place(r, 0, cur, cur + span);
       cur += span;
     }
-    return out;
-  }, [roots, kids, C]);
+    return { placed: out, step, maxDepth };
+  }, [roots, kids, byId, C]);
 
   const enter = (id: string) => {
     if (timer.current) window.clearTimeout(timer.current);
@@ -250,46 +262,141 @@ function RadialMap({ roots, kids, byId, beats, poll, onPick }: {
   useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current); }, []);
 
   const hp = hover ? placed.find((p) => p.n.id === hover) : undefined;
-  // Path from the hovered device back to the gateway, highlighted.
   const pathIds = new Set<string>();
   for (let p = hp; p; p = p.parent) pathIds.add(p.n.id);
 
-  const radius = (n: TopoNode) => (n.type === "gateway" ? 13 : n.type === "switch" ? 8 : 5);
+  const radius = (n: TopoNode) => (n.type === "gateway" ? 15 : n.type === "switch" ? 7 : 4);
+  const liveNodes = placed.filter((p) => !p.n.dormant);
+  const online = liveNodes.filter((p) => p.n.is_online !== false).length;
+  const links = topo.wan?.links ?? [];
+  const ticks = Array.from({ length: 72 }, (_, i) => (i * Math.PI * 2) / 72);
+  const R = C - 30;
 
   return (
-    <div className="rm-wrap" onMouseLeave={leave}>
-      <svg viewBox={`0 0 ${SIZE} ${SIZE}`} className="rm-svg" role="img" aria-label="Live network map">
-        {placed.filter((p) => p.parent).map((p) => {
-          const h = health(p.n);
-          const on = pathIds.has(p.n.id);
-          return (
-            <line key={`e${p.n.id}`} x1={p.parent!.x} y1={p.parent!.y} x2={p.x} y2={p.y}
-              className={`rm-edge ${h === "down" ? "down" : ""} ${on ? "hl" : ""} ${p.n.uplink_type === "wireless" ? "wl" : ""}`} />
-          );
-        })}
+    <div className="holo" onMouseLeave={leave}>
+      <svg viewBox={`0 0 ${SIZE} ${SIZE}`} className="holo-svg" role="img" aria-label="Live network map">
+        <defs>
+          <radialGradient id="hl-bg" cx="50%" cy="50%" r="60%">
+            <stop offset="0%" stopColor="#06233f" />
+            <stop offset="55%" stopColor="#031427" />
+            <stop offset="100%" stopColor="#01060d" />
+          </radialGradient>
+          <radialGradient id="hl-core" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#ffffff" />
+            <stop offset="35%" stopColor="#7df9ff" />
+            <stop offset="100%" stopColor="#0077ff" stopOpacity="0" />
+          </radialGradient>
+          <radialGradient id="hl-core-red" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#fff1ec" />
+            <stop offset="35%" stopColor="#ff5a3c" />
+            <stop offset="100%" stopColor="#ff2200" stopOpacity="0" />
+          </radialGradient>
+          <linearGradient id="hl-sweep" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stopColor="#00e5ff" stopOpacity="0" />
+            <stop offset="100%" stopColor="#00e5ff" stopOpacity="0.22" />
+          </linearGradient>
+          <filter id="hl-glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="3.2" result="b" />
+            <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
+          </filter>
+          <pattern id="hl-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M40 0H0V40" fill="none" stroke="#0bd3ff" strokeOpacity="0.05" />
+          </pattern>
+        </defs>
+
+        <rect width={SIZE} height={SIZE} fill="url(#hl-bg)" />
+        <rect width={SIZE} height={SIZE} fill="url(#hl-grid)" />
+
+        {/* Range rings (one per hop) + outer tick ring + radar sweep */}
+        {Array.from({ length: maxDepth }, (_, d) => (
+          <circle key={`r${d}`} cx={C} cy={C} r={(d + 1) * step} className={`hl-ring ${d % 3 === 2 ? "major" : ""}`} />
+        ))}
+        <circle cx={C} cy={C} r={R} className="hl-outer" />
+        {ticks.map((a, i) => (
+          <line key={`t${i}`} x1={C + R * Math.cos(a)} y1={C + R * Math.sin(a)}
+            x2={C + (R - (i % 6 === 0 ? 14 : 6)) * Math.cos(a)} y2={C + (R - (i % 6 === 0 ? 14 : 6)) * Math.sin(a)}
+            className="hl-tick" />
+        ))}
+        <g className="hl-spin-slow"><circle cx={C} cy={C} r={R + 12} className="hl-arc" /></g>
+        <g className="hl-sweep">
+          <path d={`M${C},${C} L${C + R},${C} A${R},${R} 0 0,0 ${C + R * Math.cos(-0.6)},${C + R * Math.sin(-0.6)} Z`} fill="url(#hl-sweep)" />
+          <line x1={C} y1={C} x2={C + R} y2={C} stroke="#7df9ff" strokeOpacity="0.5" />
+        </g>
+
+        {/* Links: a dim base + a bright dash "data flow" moving outward */}
+        <g filter="url(#hl-glow)">
+          {placed.filter((p) => p.parent).map((p) => {
+            const h = health(p.n);
+            const on = pathIds.has(p.n.id);
+            const cls = h === "down" ? "down" : h === "dormant" ? "dorm" : "";
+            return (
+              <g key={`e${p.n.id}`}>
+                <line x1={p.parent!.x} y1={p.parent!.y} x2={p.x} y2={p.y} className={`hl-edge ${cls} ${on ? "hl" : ""}`} />
+                {h !== "down" && h !== "dormant" ? (
+                  <line x1={p.parent!.x} y1={p.parent!.y} x2={p.x} y2={p.y}
+                    className={`hl-flow ${p.n.uplink_type === "wireless" ? "wl" : ""} ${on ? "hl" : ""}`} />
+                ) : null}
+              </g>
+            );
+          })}
+        </g>
+
+        {/* Devices */}
         {placed.map((p) => {
           const h = health(p.n);
           const r = radius(p.n);
           const beat = beats.get(p.n.id) ?? 0;
-          const ringKey = h === "down" || h === "missed" ? `p${poll}` : `b${beat}`;
-          const ring = h === "down" || h === "missed" || beat > 0;
+          const bad = h === "down" || h === "missed";
+          const ringKey = bad ? `p${poll}` : `b${beat}`;
+          const ring = bad || beat > 0;
+          const gw = p.n.type === "gateway";
           return (
-            <g key={p.n.id} transform={`translate(${p.x},${p.y})`} className={`rm-node rm-${h} ${hover === p.n.id ? "hov" : ""}`}
+            <g key={p.n.id} transform={`translate(${p.x},${p.y})`}
+              className={`hl-node hl-${h} ${gw ? "gw" : ""} ${gw && p.parent ? "twin" : ""} ${hover === p.n.id ? "hov" : ""} ${pathIds.has(p.n.id) ? "onpath" : ""}`}
               onMouseEnter={() => enter(p.n.id)} onMouseLeave={leave} onClick={() => onPick(p.n.id)}>
-              <circle r={r + 8} className="rm-hit" />
-              {ring ? <circle key={ringKey} r={r} className="rm-ring" /> : null}
-              <circle r={r} className="rm-dot" />
+              <circle r={Math.max(r + 10, 14)} className="hl-hit" />
+              {gw ? (
+                <>
+                  <circle r={r * 2.6} fill={bad ? "url(#hl-core-red)" : "url(#hl-core)"} className="hl-orb" />
+                  <g className="hl-spin"><circle r={r + 9} className="hl-gw-ring a" /></g>
+                  <g className="hl-spin-rev"><circle r={r + 15} className="hl-gw-ring b" /></g>
+                </>
+              ) : (
+                <circle r={r * 2.4} className="hl-halo" />
+              )}
+              {p.n.type === "switch" ? <circle r={r + 4} className="hl-switch-ring" /> : null}
+              {ring ? <circle key={ringKey} r={r} className="hl-beat" /> : null}
+              <circle r={gw ? r * 0.55 : r} className="hl-core" filter="url(#hl-glow)" />
             </g>
           );
         })}
+
+        {/* HUD corners */}
+        <g className="hl-hud">
+          <text x={28} y={44} className="big">{(topo.site_name || "SITE").toUpperCase()} // NETWORK</text>
+          <text x={28} y={66}>NODES ONLINE {online}/{liveNodes.length}</text>
+          <text x={28} y={86} className={topo.outages.length ? "bad" : ""}>
+            {topo.outages.length ? `FAULTS ${topo.outages.length} · ORIGIN TRACED` : "ALL SYSTEMS NOMINAL"}
+          </text>
+          {links.map((l, i) => (
+            <text key={l.key} x={SIZE - 28} y={44 + i * 20} textAnchor="end" className={l.up ? "" : "bad"}>
+              {l.key} {l.up ? (l.active ? "ACTIVE" : "STANDBY") : "OFFLINE"}{l.up && l.latency_ms != null ? ` · ${l.latency_ms}MS` : ""}
+            </text>
+          ))}
+          <text x={SIZE - 28} y={SIZE - 28} textAnchor="end" className="dim">
+            {topo.wan?.gateway ? `CORE ${topo.wan.gateway}${topo.wan.ha_units > 1 ? " · HA PAIR" : ""}` : ""}
+          </text>
+          <text x={28} y={SIZE - 28} className="dim">HOVER A NODE · CLICK TO OPEN</text>
+        </g>
+
         {hp ? <HoverCard p={hp} parent={hp.n.parent_id ? byId.get(hp.n.parent_id) : undefined} size={SIZE} /> : null}
       </svg>
-      <div className="rm-legend">
+      <div className="holo-legend">
         <span><i className="lg up" /> heartbeat</span>
-        <span><i className="lg missed" /> missed heartbeat</span>
+        <span><i className="lg missed" /> missed</span>
         <span><i className="lg down" /> down</span>
-        <span><i className="lg unreach" /> no ping from kiosks</span>
-        <span className="sub">Big dot = switch · small = AP · hover a dot to see it · click to open in list</span>
+        <span><i className="lg unreach" /> no kiosk ping</span>
+        <span className="dim">large = switch · small = AP · center = core gateway</span>
       </div>
     </div>
   );
@@ -299,35 +406,47 @@ function HoverCard({ p, parent, size }: { p: Placed; parent?: TopoNode; size: nu
   const n = p.n;
   const nm = splitName(n.name);
   const h = health(n);
-  const lines: string[] = [];
-  lines.push([n.type === "ap" ? "Access point" : n.type === "gateway" ? "Gateway" : "Switch", n.model].filter(Boolean).join(" · "));
+  const bad = h === "down" || h === "missed";
+  const rows: [string, string][] = [];
+  rows.push(["TYPE", [n.type === "ap" ? "ACCESS POINT" : n.type === "gateway" ? "GATEWAY" : "SWITCH", n.model].filter(Boolean).join(" · ")]);
   if (parent) {
     const pn = splitName(parent.name);
-    lines.push(`Plugs into ${pn.label}${n.uplink_type === "wireless" ? " (wireless mesh)" : n.uplink_port ? ` port ${n.uplink_port}` : ""}${speed(n.uplink_speed_mbps) ? ` · ${speed(n.uplink_speed_mbps)}` : ""}`);
+    rows.push(["UPLINK", `${pn.label}${n.uplink_type === "wireless" ? " · MESH" : n.uplink_port ? ` · P${n.uplink_port}` : ""}${speed(n.uplink_speed_mbps) ? ` · ${speed(n.uplink_speed_mbps)}` : ""}`]);
   }
-  if (n.ip) lines.push(`IP ${n.ip}`);
-  if (n.ports_total) lines.push(`${n.ports_up}/${n.ports_total} ports up`);
-  lines.push(
-    h === "down" ? `DOWN for ${humanizeDuration(n.down_seconds)}`
-      : n.seen_age_s != null ? `Last heartbeat ${Math.round(n.seen_age_s)}s ago${h === "missed" ? " (missed)" : ""}`
-        : "No heartbeat data yet",
-  );
-  const W = 300, LH = 19, H = 34 + lines.length * LH;
-  let x = p.x + 16, y = p.y - H / 2;
-  if (x + W > size - 6) x = p.x - 16 - W;
-  y = Math.max(6, Math.min(size - H - 6, y));
+  if (n.ip) rows.push(["IP", n.ip]);
+  if (n.ports_total) rows.push(["PORTS", `${n.ports_up}/${n.ports_total} UP`]);
+  rows.push(["STATUS",
+    h === "down" ? `DOWN ${humanizeDuration(n.down_seconds)}`
+      : n.seen_age_s != null ? `BEAT ${Math.round(n.seen_age_s)}S AGO${h === "missed" ? " · MISSED" : ""}`
+        : "NO BEAT DATA"]);
+  const W = 400, LH = 20, H = 50 + rows.length * LH, cut = 14;
+  let x = p.x + 22, y = p.y - H / 2;
+  if (x + W > size - 10) x = p.x - 22 - W;
+  y = Math.max(10, Math.min(size - H - 10, y));
+  const shape = `M${cut},0 H${W} V${H - cut} L${W - cut},${H} H0 V${cut} Z`;
+  // Leader line from the node to the card edge.
+  const lx = x > p.x ? x : x + W;
   return (
-    <g className="rm-card" transform={`translate(${x},${y})`} pointerEvents="none">
-      <rect width={W} height={H} rx={10} />
-      <text x={14} y={24} className="rm-card-title">
-        {nm.label.length > 26 ? nm.label.slice(0, 25) + "…" : nm.label}
-        {nm.tag ? <tspan className="rm-card-tag">  #{nm.tag}</tspan> : null}
-      </text>
-      {lines.map((l, i) => (
-        <text key={i} x={14} y={24 + (i + 1) * LH} className={`rm-card-line ${i === lines.length - 1 && (h === "down" || h === "missed") ? "bad" : ""}`}>
-          {l.length > 44 ? l.slice(0, 43) + "…" : l}
+    <g pointerEvents="none" className={`hl-card ${bad ? "bad" : ""}`}>
+      <polyline points={`${p.x},${p.y} ${(p.x + lx) / 2},${y + 22} ${lx},${y + 22}`} className="hl-leader" />
+      <g transform={`translate(${x},${y})`}>
+        <path d={shape} className="hl-card-bg" />
+        <path d={`M0,${cut + 10} V${cut} L${cut},0 H${cut + 30}`} className="hl-card-corner" />
+        <path d={`M${W},${H - cut - 10} V${H - cut} L${W - cut},${H} H${W - cut - 30}`} className="hl-card-corner" />
+        <text x={18} y={30} className="hl-card-title">
+          {(nm.label.length > 24 ? nm.label.slice(0, 23) + "…" : nm.label).toUpperCase()}
+          {nm.tag ? <tspan className="hl-card-tag">{`  #${nm.tag}`}</tspan> : null}
         </text>
-      ))}
+        <line x1={18} x2={W - 18} y1={40} y2={40} className="hl-card-rule" />
+        {rows.map(([k, v], i) => (
+          <g key={k}>
+            <text x={18} y={60 + i * LH} className="hl-card-k">{k}</text>
+            <text x={90} y={60 + i * LH} className={`hl-card-v ${k === "STATUS" && bad ? "bad" : ""}`}>
+              {v.length > 38 ? v.slice(0, 37) + "…" : v}
+            </text>
+          </g>
+        ))}
+      </g>
     </g>
   );
 }

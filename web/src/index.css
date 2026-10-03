@@ -387,42 +387,101 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
 /* Heartbeat dot: solid core + a ring that plays once per beat. */
 .hb, .hb-static { position: relative; width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--good); }
 .hb-static.down, .hb-down { background: var(--critical); }
-.hb-missed { background: var(--critical); opacity: 0.85; }
+.hb-missed { background: #ff8c1a; }
 .hb-unreach { background: var(--warning); }
 .hb-dormant { background: var(--ink-muted); opacity: 0.6; }
 .hb-ring { position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--good); animation: hb-pulse 1.4s ease-out forwards; pointer-events: none; }
-.hb-down .hb-ring, .hb-missed .hb-ring { border-color: var(--critical); }
+.hb-down .hb-ring { border-color: var(--critical); }
+.hb-missed .hb-ring { border-color: #ff8c1a; }
 @keyframes hb-pulse { 0% { transform: scale(1); opacity: 0.9; } 100% { transform: scale(3); opacity: 0; } }
 
-/* Radial live map */
-.rm-wrap { border: 1px solid var(--border); border-radius: 10px; padding: 8px; background: var(--page); }
-.rm-svg { display: block; width: 100%; max-width: 860px; margin: 0 auto; height: auto; }
-.rm-edge { stroke: var(--baseline); stroke-width: 1.2; opacity: 0.55; }
-.rm-edge.wl { stroke-dasharray: 4 4; }
-.rm-edge.down { stroke: var(--critical); opacity: 0.9; stroke-width: 2; }
-.rm-edge.hl { stroke: var(--accent); opacity: 1; stroke-width: 2.5; }
-.rm-node { cursor: pointer; }
-.rm-hit { fill: transparent; }
-.rm-dot { fill: var(--good); stroke: var(--surface-1); stroke-width: 2; transition: r 0.2s; }
-.rm-down .rm-dot, .rm-missed .rm-dot { fill: var(--critical); }
-.rm-unreach .rm-dot { fill: var(--warning); }
-.rm-dormant .rm-dot { fill: var(--ink-muted); opacity: 0.5; }
-.rm-node.hov .rm-dot { stroke: var(--accent); stroke-width: 3; }
-.rm-ring { fill: none; stroke: var(--good); stroke-width: 2.5; transform-box: fill-box; transform-origin: center; animation: rm-pulse 1.4s ease-out forwards; }
-.rm-down .rm-ring, .rm-missed .rm-ring { stroke: var(--critical); }
-@keyframes rm-pulse { 0% { transform: scale(1); opacity: 0.95; } 100% { transform: scale(3.2); opacity: 0; } }
-.rm-card rect { fill: var(--surface-1); stroke: var(--border); filter: drop-shadow(0 6px 16px rgba(0,0,0,0.25)); }
-.rm-card { animation: rm-pop 0.18s ease-out; transform-box: fill-box; }
-@keyframes rm-pop { from { opacity: 0; } to { opacity: 1; } }
-.rm-card-title { font-size: 16px; font-weight: 700; fill: var(--ink-primary); }
-.rm-card-tag { font-size: 13px; font-weight: 500; fill: var(--ink-muted); }
-.rm-card-line { font-size: 13px; fill: var(--ink-secondary); }
-.rm-card-line.bad { fill: var(--critical); font-weight: 600; }
-.rm-legend { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; font-size: 12px; color: var(--ink-secondary); padding: 6px 0 2px; }
-.rm-legend .lg { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
-.lg.up { background: var(--good); } .lg.missed, .lg.down { background: var(--critical); }
-.lg.missed { box-shadow: 0 0 0 3px color-mix(in srgb, var(--critical) 30%, transparent); }
-.lg.unreach { background: var(--warning); }
+/* Radial live map — holographic "JARVIS" style (always dark) */
+.holo { position: relative; border-radius: 12px; overflow: hidden; background: #01060d; border: 1px solid rgba(0, 229, 255, 0.25); box-shadow: 0 0 0 1px rgba(0,0,0,0.4), 0 0 40px rgba(0, 160, 255, 0.12) inset; }
+.holo::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: repeating-linear-gradient(0deg, rgba(0, 229, 255, 0.035) 0 1px, transparent 1px 3px); mix-blend-mode: screen; }
+.holo-svg { display: block; width: 100%; max-width: 920px; margin: 0 auto; height: auto; font-family: "Rajdhani", "Orbitron", ui-monospace, SFMono-Regular, Menlo, monospace; }
+.hl-ring { fill: none; stroke: #00e5ff; stroke-opacity: 0.07; stroke-dasharray: 2 6; }
+.hl-ring.major { stroke-opacity: 0.14; stroke-dasharray: none; }
+.hl-outer { fill: none; stroke: #00e5ff; stroke-opacity: 0.35; stroke-width: 1.2; }
+.hl-tick { stroke: #00e5ff; stroke-opacity: 0.4; stroke-width: 1; }
+.hl-arc { fill: none; stroke: #7df9ff; stroke-opacity: 0.45; stroke-width: 2; stroke-dasharray: 60 30 8 30 120 50; }
+.hl-spin-slow { transform-box: fill-box; transform-origin: center; animation: hl-rot 60s linear infinite; }
+.hl-sweep { transform-box: view-box; transform-origin: 500px 500px; animation: hl-rot 9s linear infinite; pointer-events: none; }
+@keyframes hl-rot { to { transform: rotate(360deg); } }
+@keyframes hl-rot-rev { to { transform: rotate(-360deg); } }
+
+.hl-edge { stroke: #00b8ff; stroke-opacity: 0.32; stroke-width: 1.1; }
+.hl-edge.down { stroke: #ff3b2f; stroke-opacity: 0.85; stroke-width: 1.8; stroke-dasharray: 5 4; }
+.hl-edge.dorm { stroke: #5b7a90; stroke-opacity: 0.2; }
+.hl-edge.hl { stroke: #ffffff; stroke-opacity: 0.9; stroke-width: 2.4; }
+.hl-flow { stroke: #9ffcff; stroke-width: 1.6; stroke-opacity: 0.75; stroke-dasharray: 2 16; stroke-linecap: round; animation: hl-flow 1.6s linear infinite; }
+.hl-flow.wl { stroke-dasharray: 1 10; stroke-opacity: 0.5; }
+.hl-flow.hl { stroke: #ffffff; stroke-opacity: 1; animation-duration: 0.6s; }
+@keyframes hl-flow { to { stroke-dashoffset: -18; } }
+
+.hl-node { cursor: pointer; }
+.hl-hit { fill: transparent; }
+.hl-halo { fill: #00e5ff; fill-opacity: 0.1; }
+.hl-core { fill: #b9fbff; stroke: #00e5ff; stroke-width: 1.5; transition: transform 0.15s; }
+.hl-switch-ring { fill: none; stroke: #00e5ff; stroke-opacity: 0.55; stroke-width: 1; stroke-dasharray: 3 3; }
+.hl-node.hov .hl-core, .hl-node.onpath .hl-core { fill: #ffffff; stroke: #ffffff; }
+.hl-node.hov .hl-core { transform: scale(1.6); }
+.hl-down .hl-core { fill: #ff8a73; stroke: #ff3b2f; }
+.hl-missed .hl-core { fill: #ffc078; stroke: #ff8c1a; }
+.hl-missed .hl-halo { fill: #ff8c1a !important; }
+.hl-missed .hl-beat { stroke: #ff9a3c !important; }
+.hl-node.twin { opacity: 0.6; }
+.hl-down .hl-halo, .hl-missed .hl-halo { fill: #ff3b2f; fill-opacity: 0.22; }
+.hl-down .hl-switch-ring, .hl-missed .hl-switch-ring { stroke: #ff3b2f; }
+.hl-down .hl-halo { animation: hl-throb 1.2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes hl-throb { 50% { transform: scale(1.35); fill-opacity: 0.4; } }
+.hl-unreach .hl-core { fill: #fff3a0; stroke: #ffe14a; }
+.hl-unreach .hl-halo { fill: #ffe14a; }
+.hl-dormant .hl-core { fill: #31495a; stroke: #4c6b80; }
+.hl-dormant .hl-halo { fill-opacity: 0; }
+.hl-beat { fill: none; stroke: #9ffcff; stroke-width: 2.5; transform-box: fill-box; transform-origin: center; animation: hl-beat 1.5s ease-out forwards; }
+.hl-down .hl-beat, .hl-missed .hl-beat { stroke: #ff3b2f; }
+@keyframes hl-beat { 0% { transform: scale(1); opacity: 1; } 100% { transform: scale(3.6); opacity: 0; } }
+
+/* the core gateway(s): glowing orbs with counter-rotating rings */
+.hl-orb { animation: hl-breathe 3.2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes hl-breathe { 50% { transform: scale(1.12); opacity: 0.8; } }
+.hl-gw-ring { fill: none; stroke: #7df9ff; stroke-width: 1.6; }
+.hl-gw-ring.a { stroke-dasharray: 16 6 4 6; }
+.hl-gw-ring.b { stroke-opacity: 0.6; stroke-dasharray: 2 5; }
+.hl-down .hl-gw-ring { stroke: #ff5a3c; }
+.hl-spin { transform-box: fill-box; transform-origin: center; animation: hl-rot 7s linear infinite; }
+.hl-spin-rev { transform-box: fill-box; transform-origin: center; animation: hl-rot-rev 11s linear infinite; }
+.hl-gw .hl-core { fill: #ffffff; }
+
+/* HUD text */
+.hl-hud text { fill: #7df9ff; font-size: 15px; letter-spacing: 0.14em; font-weight: 600; }
+.hl-hud text.big { font-size: 19px; fill: #e6feff; letter-spacing: 0.2em; }
+.hl-hud text.bad { fill: #ff5a3c; }
+.hl-hud text.dim { fill: #3fa9c9; font-size: 12px; }
+
+/* hover card */
+.hl-card { animation: hl-card-in 0.16s ease-out; }
+@keyframes hl-card-in { from { opacity: 0; } to { opacity: 1; } }
+.hl-leader { fill: none; stroke: #7df9ff; stroke-width: 1.2; stroke-opacity: 0.8; }
+.hl-card-bg { fill: rgba(2, 22, 40, 0.9); stroke: #00e5ff; stroke-opacity: 0.6; stroke-width: 1.2; }
+.hl-card-corner { fill: none; stroke: #9ffcff; stroke-width: 2.5; }
+.hl-card-title { fill: #ffffff; font-size: 18px; font-weight: 700; letter-spacing: 0.12em; }
+.hl-card-tag { fill: #7df9ff; font-size: 14px; font-weight: 500; }
+.hl-card-rule { stroke: #00e5ff; stroke-opacity: 0.35; }
+.hl-card-k { fill: #3fa9c9; font-size: 12px; letter-spacing: 0.16em; font-weight: 600; }
+.hl-card-v { fill: #c9fdff; font-size: 14px; letter-spacing: 0.05em; }
+.hl-card-v.bad { fill: #ff6a50; font-weight: 700; }
+.hl-card.bad .hl-card-bg { stroke: #ff3b2f; }
+.hl-card.bad .hl-card-corner, .hl-card.bad .hl-leader { stroke: #ff6a50; }
+
+.holo-legend { position: relative; z-index: 1; display: flex; flex-wrap: wrap; gap: 16px; justify-content: center; padding: 8px 0 12px; font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: #7df9ff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.holo-legend .dim { color: #3fa9c9; }
+.holo-legend .lg { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+.holo-legend .lg.up { background: #9ffcff; box-shadow: 0 0 8px #00e5ff; }
+.holo-legend .lg.missed { background: #ffc078; box-shadow: 0 0 8px #ff8c1a; }
+.holo-legend .lg.down { background: #ff3b2f; box-shadow: 0 0 8px #ff3b2f; }
+.holo-legend .lg.unreach { background: #ffe14a; box-shadow: 0 0 8px #ffe14a; }
+@media (prefers-reduced-motion: reduce) { .hl-sweep, .hl-flow, .hl-spin, .hl-spin-rev, .hl-spin-slow, .hl-orb, .hl-down .hl-halo { animation: none; } }
 
 /* List view */
 .nl-list { border: 1px solid var(--border); border-radius: 10px; max-height: 680px; overflow: auto; }

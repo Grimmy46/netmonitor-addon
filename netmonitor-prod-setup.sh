@@ -101,6 +101,15 @@ $DOMAIN {
 CADDY
 systemctl reload caddy
 
+echo "== nightly database backup (systemd timer) =="
+install -m 644 deploy/netmonitor-backup.service /etc/systemd/system/netmonitor-backup.service
+install -m 644 deploy/netmonitor-backup.timer   /etc/systemd/system/netmonitor-backup.timer
+systemctl daemon-reload
+systemctl enable --now netmonitor-backup.timer
+# First deploy with backups: take one right away rather than waiting for tonight.
+ls /var/backups/netmonitor/netmonitor-*.dump >/dev/null 2>&1 || \
+  systemctl start --no-block netmonitor-backup.service
+
 echo
 echo "===================== DONE ====================="
 echo " NetMonitor is live at:  https://$DOMAIN"

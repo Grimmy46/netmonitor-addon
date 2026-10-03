@@ -1,0 +1,8 @@
+[Unit]
+Description=NetMonitor nightly database backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/netmonitor/deploy/backup.sh

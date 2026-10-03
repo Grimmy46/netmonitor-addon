@@ -26,6 +26,7 @@ Live at https://rcs-fleet-mon.duckdns.org
 | Server deploy log | `/var/log/netmonitor-autodeploy.log` (on rcs-hub) |
 | Is the timer alive? | `systemctl status netmonitor-autodeploy.timer` |
 | Did it deploy? | dashboard header version badge changes |
+| Nightly DB backup | `/var/backups/netmonitor/` (7 kept), log `/var/log/netmonitor-backup.log`, timer `netmonitor-backup.timer` |
 
 ## Kill switches
 

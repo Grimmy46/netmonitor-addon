@@ -5,13 +5,15 @@ Any signed-in user (admin or viewer) may enable alerts on their own devices —
 subscriptions are per-user, so removing a user cascades their subscriptions
 away. The alert sweep (workers/alerts.py) fans out to every subscription.
 """
+import asyncio
+
 from fastapi import APIRouter, Depends, Header
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import current_user
-from app.core.db import get_db
+from app.core.db import SessionLocal, get_db
 from app.models import PushSubscription
 from app.models.user import User
 from app.services.notify import get_vapid_keys, send_push
@@ -123,19 +125,38 @@ async def unsubscribe(
     return await status(db, user)
 
 
+_pending_tests: set = set()   # keep task refs so delayed tests aren't GC'd
+
+
 @router.post("/test")
 async def test_push(
+    delay: int = 0,
     db: AsyncSession = Depends(get_db), user: User = Depends(current_user)
 ) -> dict:
-    """Send a test notification to the caller's own subscribed devices."""
-    sent = await send_push(
-        db,
-        {
-            "title": "🔔 NetMonitor test",
-            "body": "Push notifications are working on this device.",
-            "tag": "test",
-            "url": "/",
-        },
-        only_user_id=user.id,
-    )
-    return {"sent": sent}
+    """Send a test notification to the caller's own subscribed devices.
+    delay (0-120 s) lets you lock the phone first and prove background
+    delivery — the case that matters when you're out on the lot."""
+    delay = max(0, min(120, delay))
+    payload = {
+        "title": "🔔 NetMonitor test",
+        "body": ("Background delivery works — you'll get alerts with the phone locked."
+                 if delay else "Push notifications are working on this device."),
+        "tag": "test",
+        "url": "/",
+    }
+    if not delay:
+        return {"sent": await send_push(db, payload, only_user_id=user.id), "delay": 0}
+    n = (await db.execute(
+        select(func.count()).select_from(PushSubscription).where(PushSubscription.user_id == user.id)
+    )).scalar_one()
+    uid = user.id
+
+    async def later() -> None:
+        await asyncio.sleep(delay)
+        async with SessionLocal() as s2:
+            await send_push(s2, payload, only_user_id=uid)
+
+    t = asyncio.create_task(later())
+    _pending_tests.add(t)
+    t.add_done_callback(_pending_tests.discard)
+    return {"sent": int(n), "delay": delay}

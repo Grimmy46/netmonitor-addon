@@ -520,7 +520,7 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ endpoint }),
     }),
-  pushTest: () => req<{ sent: number }>("/notifications/test", { method: "POST" }),
+  pushTest: (delay = 0) => req<{ sent: number; delay: number }>(`/notifications/test?delay=${delay}`, { method: "POST" }),
 
   // Accounts & sessions.
   authStatus: () => req<AuthStatus>("/auth/status"),

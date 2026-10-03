@@ -48,13 +48,19 @@ async def get_vapid_keys(db: AsyncSession) -> tuple[str, str]:
     return public, private
 
 
-def _send_one(sub: dict, payload: str, private_key: str) -> None:
+def _send_one(sub: dict, payload: str, private_key: str, ttl: int, urgency: str) -> None:
+    # TTL matters: pywebpush defaults to 0, which tells Apple/Google to DROP
+    # the push unless the phone is reachable that very instant — a locked or
+    # dozing phone never saw those. Keep faults queued for hours instead, and
+    # mark them high urgency so the phone wakes for them.
     webpush(
         subscription_info=sub,
         data=payload,
         vapid_private_key=private_key,
         vapid_claims={"sub": get_settings().vapid_subject},
         timeout=10,
+        ttl=ttl,
+        headers={"Urgency": urgency},
     )
 
 
@@ -74,6 +80,8 @@ async def send_push(
     if not subs:
         return 0
     _, private_key = await get_vapid_keys(db)
+    ttl = int(payload.pop("ttl", 6 * 3600))
+    urgency = str(payload.pop("urgency", "high"))
     body = json.dumps(payload)
     sent = 0
     dead: list = []
@@ -83,7 +91,7 @@ async def send_push(
             "keys": {"p256dh": s.p256dh, "auth": s.auth},
         }
         try:
-            await asyncio.to_thread(_send_one, info, body, private_key)
+            await asyncio.to_thread(_send_one, info, body, private_key, ttl, urgency)
             sent += 1
             s.failures = 0
         except WebPushException as exc:

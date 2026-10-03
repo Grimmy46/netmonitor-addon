@@ -19,6 +19,10 @@ self.addEventListener("push", (event) => {
     self.registration.showNotification(title, {
       body: data.body || "",
       tag: data.tag || undefined, // same tag replaces (no pile-up per device)
+      renotify: !!data.tag,       // ...but a replacement still buzzes
+      requireInteraction: !!data.require_interaction, // feed-switch outages stay up
+      vibrate: data.priority === "critical" ? [300, 120, 300, 120, 300] : [200],
+      timestamp: Date.now(),
       icon: "/icon-192.png",
       badge: "/icon-192.png",
       data: { url: data.url || "/" },

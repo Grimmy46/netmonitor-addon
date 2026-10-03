@@ -81,14 +81,16 @@ export function NotifyBell() {
     }
   }
 
-  async function test() {
+  async function test(delay = 0) {
     setBusy(true);
-    setMsg("Sending test…");
+    setMsg(delay ? "Scheduling…" : "Sending test…");
     try {
-      const r = await api.pushTest();
+      const r = await api.pushTest(delay);
       setMsg(
         r.sent > 0
-          ? `Test sent to ${r.sent} device${r.sent === 1 ? "" : "s"} — check your notifications.`
+          ? delay
+            ? `Lock your phone now — a test lands on ${r.sent} device${r.sent === 1 ? "" : "s"} in ${delay} s. If it shows on the lock screen, you're set for when you're away from the office.`
+            : `Test sent to ${r.sent} device${r.sent === 1 ? "" : "s"} — check your notifications.`
           : "The server has no registered devices for your account yet — hit “Turn on” first (on the device that should get the push).",
       );
     } catch (e) {
@@ -122,10 +124,10 @@ export function NotifyBell() {
           ) : (
             <>
               <p className="sub" style={{ fontSize: 13, marginBottom: 6 }}>
-                Get a push on this device when a <strong>whole site goes down</strong>,
-                a kiosk stops reporting, or a Main-site device goes down or
-                unreachable — and when each comes back. Mass power-downs arrive
-                as one summary, not a storm.
+                One push per <strong>failure point</strong>: if a feed switch drops, you get
+                a single urgent alert naming that switch, what's behind it and which
+                port it plugs into — not 30 "lost connection" messages. A lone AP
+                is a quiet "AP down"; tap any alert to jump straight to it.
               </p>
               <p className="sub" style={{ fontSize: 12, marginBottom: 10 }}>
                 This device: <strong>{on ? "registered ✓" : "not registered"}</strong>
@@ -135,10 +137,18 @@ export function NotifyBell() {
                 <button className="btn" disabled={busy} onClick={toggle}>
                   {busy ? "…" : on ? "Turn off" : "Turn on"}
                 </button>
-                <button className="btn" disabled={busy} onClick={test}>
+                <button className="btn" disabled={busy} onClick={() => test(0)}>
                   🔔 Send test
                 </button>
+                <button className="btn" disabled={busy} onClick={() => test(30)} title="Lock your phone and wait for it">
+                  🔒 Lock-screen test (30 s)
+                </button>
               </div>
+              <p className="sub" style={{ fontSize: 11, marginTop: 8 }}>
+                iPhone: open NetMonitor from the Home Screen icon, allow alerts, and in
+                Settings → Notifications → NetMonitor turn on Lock Screen + Banners. Add it
+                to any Focus mode you use on the lot.
+              </p>
             </>
           )}
           {msg ? (

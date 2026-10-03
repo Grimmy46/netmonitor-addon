@@ -37,6 +37,7 @@ from app.models import (
     WanIncident,
 )
 from app.services import closure
+from app.services.names import short, split_name
 from app.services.notify import send_push
 from app.services.topology import analyze, describe_outage
 
@@ -103,6 +104,10 @@ class _Fault:
     body: str
     tag: str
     url: str
+    # Delivery shaping (see _deliver_faults): switch | ap | device | unreach |
+    # kiosk | other; behind = how many devices are down behind this one.
+    kind: str = "other"
+    behind: int = 0
 
 
 async def _alert_site_ids(db: AsyncSession) -> set:
@@ -367,6 +372,112 @@ async def _maybe_fire_site_teardowns(db: AsyncSession, now: datetime) -> None:
         await db.commit()
 
 
+def _kind_of(d) -> str:
+    t = getattr(d, "device_type", None)
+    return "switch" if t in ("switch", "gateway") else "ap" if t == "ap" else "device"
+
+
+def _lbl(d) -> str:
+    label, tag = split_name(getattr(d, "name", None) or getattr(d, "model", None))
+    return f"{label} #{tag}" if tag else label
+
+
+def _where(o) -> str:
+    """'Fed from Main office cage, port 22 — check power and that cable.'"""
+    r, p = o.root, o.parent
+    if p is None:
+        return "No uplink on record — check power at the device."
+    if r.uplink_type == "wireless":
+        return f"Meshes off {_lbl(p)} — check power and line of sight."
+    port = f", port {r.uplink_port}" if r.uplink_port else ""
+    extra = " (that switch is down too)" if p.is_online is False else ""
+    return f"Fed from {_lbl(p)}{port}{extra} — check power and that cable."
+
+
+def _names(fs, n=4) -> str:
+    xs = [_lbl(f.entity) if not isinstance(f.entity, Agent) else (f.entity.name or "kiosk") for f in fs]
+    return ", ".join(xs[:n]) + (f" +{len(xs) - n} more" if len(xs) > n else "")
+
+
+async def _deliver_faults(db: AsyncSession, faults: list, now: datetime) -> int:
+    """Shape a sweep's faults into as few, as useful pushes as possible:
+
+    - every feed SWITCH failure is its own high-priority push naming the
+      switch, what's behind it and where it plugs in (biggest first; past 3
+      at once the rest are folded into one summary)
+    - kiosks that drop in the same sweep as a switch are folded into it
+      (they're almost certainly behind it) instead of pinging separately
+    - APs / other leaf devices are one quiet "AP down" push (batched)
+    - LAN-unreachable warnings are batched too
+    """
+    for f in faults:
+        f.entity.alert_state, f.entity.alert_state_at = "notified", now
+    sw = sorted([f for f in faults if f.kind == "switch"], key=lambda f: -f.behind)
+    aps = [f for f in faults if f.kind in ("ap", "device")]
+    unr = [f for f in faults if f.kind == "unreach"]
+    kio = [f for f in faults if f.kind == "kiosk"]
+    oth = [f for f in faults if f.kind == "other"]
+    pushes: list[dict] = []
+    crit = {"urgency": "high", "require_interaction": True, "priority": "critical"}
+
+    if sw:
+        first = sw[0]
+        if kio:
+            first.body += f" {len(kio)} kiosk{'s' if len(kio) != 1 else ''} stopped reporting too: {_names(kio, 3)}."
+            kio = []
+        shown = sw if len(sw) <= 3 else sw[:2]
+        for f in shown:
+            pushes.append({"title": f.title, "body": f.body, "tag": f.tag, "url": f.url, **crit})
+        if len(sw) > 3:
+            rest = sw[2:]
+            pushes.append({"title": f"🔴 {len(rest)} more switches down",
+                           "body": _names(rest, 5) + ". Open the map for where each one plugs in.",
+                           "tag": "switches-down", "url": rest[0].url.split("?")[0], **crit})
+    if kio:
+        if len(kio) == 1:
+            f = kio[0]
+            pushes.append({"title": f.title, "body": f.body, "tag": f.tag, "url": f.url})
+        else:
+            pushes.append({"title": f"🔴 {len(kio)} kiosks stopped reporting",
+                           "body": _names(kio, 5), "tag": "kiosks-down", "url": "/"})
+    if aps:
+        if len(aps) == 1:
+            f = aps[0]
+            pushes.append({"title": f.title, "body": f.body, "tag": f.tag, "url": f.url, "urgency": "normal"})
+        else:
+            label = "APs" if all(f.kind == "ap" for f in aps) else "devices"
+            pushes.append({"title": f"📶 {len(aps)} {label} down", "body": _names(aps, 5) + ".",
+                           "tag": "aps-down", "url": aps[0].url.split("?")[0], "urgency": "normal"})
+    if unr:
+        if len(unr) == 1:
+            f = unr[0]
+            pushes.append({"title": f.title, "body": f.body, "tag": f.tag, "url": f.url, "urgency": "normal"})
+        else:
+            pushes.append({"title": f"🟠 {len(unr)} devices not answering on the LAN",
+                           "body": "Up in UniFi, not answering kiosk pings: " + _names(unr, 5),
+                           "tag": "lan-unreach", "url": unr[0].url.split("?")[0], "urgency": "normal"})
+    for f in oth:
+        pushes.append({"title": f.title, "body": f.body, "tag": f.tag, "url": f.url})
+
+    sent = 0
+    for p in pushes:
+        sent += await send_push(db, p)
+    return sent
+
+
+async def _deliver_recoveries(db: AsyncSession, recs: list) -> int:
+    if not recs:
+        return 0
+    if len(recs) <= 2:
+        sent = 0
+        for r in recs:
+            sent += await send_push(db, {"title": r.title, "body": r.body, "tag": r.tag,
+                                         "url": r.url, "urgency": "normal"})
+        return sent
+    return await send_push(db, {"title": f"🟢 {len(recs)} back online", "body": _names(recs, 6) + ".",
+                                "tag": "recovered", "url": "/", "urgency": "normal"})
+
+
 async def _maybe_send_reopen_report(db: AsyncSession, now: datetime) -> None:
     """Once per closure, right after the reopen grace ends: one push listing
     what's still down on Main, grouped by root cause, plus silent kiosks."""
@@ -472,6 +583,7 @@ async def sweep(db: AsyncSession) -> dict:
                     + (f" · {a.hostname}" if a.hostname else ""),
                     tag=f"agent-{a.id}",
                     url="/",
+                    kind="kiosk",
                 ))
             else:
                 a.alert_state, a.alert_state_at = "stale", now
@@ -553,6 +665,8 @@ async def sweep(db: AsyncSession) -> dict:
             await db.execute(select(Device).where(Device.site_id.in_(site_ids)))
         ).scalars().all()
         dormant_cutoff_secs = st.dormant_after_days * 86400
+        # Uplink map up front so a fault can wait for its feed switch to settle.
+        parent_of0 = analyze(devices, now)["parent_of"]
         probe_fresh = max(600, 3 * st.agent_probe_interval_seconds)
         for d in devices:
             offline_age = (
@@ -586,6 +700,16 @@ async def sweep(db: AsyncSession) -> dict:
                 fault_age = (now - fault_since).total_seconds()
                 if fault_age < st.alert_confirm_seconds:
                     continue  # not confirmed yet — maybe next sweep
+                # Cascade settle: if the switch feeding this device is still
+                # "online" but has gone quiet (heartbeat late), it's probably
+                # about to be declared down too. Hold a few minutes so the push
+                # names the FEED switch instead of its victims first.
+                par = parent_of0.get(d.id)
+                if (kind == "offline" and par is not None and par.is_online is not False
+                        and par.unifi_last_seen is not None
+                        and (now - par.unifi_last_seen).total_seconds() > 75
+                        and fault_age < st.alert_confirm_seconds + 300):
+                    continue
                 if fault_age <= fresh:
                     label = d.name or d.model or "device"
                     if kind == "offline":
@@ -596,7 +720,8 @@ async def sweep(db: AsyncSession) -> dict:
                         body = "Up in UniFi but not answering pings · Main"
                     faults.append(_Fault(
                         entity=d, title=title, body=body,
-                        tag=f"device-{d.id}", url=f"/#/site/{d.site_id}",
+                        tag=f"device-{d.id}", url=f"/#/site/{d.site_id}?focus={d.id}",
+                        kind=("unreach" if kind == "unreachable" else _kind_of(d)),
                     ))
                 else:
                     d.alert_state, d.alert_state_at = "stale", now
@@ -604,9 +729,10 @@ async def sweep(db: AsyncSession) -> dict:
                 if d.alert_state == "notified":
                     recoveries.append(_Fault(
                         entity=d,
-                        title=f"🟢 {d.name or 'Device'} is back online",
+                        title=f"🟢 {short(d.name)} is back online",
                         body="Recovered · Main",
-                        tag=f"device-{d.id}", url=f"/#/site/{d.site_id}",
+                        tag=f"device-{d.id}", url=f"/#/site/{d.site_id}?focus={d.id}",
+                        kind=_kind_of(d),
                     ))
                 d.alert_state, d.alert_state_at = None, None
 
@@ -635,9 +761,13 @@ async def sweep(db: AsyncSession) -> dict:
             o = outage_by_root.get(rid)
             root_fault = next((f for f in fs if f.entity.id == rid), None)
             if o is None or (len(o.affected) <= 1 and root_fault is not None):
-                if o is not None and o.parent is not None:
+                if o is not None:
                     for f in fs:         # a lone device: say where it plugs in
-                        f.body = describe_outage(o) + " · Main"
+                        f.body = _where(o)
+                        if f.kind == "switch":
+                            f.title = f"🔴 SWITCH DOWN: {_lbl(f.entity)}"
+                        elif f.kind == "ap":
+                            f.title = f"📶 AP down: {_lbl(f.entity)}"
                 keep.extend(fs)
                 continue
             for f in fs:
@@ -645,12 +775,22 @@ async def sweep(db: AsyncSession) -> dict:
                     f.entity.alert_state, f.entity.alert_state_at = "suppressed", now
             root = o.root
             behind = len(o.affected) - 1
+            k = _kind_of(root)
+            sw_b = sum(1 for x in o.affected if x.id != root.id and x.device_type == "switch")
+            ap_b = sum(1 for x in o.affected if x.id != root.id and x.device_type == "ap")
+            mix = ", ".join(p for p in [
+                f"{sw_b} switch{'es' if sw_b != 1 else ''}" if sw_b else "",
+                f"{ap_b} AP{'s' if ap_b != 1 else ''}" if ap_b else "",
+                f"{behind - sw_b - ap_b} other" if behind - sw_b - ap_b > 0 else "",
+            ] if p)
             keep.append(_Fault(
                 entity=root,
-                title=f"🔴 {root.name or 'Device'} went down"
-                      + (f" — {behind} more behind it" if behind else ""),
-                body=describe_outage(o) + " · Main",
-                tag=f"device-{root.id}", url=f"/#/site/{root.site_id}",
+                title=(f"🔴 {'GATEWAY' if root.device_type == 'gateway' else 'SWITCH'} DOWN: {_lbl(root)}"
+                       if k == "switch" else f"🔴 {_lbl(root)} went down")
+                      + (f" (+{behind} behind it)" if behind else ""),
+                body=_where(o) + (f" Also offline behind it: {mix}." if mix else ""),
+                tag=f"device-{root.id}", url=f"/#/site/{root.site_id}?focus={root.id}",
+                kind=k, behind=behind,
             ))
         faults = keep
 
@@ -804,30 +944,9 @@ async def sweep(db: AsyncSession) -> dict:
         f.entity.alert_state, f.entity.alert_state_at = "suppressed", now
         suppressed += 1
     deliver_faults = [x for x in faults if not _entity_suppressed(x.entity)]
-    if len(deliver_faults) >= st.alert_mass_threshold:
-        for f in deliver_faults:
-            f.entity.alert_state, f.entity.alert_state_at = "suppressed", now
-        names = ", ".join(
-            (f.entity.name or "?") for f in deliver_faults[:5]
-        ) + ("…" if len(deliver_faults) > 5 else "")
-        pushed += await send_push(db, {
-            "title": f"⚡ {len(deliver_faults)} things went offline together",
-            "body": f"Looks like a power-down or site-wide outage · {names}",
-            "tag": "mass-offline",
-            "url": "/",
-        })
-    else:
-        for f in deliver_faults:
-            f.entity.alert_state, f.entity.alert_state_at = "notified", now
-            pushed += await send_push(db, {
-                "title": f.title, "body": f.body, "tag": f.tag, "url": f.url,
-            })
-    for r in recoveries:
-        if _is_suppressed(r.entity):
-            continue  # in teardown — recovered quietly
-        pushed += await send_push(db, {
-            "title": r.title, "body": r.body, "tag": r.tag, "url": r.url,
-        })
+    pushed += await _deliver_faults(db, deliver_faults, now)
+    rec = [r for r in recoveries if not _is_suppressed(r.entity)]
+    pushed += await _deliver_recoveries(db, rec)
     await db.commit()
     if faults or site_faults or recoveries or printer_faults or paper_low_faults:
         logger.info(

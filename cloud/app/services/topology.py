@@ -148,6 +148,9 @@ async def refresh_site_topology(db: AsyncSession, console: UnifiConsole, site: S
             dev.ports_up = sum(1 for p in ports if p.get("up"))
         if rd.get("type") in TYPE_MAP and not dev.device_type:
             dev.device_type = TYPE_MAP[rd["type"]]
+        ls = _int(rd.get("last_seen"))
+        if ls:
+            dev.unifi_last_seen = datetime.fromtimestamp(ls, tz=timezone.utc)
         dev.topology_at = now
         updated += 1
 

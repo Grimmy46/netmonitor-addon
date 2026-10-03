@@ -80,5 +80,9 @@ class Device(Base, UUIDPk, Timestamps):
     topology_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
+    # Last time the device checked in with the controller (its heartbeat).
+    unifi_last_seen: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
 
     site: Mapped["Site"] = relationship(back_populates="devices")  # noqa: F821

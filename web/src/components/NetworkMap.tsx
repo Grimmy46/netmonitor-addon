@@ -1,15 +1,33 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type SiteTopology, type TopoNode } from "../api/client";
 import { humanizeDuration } from "../lib/duration";
+import { splitName } from "../lib/names";
 
 /**
  * Self-building network map for one site. The server re-reads every device's
- * uplink (parent + port) from UniFi each minute, so this tree draws itself —
- * nothing to maintain by hand. Outages are grouped by the device where the
- * failure starts; everything behind it is marked as "behind" that root.
+ * uplink (parent + port) and its last check-in from UniFi every ~20 s.
+ *
+ *  Map  — radial live map. Each device is a dot that pulses green when a fresh
+ *         heartbeat (UniFi check-in) lands and red when one is missed / it's
+ *         down. Hover a dot for ~1 s to see its details.
+ *  List — the same hierarchy as a tidy list: switches nested by what they plug
+ *         into, APs folded under their switch.
  */
+const POLL_MS = 10000;
+const MISSED_AFTER_S = 120; // no check-in for this long while "online" = missed heartbeat
+const HOVER_DELAY_MS = 900;
+
 type Kids = Map<string | null, TopoNode[]>;
-const TYPE_LABEL: Record<string, string> = { gateway: "Gateway", switch: "Switch", ap: "AP" };
+type Health = "up" | "missed" | "down" | "dormant" | "unreach";
+
+function health(n: TopoNode): Health {
+  if (n.dormant) return "dormant";
+  if (n.is_online === false) return "down";
+  if (n.seen_age_s != null && n.seen_age_s > MISSED_AFTER_S) return "missed";
+  if (n.local_reachable === false) return "unreach";
+  return "up";
+}
+const isInfra = (n: TopoNode) => n.type === "switch" || n.type === "gateway";
 
 function focusFromHash(): string | null {
   const m = window.location.hash.match(/[?&]focus=([^&]+)/);
@@ -21,33 +39,37 @@ function speed(mbps: number | null): string | null {
   return mbps >= 1000 ? `${mbps / 1000}G` : `${mbps}M`;
 }
 
-function state(n: TopoNode): "up" | "down" | "dormant" | "unreach" {
-  if (n.dormant) return "dormant";
-  if (n.is_online === false) return "down";
-  if (n.local_reachable === false) return "unreach";
-  return "up";
-}
-
-function linkText(n: TopoNode, parent: TopoNode | undefined): string {
-  if (!parent) return "";
-  if (n.uplink_type === "wireless") return "wireless mesh";
-  const parts = [];
-  if (n.uplink_port) parts.push(`port ${n.uplink_port}`);
-  if (n.local_port) parts.push(`(its port ${n.local_port})`);
-  const s = speed(n.uplink_speed_mbps);
-  if (s) parts.push(s);
-  return parts.join(" ");
+/** Remember last_seen per device; a change between polls is a heartbeat. */
+function useHeartbeats(nodes: TopoNode[] | undefined) {
+  const prev = useRef(new Map<string, string | null>());
+  const [beats, setBeats] = useState(new Map<string, number>());
+  const [poll, setPoll] = useState(0);
+  useEffect(() => {
+    if (!nodes) return;
+    const next = new Map(beats);
+    let changed = false;
+    for (const n of nodes) {
+      const old = prev.current.get(n.id);
+      if (old !== undefined && n.last_seen && n.last_seen !== old) {
+        next.set(n.id, (next.get(n.id) ?? 0) + 1);
+        changed = true;
+      }
+      prev.current.set(n.id, n.last_seen);
+    }
+    if (changed) setBeats(next);
+    setPoll((p) => p + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes]);
+  return { beats, poll };
 }
 
 export function NetworkMap({ siteId }: { siteId: string }) {
   const [topo, setTopo] = useState<SiteTopology | null>(null);
   const [err, setErr] = useState("");
-  const [mode, setMode] = useState<"tree" | "diagram">("tree");
-  const [infraOnly, setInfraOnly] = useState(false);
+  const [mode, setMode] = useState<"map" | "list">(focusFromHash() ? "list" : "map");
   const [q, setQ] = useState("");
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [showDormant, setShowDormant] = useState(false);
   const [focus, setFocus] = useState<string | null>(focusFromHash());
-  const focusRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -56,19 +78,18 @@ export function NetworkMap({ siteId }: { siteId: string }) {
         .then((t) => { if (alive) { setTopo(t); setErr(""); } })
         .catch((e) => alive && setErr(String(e instanceof Error ? e.message : e)));
     load();
-    const id = setInterval(load, 30000);
+    const id = setInterval(load, POLL_MS);
     return () => { alive = false; clearInterval(id); };
   }, [siteId]);
 
-  useEffect(() => {
-    if (focus && focusRef.current) focusRef.current.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [focus, topo, mode]);
+  const hb = useHeartbeats(topo?.nodes);
 
-  const { byId, kids, roots, unmapped } = useMemo(() => {
+  const tree = useMemo(() => {
     const byId = new Map<string, TopoNode>();
     const kids: Kids = new Map();
-    for (const n of topo?.nodes ?? []) byId.set(n.id, n);
-    for (const n of topo?.nodes ?? []) {
+    const nodes = (topo?.nodes ?? []).filter((n) => showDormant || !n.dormant);
+    for (const n of nodes) byId.set(n.id, n);
+    for (const n of nodes) {
       const p = n.parent_id && byId.has(n.parent_id) ? n.parent_id : null;
       if (!kids.has(p)) kids.set(p, []);
       kids.get(p)!.push(n);
@@ -76,31 +97,12 @@ export function NetworkMap({ siteId }: { siteId: string }) {
     for (const list of kids.values())
       list.sort((a, b) => (a.uplink_port ?? 999) - (b.uplink_port ?? 999) || a.name.localeCompare(b.name));
     const top = kids.get(null) ?? [];
-    // Gateways are the real roots; anything else without a parent isn't mapped yet.
-    const roots = top.filter((n) => n.type === "gateway");
-    const unmapped = top.filter((n) => n.type !== "gateway");
-    return { byId, kids, roots, unmapped };
-  }, [topo]);
-
-  // Search: keep matches plus their ancestors (so you can see where they hang).
-  const visible = useMemo(() => {
-    const term = q.trim().toLowerCase();
-    if (!term && !infraOnly) return null;
-    const keep = new Set<string>();
-    for (const n of topo?.nodes ?? []) {
-      const infra = n.type === "switch" || n.type === "gateway";
-      if (infraOnly && !infra && !(n.is_online === false && !n.dormant)) continue;
-      const hay = `${n.name} ${n.model ?? ""} ${n.ip ?? ""} ${n.mac ?? ""}`.toLowerCase();
-      if (term && !hay.includes(term)) continue;
-      let cur: TopoNode | undefined = n;
-      const seen = new Set<string>();
-      while (cur && !seen.has(cur.id)) {
-        seen.add(cur.id); keep.add(cur.id);
-        cur = cur.parent_id ? byId.get(cur.parent_id) : undefined;
-      }
-    }
-    return keep;
-  }, [q, infraOnly, topo, byId]);
+    return {
+      byId, kids,
+      roots: top.filter((n) => n.type === "gateway"),
+      unmapped: top.filter((n) => n.type !== "gateway"),
+    };
+  }, [topo, showDormant]);
 
   if (err && !topo) return <section className="panel"><div className="banner err">Network map unavailable: {err}</div></section>;
   if (!topo) return <section className="panel"><span className="hint">Building network map…</span></section>;
@@ -108,183 +110,345 @@ export function NetworkMap({ siteId }: { siteId: string }) {
     return (
       <section className="panel">
         <div className="panel-title">Network map</div>
-        <p className="hint">No uplink data for this site yet — it fills in within a minute of the console being reachable.</p>
+        <p className="hint">No uplink data for this site yet. It fills in within a minute once the console is reachable.</p>
       </section>
     );
   }
 
-  const countBelow = (id: string): number => {
-    let c = 0;
-    const stack = [...(kids.get(id) ?? [])];
-    const seen = new Set<string>();
-    while (stack.length) {
-      const n = stack.pop()!;
-      if (seen.has(n.id)) continue;
-      seen.add(n.id); c++;
-      stack.push(...(kids.get(n.id) ?? []));
-    }
-    return c;
-  };
+  const live = topo.nodes.filter((n) => !n.dormant);
+  const sw = live.filter((n) => n.type === "switch");
+  const missed = live.filter((n) => health(n) === "missed").length;
+  const pick = (id: string) => { setFocus(id); setMode("list"); };
 
-  const renderRow = (n: TopoNode, depth: number, seen: Set<string>): JSX.Element | null => {
-    if (seen.has(n.id)) return null;
-    seen.add(n.id);
-    if (visible && !visible.has(n.id)) return null;
-    const children = (kids.get(n.id) ?? []).filter((c) => !visible || visible.has(c.id));
-    const isCollapsed = collapsed.has(n.id) && !visible;
-    const st = state(n);
-    const parent = n.parent_id ? byId.get(n.parent_id) : undefined;
-    const root = n.outage_root_id && n.outage_root_id !== n.id ? byId.get(n.outage_root_id) : undefined;
-    const isRoot = n.outage_root_id === n.id;
-    const toggle = () => setCollapsed((s) => {
-      const nx = new Set(s); if (nx.has(n.id)) nx.delete(n.id); else nx.add(n.id); return nx;
-    });
-    return (
-      <div key={n.id}>
-        <div
-          ref={focus === n.id ? focusRef : undefined}
-          className={`nm-row st-${st} ${isRoot ? "nm-root" : ""} ${focus === n.id ? "nm-focus" : ""} ${n.type === "switch" || n.type === "gateway" ? "nm-infra" : ""}`}
-          style={{ paddingLeft: 8 + depth * 22 }}
-          onClick={() => setFocus(n.id)}
-        >
-          {children.length ? (
-            <button className="nm-twisty" onClick={(e) => { e.stopPropagation(); toggle(); }} aria-label="toggle">
-              {isCollapsed ? "▸" : "▾"}
-            </button>
-          ) : <span className="nm-twisty" />}
-          <span className="nm-dot" />
-          <span className="nm-name">{n.name || n.mac}</span>
-          {n.type ? <span className="nm-type">{TYPE_LABEL[n.type] ?? n.type}</span> : null}
-          {parent ? <span className="nm-link">{linkText(n, parent)}</span> : null}
-          {isRoot ? <span className="nm-badge bad">ROOT CAUSE{countBelow(n.id) ? ` · ${countBelow(n.id)} behind` : ""}</span> : null}
-          {root ? <span className="nm-badge">behind {root.name}</span> : null}
-          {st === "down" && n.down_seconds != null ? <span className="nm-meta bad">down {humanizeDuration(n.down_seconds)}</span> : null}
-          {st === "unreach" ? <span className="nm-meta warn">no ping from kiosks</span> : null}
-          {st === "dormant" ? <span className="nm-meta">dormant</span> : null}
-          <span className="nm-spacer" />
-          {n.ports_total ? <span className="nm-meta">{n.ports_up}/{n.ports_total} ports up</span> : null}
-          {n.ip ? <span className="nm-meta mono">{n.ip}</span> : null}
-          {isCollapsed && children.length ? <span className="nm-meta">+{countBelow(n.id)}</span> : null}
-        </div>
-        {!isCollapsed ? children.map((c) => renderRow(c, depth + 1, seen)) : null}
-      </div>
-    );
-  };
-
-  const seen = new Set<string>();
-  const switches = topo.nodes.filter((n) => n.type === "switch" && !n.dormant);
   return (
     <section className="panel">
       <div className="nm-toolbar">
         <div className="panel-title" style={{ margin: 0 }}>Network map</div>
         <span className="sub" style={{ fontSize: 12 }}>
-          {switches.filter((s) => s.is_online).length}/{switches.length} switches up · built from UniFi uplinks
+          {sw.filter((s) => s.is_online).length}/{sw.length} switches up
+          {missed ? ` · ${missed} missed heartbeat` : ""}
         </span>
         <div className="nm-spacer" />
-        <button className={`chip ${mode === "tree" ? "active" : ""}`} onClick={() => setMode("tree")}>Tree</button>
-        <button className={`chip ${mode === "diagram" ? "active" : ""}`} onClick={() => setMode("diagram")}>Diagram</button>
-        {mode === "tree" ? (
-          <>
-            <button className={`chip ${infraOnly ? "active" : ""}`} onClick={() => setInfraOnly((v) => !v)}>Switches only</button>
-            <input className="search" type="text" placeholder="Find device, IP, MAC…" value={q} onChange={(e) => setQ(e.target.value)} />
-          </>
+        <div className="seg">
+          <button className={mode === "map" ? "on" : ""} onClick={() => setMode("map")}>Map</button>
+          <button className={mode === "list" ? "on" : ""} onClick={() => setMode("list")}>List</button>
+        </div>
+        <label className="nm-check"><input type="checkbox" checked={showDormant} onChange={(e) => setShowDormant(e.target.checked)} /> Dormant</label>
+        {mode === "list" ? (
+          <input className="search" type="text" placeholder="Find device, IP, MAC…" value={q} onChange={(e) => setQ(e.target.value)} />
         ) : null}
       </div>
 
       {topo.outages.length ? (
         <div className="nm-outages">
-          {topo.outages.map((o) => (
-            <div key={o.root_id} className="nm-outage" onClick={() => { setMode("tree"); setFocus(o.root_id); }}>
-              <strong>{o.root_name}</strong>{o.affected_count > 1 ? ` + ${o.affected_count - 1} behind it` : ""} — {" "}
-              {o.parent_name
-                ? <>plugs into <strong>{o.parent_name}</strong>{o.uplink_type === "wireless" ? " (wireless)" : o.uplink_port ? ` port ${o.uplink_port}` : ""}</>
-                : "no uplink on record"}
-              <span className="sub" style={{ marginLeft: 8 }}>down {humanizeDuration(o.down_seconds)}</span>
-            </div>
-          ))}
+          {topo.outages.map((o) => {
+            const r = splitName(o.root_name);
+            const p = o.parent_name ? splitName(o.parent_name) : null;
+            return (
+              <button key={o.root_id} type="button" className="nm-outage" onClick={() => pick(o.root_id)}>
+                <span className="hb-static down" />
+                <strong>{r.label}</strong>{r.tag ? <span className="nm-tag">#{r.tag}</span> : null}
+                {o.affected_count > 1 ? <span className="nm-count bad">+{o.affected_count - 1} behind it</span> : null}
+                <span className="sub">
+                  {p ? <>via {p.label}{o.uplink_type === "wireless" ? " (wireless)" : o.uplink_port ? ` port ${o.uplink_port}` : ""}</> : "no uplink on record"}
+                  {" · "}down {humanizeDuration(o.down_seconds)}
+                </span>
+              </button>
+            );
+          })}
         </div>
-      ) : (
-        <div className="nm-allgood">● No outages on this site.</div>
-      )}
+      ) : null}
 
-      {mode === "tree" ? (
-        <div className="nm-tree">
-          {roots.map((r) => renderRow(r, 0, seen))}
-          {unmapped.length && (!visible || unmapped.some((u) => visible.has(u.id))) ? (
-            <>
-              <div className="nm-group">Not mapped yet (no uplink reported)</div>
-              {unmapped.map((u) => renderRow(u, 0, seen))}
-            </>
-          ) : null}
-        </div>
+      {mode === "map" ? (
+        <RadialMap roots={tree.roots} kids={tree.kids} byId={tree.byId} beats={hb.beats} poll={hb.poll} onPick={pick} />
       ) : (
-        <Diagram roots={roots} kids={kids} onPick={(id) => { setMode("tree"); setFocus(id); }} />
+        <ListView tree={tree} q={q} focus={focus} setFocus={setFocus} beats={hb.beats} poll={hb.poll} />
       )}
     </section>
   );
 }
 
-/** Left-to-right tree of gateways + switches. APs/clients collapse into a count. */
-function Diagram({ roots, kids, onPick }: { roots: TopoNode[]; kids: Kids; onPick: (id: string) => void }) {
-  const W = 200, H = 34, GAPX = 44, GAPY = 8;
-  const infra = (n: TopoNode) => n.type === "switch" || n.type === "gateway";
-  type P = { n: TopoNode; x: number; y: number; leaves: number; parent?: P; aps: number; apsDown: number };
-  const placed: P[] = [];
-  let row = 0;
-  const seen = new Set<string>();
-  const place = (n: TopoNode, depth: number, parent?: P): P => {
-    seen.add(n.id);
-    const all = kids.get(n.id) ?? [];
-    const others = all.filter((c) => !infra(c));
-    const p: P = { n, x: depth * (W + GAPX), y: 0, leaves: 0, parent, aps: others.length,
-      apsDown: others.filter((c) => c.is_online === false && !c.dormant).length };
-    placed.push(p);
-    const ch = all.filter((c) => infra(c) && !seen.has(c.id) && !(c.dormant && !(kids.get(c.id) ?? []).length));
-    if (!ch.length) { p.y = row++ * (H + GAPY); return p; }
-    const ys = ch.map((c) => place(c, depth + 1, p).y);
-    p.y = Math.min(...ys);   // top-aligned with its first child: compact for daisy chains
-    return p;
-  };
-  roots.forEach((r) => place(r, 0));
-  const width = Math.max(...placed.map((p) => p.x)) + W + 20;
-  const height = row * (H + GAPY) + 10;
-  const color = (n: TopoNode) => {
-    const s = state(n);
-    return s === "down" ? "var(--critical)" : s === "dormant" ? "var(--ink-muted)" : s === "unreach" ? "var(--warning)" : "var(--good)";
-  };
+/* ── Heartbeat dot (shared by map + list) ──────────────────────────────── */
+function Beat({ n, beat, poll }: { n: TopoNode; beat: number; poll: number }) {
+  const h = health(n);
+  // A ring that plays once per heartbeat: keyed on the beat counter (green)
+  // or on the poll counter while the device is missing/down (red).
+  const ringKey = h === "down" || h === "missed" ? `p${poll}` : `b${beat}`;
+  const showRing = h === "down" || h === "missed" || beat > 0;
   return (
-    <div className="nm-diagram">
-      <svg width={width} height={height} role="img" aria-label="Network diagram">
+    <span className={`hb hb-${h}`}>
+      {showRing ? <span key={ringKey} className="hb-ring" /> : null}
+    </span>
+  );
+}
+
+/* ── Radial live map ───────────────────────────────────────────────────── */
+type Placed = { n: TopoNode; x: number; y: number; depth: number; parent?: Placed };
+
+function RadialMap({ roots, kids, byId, beats, poll, onPick }: {
+  roots: TopoNode[]; kids: Kids; byId: Map<string, TopoNode>;
+  beats: Map<string, number>; poll: number; onPick: (id: string) => void;
+}) {
+  const [hover, setHover] = useState<string | null>(null);
+  const timer = useRef<number | null>(null);
+  const SIZE = 1000, C = SIZE / 2;
+
+  const placed = useMemo(() => {
+    // Leaf counts → angular span; depth → ring.
+    const leaves = new Map<string, number>();
+    const seen = new Set<string>();
+    const count = (n: TopoNode): number => {
+      if (seen.has(n.id)) return 0;
+      seen.add(n.id);
+      const ch = kids.get(n.id) ?? [];
+      const c = ch.length ? ch.reduce((a, k) => a + count(k), 0) : 1;
+      leaves.set(n.id, Math.max(c, 1));
+      return Math.max(c, 1);
+    };
+    // Active gateway first; an HA standby already hangs under it.
+    const total = roots.reduce((a, r) => a + count(r), 0) || 1;
+    let maxDepth = 1;
+    const depthOf = (n: TopoNode, d: number, s: Set<string>) => {
+      if (s.has(n.id)) return; s.add(n.id); maxDepth = Math.max(maxDepth, d);
+      for (const k of kids.get(n.id) ?? []) depthOf(k, d + 1, s);
+    };
+    const ds = new Set<string>(); roots.forEach((r) => depthOf(r, 0, ds));
+    const step = (C - 40) / maxDepth;
+    const out: Placed[] = [];
+    const done = new Set<string>();
+    const place = (n: TopoNode, depth: number, a0: number, a1: number, parent?: Placed) => {
+      if (done.has(n.id)) return; done.add(n.id);
+      const a = (a0 + a1) / 2;
+      const r = depth * step;
+      const p: Placed = { n, depth, parent, x: C + r * Math.cos(a), y: C + r * Math.sin(a) };
+      out.push(p);
+      let cur = a0;
+      for (const k of kids.get(n.id) ?? []) {
+        const span = ((leaves.get(k.id) ?? 1) / (leaves.get(n.id) ?? 1)) * (a1 - a0);
+        place(k, depth + 1, cur, cur + span, p);
+        cur += span;
+      }
+    };
+    let cur = -Math.PI / 2;
+    for (const r of roots) {
+      const span = ((leaves.get(r.id) ?? 1) / total) * Math.PI * 2;
+      place(r, 0, cur, cur + span);
+      cur += span;
+    }
+    return out;
+  }, [roots, kids, C]);
+
+  const enter = (id: string) => {
+    if (timer.current) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setHover(id), HOVER_DELAY_MS);
+  };
+  const leave = () => {
+    if (timer.current) window.clearTimeout(timer.current);
+    timer.current = null;
+    setHover(null);
+  };
+  useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current); }, []);
+
+  const hp = hover ? placed.find((p) => p.n.id === hover) : undefined;
+  // Path from the hovered device back to the gateway, highlighted.
+  const pathIds = new Set<string>();
+  for (let p = hp; p; p = p.parent) pathIds.add(p.n.id);
+
+  const radius = (n: TopoNode) => (n.type === "gateway" ? 13 : n.type === "switch" ? 8 : 5);
+
+  return (
+    <div className="rm-wrap" onMouseLeave={leave}>
+      <svg viewBox={`0 0 ${SIZE} ${SIZE}`} className="rm-svg" role="img" aria-label="Live network map">
         {placed.filter((p) => p.parent).map((p) => {
-          const a = p.parent!, x1 = a.x + W, y1 = a.y + H / 2, x2 = p.x, y2 = p.y + H / 2, mx = x1 + GAPX / 2;
-          const down = state(p.n) === "down";
+          const h = health(p.n);
+          const on = pathIds.has(p.n.id);
           return (
-            <g key={`e-${p.n.id}`}>
-              <path d={`M${x1},${y1} H${mx} V${y2} H${x2}`} fill="none"
-                stroke={down ? "var(--critical)" : "var(--baseline)"} strokeWidth={down ? 2 : 1.2}
-                strokeDasharray={p.n.uplink_type === "wireless" ? "4 3" : undefined} />
-              {p.n.uplink_port ? (
-                <text x={x2 - 6} y={y2 - 4} textAnchor="end" fontSize="10" fill="var(--ink-muted)">p{p.n.uplink_port}</text>
-              ) : null}
+            <line key={`e${p.n.id}`} x1={p.parent!.x} y1={p.parent!.y} x2={p.x} y2={p.y}
+              className={`rm-edge ${h === "down" ? "down" : ""} ${on ? "hl" : ""} ${p.n.uplink_type === "wireless" ? "wl" : ""}`} />
+          );
+        })}
+        {placed.map((p) => {
+          const h = health(p.n);
+          const r = radius(p.n);
+          const beat = beats.get(p.n.id) ?? 0;
+          const ringKey = h === "down" || h === "missed" ? `p${poll}` : `b${beat}`;
+          const ring = h === "down" || h === "missed" || beat > 0;
+          return (
+            <g key={p.n.id} transform={`translate(${p.x},${p.y})`} className={`rm-node rm-${h} ${hover === p.n.id ? "hov" : ""}`}
+              onMouseEnter={() => enter(p.n.id)} onMouseLeave={leave} onClick={() => onPick(p.n.id)}>
+              <circle r={r + 8} className="rm-hit" />
+              {ring ? <circle key={ringKey} r={r} className="rm-ring" /> : null}
+              <circle r={r} className="rm-dot" />
             </g>
           );
         })}
-        {placed.map((p) => (
-          <g key={p.n.id} transform={`translate(${p.x},${p.y})`} style={{ cursor: "pointer" }} onClick={() => onPick(p.n.id)}>
-            <title>{`${p.n.name}${p.n.ip ? ` · ${p.n.ip}` : ""}${p.n.ports_total ? ` · ${p.n.ports_up}/${p.n.ports_total} ports up` : ""}`}</title>
-            <rect width={W} height={H} rx={7} fill="var(--surface-1)" stroke={color(p.n)} strokeWidth={state(p.n) === "down" ? 2.5 : 1.2} />
-            <rect width={5} height={H} rx={2} fill={color(p.n)} />
-            <text x={12} y={14} fontSize="11.5" fontWeight={600} fill="var(--ink-primary)">
-              {p.n.name.length > 27 ? p.n.name.slice(0, 26) + "…" : p.n.name}
-            </text>
-            <text x={12} y={27} fontSize="10" fill={p.apsDown ? "var(--critical)" : "var(--ink-muted)"}>
-              {[p.n.type === "gateway" ? "gateway" : null,
-                p.aps ? `${p.aps} AP/other${p.apsDown ? ` · ${p.apsDown} down` : ""}` : null,
-                p.n.ports_total ? `${p.n.ports_up}/${p.n.ports_total} ports` : null].filter(Boolean).join(" · ")}
-            </text>
-          </g>
-        ))}
+        {hp ? <HoverCard p={hp} parent={hp.n.parent_id ? byId.get(hp.n.parent_id) : undefined} size={SIZE} /> : null}
       </svg>
+      <div className="rm-legend">
+        <span><i className="lg up" /> heartbeat</span>
+        <span><i className="lg missed" /> missed heartbeat</span>
+        <span><i className="lg down" /> down</span>
+        <span><i className="lg unreach" /> no ping from kiosks</span>
+        <span className="sub">Big dot = switch · small = AP · hover a dot to see it · click to open in list</span>
+      </div>
+    </div>
+  );
+}
+
+function HoverCard({ p, parent, size }: { p: Placed; parent?: TopoNode; size: number }) {
+  const n = p.n;
+  const nm = splitName(n.name);
+  const h = health(n);
+  const lines: string[] = [];
+  lines.push([n.type === "ap" ? "Access point" : n.type === "gateway" ? "Gateway" : "Switch", n.model].filter(Boolean).join(" · "));
+  if (parent) {
+    const pn = splitName(parent.name);
+    lines.push(`Plugs into ${pn.label}${n.uplink_type === "wireless" ? " (wireless mesh)" : n.uplink_port ? ` port ${n.uplink_port}` : ""}${speed(n.uplink_speed_mbps) ? ` · ${speed(n.uplink_speed_mbps)}` : ""}`);
+  }
+  if (n.ip) lines.push(`IP ${n.ip}`);
+  if (n.ports_total) lines.push(`${n.ports_up}/${n.ports_total} ports up`);
+  lines.push(
+    h === "down" ? `DOWN for ${humanizeDuration(n.down_seconds)}`
+      : n.seen_age_s != null ? `Last heartbeat ${Math.round(n.seen_age_s)}s ago${h === "missed" ? " (missed)" : ""}`
+        : "No heartbeat data yet",
+  );
+  const W = 300, LH = 19, H = 34 + lines.length * LH;
+  let x = p.x + 16, y = p.y - H / 2;
+  if (x + W > size - 6) x = p.x - 16 - W;
+  y = Math.max(6, Math.min(size - H - 6, y));
+  return (
+    <g className="rm-card" transform={`translate(${x},${y})`} pointerEvents="none">
+      <rect width={W} height={H} rx={10} />
+      <text x={14} y={24} className="rm-card-title">
+        {nm.label.length > 26 ? nm.label.slice(0, 25) + "…" : nm.label}
+        {nm.tag ? <tspan className="rm-card-tag">  #{nm.tag}</tspan> : null}
+      </text>
+      {lines.map((l, i) => (
+        <text key={i} x={14} y={24 + (i + 1) * LH} className={`rm-card-line ${i === lines.length - 1 && (h === "down" || h === "missed") ? "bad" : ""}`}>
+          {l.length > 44 ? l.slice(0, 43) + "…" : l}
+        </text>
+      ))}
+    </g>
+  );
+}
+
+/* ── List view ─────────────────────────────────────────────────────────── */
+function ListView({ tree, q, focus, setFocus, beats, poll }: {
+  tree: { byId: Map<string, TopoNode>; kids: Kids; roots: TopoNode[]; unmapped: TopoNode[] };
+  q: string; focus: string | null; setFocus: (id: string) => void;
+  beats: Map<string, number>; poll: number;
+}) {
+  const { byId, kids, roots, unmapped } = tree;
+  const [openAps, setOpenAps] = useState<Set<string>>(new Set());
+  const [closed, setClosed] = useState<Set<string>>(new Set());
+  const focusRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (focus && focusRef.current) focusRef.current.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [focus]);
+
+  // Search keeps matches + their ancestors; matches inside AP lists open them.
+  const term = q.trim().toLowerCase();
+  const match = useMemo(() => {
+    if (!term) return null;
+    const keep = new Set<string>();
+    for (const n of byId.values()) {
+      const hay = `${n.name} ${n.model ?? ""} ${n.ip ?? ""} ${n.mac ?? ""}`.toLowerCase();
+      if (!hay.includes(term)) continue;
+      const s = new Set<string>();
+      for (let c: TopoNode | undefined = n; c && !s.has(c.id); c = c.parent_id ? byId.get(c.parent_id) : undefined) {
+        s.add(c.id); keep.add(c.id);
+      }
+    }
+    return keep;
+  }, [term, byId]);
+
+  // A focused device that's an AP: open its switch's AP list.
+  useEffect(() => {
+    const f = focus ? byId.get(focus) : undefined;
+    if (f && !isInfra(f) && f.parent_id) setOpenAps((s) => new Set(s).add(f.parent_id!));
+  }, [focus, byId]);
+
+  const toggle = (set: Set<string>, id: string) => { const nx = new Set(set); if (nx.has(id)) nx.delete(id); else nx.add(id); return nx; };
+
+  const row = (n: TopoNode, depth: number, small = false) => {
+    const nm = splitName(n.name);
+    const h = health(n);
+    const parent = n.parent_id ? byId.get(n.parent_id) : undefined;
+    const isRoot = n.outage_root_id === n.id;
+    return (
+      <div
+        key={n.id}
+        ref={focus === n.id ? focusRef : undefined}
+        className={`nl-row ${small ? "small" : ""} nl-${h} ${focus === n.id ? "focus" : ""} ${isRoot ? "root" : ""}`}
+        style={{ paddingLeft: 12 + depth * 20 }}
+        onClick={() => setFocus(n.id)}
+        title={nm.full}
+      >
+        <Beat n={n} beat={beats.get(n.id) ?? 0} poll={poll} />
+        <span className="nl-name">{nm.label}</span>
+        {nm.tag ? <span className="nm-tag">#{nm.tag}</span> : null}
+        {parent ? (
+          <span className="nl-port">{n.uplink_type === "wireless" ? "mesh" : n.uplink_port ? `port ${n.uplink_port}` : ""}</span>
+        ) : null}
+        {isRoot ? <span className="nm-count bad">root cause</span> : null}
+        {h === "down" ? <span className="nl-status bad">down {humanizeDuration(n.down_seconds)}</span> : null}
+        {h === "missed" ? <span className="nl-status bad">no heartbeat {humanizeDuration(n.seen_age_s)}</span> : null}
+        {h === "unreach" ? <span className="nl-status warn">no ping</span> : null}
+        {h === "dormant" ? <span className="nl-status">dormant</span> : null}
+        <span className="nm-spacer" />
+        {!small && n.ports_total ? (
+          <span className="nl-ports" title={`${n.ports_up}/${n.ports_total} ports up`}>
+            <span className="nl-bar"><span style={{ width: `${Math.round(((n.ports_up ?? 0) / n.ports_total) * 100)}%` }} /></span>
+            {n.ports_up}/{n.ports_total}
+          </span>
+        ) : null}
+        <span className="nl-ip">{n.ip ?? ""}</span>
+      </div>
+    );
+  };
+
+  const seen = new Set<string>();
+  const renderInfra = (n: TopoNode, depth: number): JSX.Element | null => {
+    if (seen.has(n.id) || (match && !match.has(n.id))) return null;
+    seen.add(n.id);
+    const all = kids.get(n.id) ?? [];
+    const subs = all.filter(isInfra);
+    const aps = all.filter((c) => !isInfra(c) && (!match || match.has(c.id)));
+    const apsDown = aps.filter((c) => health(c) === "down").length;
+    const apsOpen = openAps.has(n.id) || (!!match && aps.length > 0);
+    const isClosed = closed.has(n.id) && !match;
+    return (
+      <div key={n.id} className="nl-group">
+        <div className={`nl-line ${n.outage_root_id === n.id ? "root" : ""}`}>
+          <button className="nl-caret" onClick={() => setClosed((s) => toggle(s, n.id))} disabled={!subs.length}>
+            {subs.length ? (isClosed ? "▸" : "▾") : ""}
+          </button>
+          <div style={{ flex: 1, minWidth: 0 }}>{row(n, 0)}</div>
+          {aps.length ? (
+            <button className={`nl-aps ${apsDown ? "bad" : ""} ${apsOpen ? "open" : ""}`} onClick={() => setOpenAps((s) => toggle(s, n.id))}>
+              {aps.length} AP{aps.length > 1 ? "s" : ""}{apsDown ? ` · ${apsDown} down` : ""}
+            </button>
+          ) : <span className="nl-aps empty" />}
+        </div>
+        {apsOpen ? (
+          <div className="nl-aplist">{aps.map((a) => row(a, 1, true))}</div>
+        ) : null}
+        {!isClosed ? subs.map((c) => renderInfra(c, depth + 1)) : null}
+      </div>
+    );
+  };
+
+  const loose = unmapped.filter((u) => !match || match.has(u.id));
+  return (
+    <div className="nl-list">
+      {roots.map((r) => renderInfra(r, 0))}
+      {loose.length ? (
+        <>
+          <div className="nm-group">Not mapped yet</div>
+          {loose.map((u) => row(u, 0, true))}
+        </>
+      ) : null}
+      {match && match.size === 0 ? <p className="hint" style={{ padding: 12 }}>Nothing matches “{q}”.</p> : null}
     </div>
   );
 }

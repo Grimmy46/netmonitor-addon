@@ -39,6 +39,8 @@ def _node(d: Device, parent: Device | None, root_id, now: datetime) -> dict:
         "uplink_type": d.uplink_type, "uplink_speed_mbps": d.uplink_speed_mbps,
         "depth": d.uplink_depth, "ports_up": d.ports_up, "ports_total": d.ports_total,
         "outage_root_id": str(root_id) if root_id else None,
+        "last_seen": d.unifi_last_seen.isoformat() if d.unifi_last_seen else None,
+        "seen_age_s": (now - d.unifi_last_seen).total_seconds() if d.unifi_last_seen else None,
     }
 
 

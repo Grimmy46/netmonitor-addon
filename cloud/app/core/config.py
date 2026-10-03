@@ -144,7 +144,7 @@ class Settings(BaseSettings):
     ping_retention_interval_seconds: int = 600
 
     # Network map: how often to pull uplinks + WAN link state from each console.
-    topology_interval_seconds: int = 60
+    topology_interval_seconds: int = 20
     # A WAN link must read down this long before it pushes an alert.
     alert_wan_confirm_seconds: int = 90
 

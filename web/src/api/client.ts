@@ -291,6 +291,8 @@ export type TopoNode = {
   ports_up: number | null;
   ports_total: number | null;
   outage_root_id: string | null;
+  last_seen: string | null;    // last UniFi check-in (heartbeat)
+  seen_age_s: number | null;
 };
 type Count = { online: number; total: number };
 export type NetworkOverview = {

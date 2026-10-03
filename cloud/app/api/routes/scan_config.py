@@ -4,7 +4,6 @@ Guarded by the same shared token as /scan-batches: the Scan Station is a static
 page with no user session. The token is readable in that page's source, so this
 stops drive-by writes and nothing more.
 """
-import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field

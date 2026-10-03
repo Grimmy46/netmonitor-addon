@@ -43,8 +43,7 @@ async def save_positions(body: PositionsIn, db: AsyncSession = Depends(get_db), 
 # The Planner tab embeds SitePlanner (single-file app) same-origin; these
 # endpoints give it per-site cloud save/load and the live 5-state device feed
 # it already knows how to consume (netcheck-compatible shape).
-import base64  # noqa: E402
-from fastapi import Header, HTTPException, Request, Response  # noqa: E402
+from fastapi import HTTPException, Request, Response  # noqa: E402
 
 from app.models import Device, SitePlan  # noqa: E402
 

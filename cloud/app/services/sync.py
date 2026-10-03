@@ -18,6 +18,8 @@ from app.models import (
     UnifiConsole,
     UnifiCredential,
 )
+from app.services.unifi import UnifiError, UnifiSiteManagerClient
+from app.services.unifi_console import UnifiConsoleClient, UnifiConsoleError
 
 
 def _note_site_transition(site, new_status, now, out) -> None:
@@ -32,8 +34,6 @@ def _note_site_transition(site, new_status, now, out) -> None:
     elif old == "offline" and new_status != "offline":
         site.offline_since = None
         out.append((site, "online"))
-from app.services.unifi import UnifiError, UnifiSiteManagerClient
-from app.services.unifi_console import UnifiConsoleClient, UnifiConsoleError
 
 
 async def get_or_create_account(db: AsyncSession) -> Account:

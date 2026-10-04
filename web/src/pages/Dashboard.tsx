@@ -161,7 +161,7 @@ export function Dashboard() {
         <NotifyBell />
         <ThemeToggle />
         <span className="sub hide-sm" style={{ margin: "0 4px" }}>{session.user?.email}</span>
-        {isAdmin() ? <button className="btn" onClick={openSettings}>⚙ Settings</button> : null}
+        {isAdmin() ? <button className="btn" onClick={openSettings}>☰ Settings</button> : null}
         <button className="btn" onClick={signOut} title="Sign out">⎋</button>
       </header>
 

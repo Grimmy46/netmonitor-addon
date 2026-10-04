@@ -231,61 +231,42 @@ export function SettingsModal({
     }
   }
 
+  const SECTIONS = [
+    { id: "accounts", icon: "👤", label: "Accounts", hint: "Users & roles" },
+    { id: "unifi", icon: "🔑", label: "UniFi connections", hint: "Consoles & API keys" },
+    { id: "kiosks", icon: "🖥", label: "Kiosks & stations", hint: "Enrollment PIN" },
+    { id: "live", icon: "📈", label: "Live page", hint: "Probe kiosk & targets" },
+  ] as const;
+  type Sec = (typeof SECTIONS)[number]["id"];
+  const [sec, setSecRaw] = useState<Sec>(() => {
+    const v = localStorage.getItem("nm-settings-sec");
+    return (SECTIONS.find((x) => x.id === v)?.id ?? "accounts") as Sec;
+  });
+  const [menuOpen, setMenuOpen] = useState(false);
+  const setSec = (v: Sec) => { setSecRaw(v); localStorage.setItem("nm-settings-sec", v); setMenuOpen(false); };
+  const cur = SECTIONS.find((x) => x.id === sec)!;
+
   return (
-    <div className="overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Settings</h2>
-
-        {/* ── Live page ───────────────────────────────────────────────────── */}
-        <h3 style={{ margin: "4px 0 6px", fontSize: 15 }}>Live page</h3>
-        <p style={{ marginTop: 0 }}>
-          The Live tab probes these targets continuously. The <strong>probe kiosk</strong> is
-          the on-lot vantage; while it sleeps the server's cloud vantage takes over.
-        </p>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
-          <span className="sub" style={{ fontSize: 13 }}>Probe kiosk:</span>
-          <select
-            value={probeAgentId}
-            onChange={(e) => pickProbeAgent(e.target.value)}
-            disabled={ltBusy}
-            style={{ padding: "6px", flex: 1 }}
-          >
-            <option value="">— none (cloud vantage only) —</option>
-            {agents.filter((a) => a.claimed || a.last_seen_at).map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}{a.online ? "" : " (offline)"}
-              </option>
+    <div className="overlay st-overlay" onClick={onClose}>
+      <div className={`st-panel ${menuOpen ? "menu-open" : ""}`} onClick={(e) => e.stopPropagation()}>
+        <header className="st-head">
+          <button className="btn st-burger" aria-label="Menu" onClick={() => setMenuOpen((v) => !v)}>☰</button>
+          <h2>Settings <span className="sub">· {cur.label}</span></h2>
+          <div className="spacer" />
+          <button className="btn" onClick={onClose} disabled={busy || cBusy} aria-label="Close">✕</button>
+        </header>
+        <div className="st-body">
+          <nav className="st-nav">
+            {SECTIONS.map((x) => (
+              <button key={x.id} className={`st-nav-item ${sec === x.id ? "on" : ""}`} onClick={() => setSec(x.id)}>
+                <span className="st-ico">{x.icon}</span>
+                <span><b>{x.label}</b><small>{x.hint}</small></span>
+              </button>
             ))}
-          </select>
-        </div>
-        <div style={{ marginBottom: 8 }}>
-          {liveTargets.map((t) => (
-            <div key={t.id} className="banner" style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, opacity: t.enabled ? 1 : 0.55 }}>
-              <span className="sub" style={{ fontSize: 11, width: 34 }}>{t.kind}</span>
-              <strong>{t.label}</strong>
-              <span className="sub" style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{t.target}</span>
-              <button className="btn" style={{ fontSize: 12, padding: "3px 8px" }} disabled={ltBusy} onClick={() => toggleLiveTarget(t)}>
-                {t.enabled ? "Disable" : "Enable"}
-              </button>
-              <button className="btn" style={{ fontSize: 12, padding: "3px 8px" }} disabled={ltBusy} onClick={() => removeLiveTarget(t.id)}>
-                Remove
-              </button>
-            </div>
-          ))}
-        </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 6 }}>
-          <select value={ltKind} onChange={(e) => setLtKind(e.target.value)} style={{ padding: "6px" }}>
-            <option value="ping">ping</option>
-            <option value="http">https</option>
-          </select>
-          <input placeholder="label" value={ltLabel} onChange={(e) => setLtLabel(e.target.value)} style={{ width: 140 }} />
-          <input placeholder={ltKind === "http" ? "https://…" : "host / IP"} value={ltTarget}
-            onChange={(e) => setLtTarget(e.target.value)} style={{ flex: 1, minWidth: 160 }} />
-          <button className="btn" onClick={addLiveTarget} disabled={ltBusy || !ltTarget.trim()}>Add target</button>
-        </div>
-        {ltMsg ? <p className="sub" style={{ fontSize: 12 }}>{ltMsg}</p> : null}
-        <hr style={{ border: "none", borderTop: "1px solid var(--border)", margin: "14px 0" }} />
-
+          </nav>
+          <section className="st-content">
+            {sec === "accounts" ? (
+              <>
         {/* ── Users & roles ───────────────────────────────────────────────── */}
         <h3 style={{ margin: "4px 0 6px", fontSize: 15 }}>Users</h3>
         <p style={{ marginTop: 0 }}>
@@ -324,36 +305,10 @@ export function SettingsModal({
         </div>
         {uMsg ? <div className="banner" style={{ marginBottom: 12 }}>{uMsg}</div> : null}
 
-        <hr style={{ border: "none", borderTop: "1px solid var(--line)", margin: "8px 0 16px" }} />
-
-        {/* ── Agents (kiosks) ─────────────────────────────────────────────── */}
-        <h3 style={{ margin: "4px 0 6px", fontSize: 15 }}>Kiosks &amp; stations</h3>
-        <p style={{ marginTop: 0 }}>
-          Add a station for each kiosk here. On a kiosk's first run the agent asks for
-          the <strong>enrollment PIN</strong> below, then you pick its station from a
-          list — every kiosk runs the identical files, no per-kiosk tokens.
-        </p>
-
-        {/* Enrollment PIN */}
-        <div className="banner" style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>
-          <span>Enrollment PIN:</span>
-          <strong style={{ fontVariantNumeric: "tabular-nums", letterSpacing: 2, fontSize: 16 }}>
-            {pin == null ? "…" : pinShown ? pin : "••••••"}
-          </strong>
-          <div className="spacer" style={{ flex: 1 }} />
-          <button className="btn" onClick={() => setPinShown((v) => !v)} disabled={pin == null}>
-            {pinShown ? "Hide" : "Show"}
-          </button>
-          <button className="btn" onClick={regenPin} disabled={aBusy}>Regenerate</button>
-        </div>
-
-        <p className="sub" style={{ marginBottom: 20 }}>
-          {agents.length} station{agents.length === 1 ? "" : "s"} configured. Add, import,
-          or remove them under the <strong>Kiosks</strong> tab → <strong>Manage stations</strong>.
-        </p>
-
-        <hr style={{ border: "none", borderTop: "1px solid var(--line)", margin: "8px 0 16px" }} />
-
+              </>
+            ) : null}
+            {sec === "unifi" ? (
+              <>
         {/* ── Console connections ─────────────────────────────────────────── */}
         <h3 style={{ margin: "4px 0 6px", fontSize: 15 }}>Consoles</h3>
         <p style={{ marginTop: 0 }}>
@@ -444,7 +399,6 @@ export function SettingsModal({
         </div>
 
         {/* ── Site Manager key ────────────────────────────────────────────── */}
-        <hr style={{ border: "none", borderTop: "1px solid var(--line)", margin: "8px 0 16px" }} />
         <h3 style={{ margin: "4px 0 6px", fontSize: 15 }}>Site Manager (optional)</h3>
         <p style={{ marginTop: 0 }}>
           An account-wide Site Manager key (unifi.ui.com → profile → API) covers the
@@ -480,10 +434,96 @@ export function SettingsModal({
           {status?.configured ? (
             <button className="btn" onClick={remove} disabled={busy}>Remove key</button>
           ) : null}
-          <button className="btn" onClick={onClose} disabled={busy || cBusy}>Close</button>
           <button className="btn btn-primary" onClick={save} disabled={busy || key.trim().length < 10}>
             {busy ? "Verifying…" : "Save Site Manager key"}
           </button>
+        </div>
+              </>
+            ) : null}
+            {sec === "kiosks" ? (
+              <>
+        {/* ── Agents (kiosks) ─────────────────────────────────────────────── */}
+        <h3 style={{ margin: "4px 0 6px", fontSize: 15 }}>Kiosks &amp; stations</h3>
+        <p style={{ marginTop: 0 }}>
+          Add a station for each kiosk here. On a kiosk's first run the agent asks for
+          the <strong>enrollment PIN</strong> below, then you pick its station from a
+          list — every kiosk runs the identical files, no per-kiosk tokens.
+        </p>
+
+        {/* Enrollment PIN */}
+        <div className="banner" style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>
+          <span>Enrollment PIN:</span>
+          <strong style={{ fontVariantNumeric: "tabular-nums", letterSpacing: 2, fontSize: 16 }}>
+            {pin == null ? "…" : pinShown ? pin : "••••••"}
+          </strong>
+          <div className="spacer" style={{ flex: 1 }} />
+          <button className="btn" onClick={() => setPinShown((v) => !v)} disabled={pin == null}>
+            {pinShown ? "Hide" : "Show"}
+          </button>
+          <button className="btn" onClick={regenPin} disabled={aBusy}>Regenerate</button>
+        </div>
+
+        <p className="sub" style={{ marginBottom: 20 }}>
+          {agents.length} station{agents.length === 1 ? "" : "s"} configured. Add, import,
+          or remove them under the <strong>Kiosks</strong> tab → <strong>Manage stations</strong>.
+        </p>
+
+              </>
+            ) : null}
+            {sec === "live" ? (
+              <>
+        {/* ── Live page ───────────────────────────────────────────────────── */}
+        <h3 style={{ margin: "4px 0 6px", fontSize: 15 }}>Live page</h3>
+        <p style={{ marginTop: 0 }}>
+          The Live tab probes these targets continuously. The <strong>probe kiosk</strong> is
+          the on-lot vantage; while it sleeps the server's cloud vantage takes over.
+        </p>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+          <span className="sub" style={{ fontSize: 13 }}>Probe kiosk:</span>
+          <select
+            value={probeAgentId}
+            onChange={(e) => pickProbeAgent(e.target.value)}
+            disabled={ltBusy}
+            style={{ padding: "6px", flex: 1 }}
+          >
+            <option value="">— none (cloud vantage only) —</option>
+            {agents.filter((a) => a.claimed || a.last_seen_at).map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}{a.online ? "" : " (offline)"}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div style={{ marginBottom: 8 }}>
+          {liveTargets.map((t) => (
+            <div key={t.id} className="banner" style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, opacity: t.enabled ? 1 : 0.55 }}>
+              <span className="sub" style={{ fontSize: 11, width: 34 }}>{t.kind}</span>
+              <strong>{t.label}</strong>
+              <span className="sub" style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{t.target}</span>
+              <button className="btn" style={{ fontSize: 12, padding: "3px 8px" }} disabled={ltBusy} onClick={() => toggleLiveTarget(t)}>
+                {t.enabled ? "Disable" : "Enable"}
+              </button>
+              <button className="btn" style={{ fontSize: 12, padding: "3px 8px" }} disabled={ltBusy} onClick={() => removeLiveTarget(t.id)}>
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 6 }}>
+          <select value={ltKind} onChange={(e) => setLtKind(e.target.value)} style={{ padding: "6px" }}>
+            <option value="ping">ping</option>
+            <option value="http">https</option>
+          </select>
+          <input placeholder="label" value={ltLabel} onChange={(e) => setLtLabel(e.target.value)} style={{ width: 140 }} />
+          <input placeholder={ltKind === "http" ? "https://…" : "host / IP"} value={ltTarget}
+            onChange={(e) => setLtTarget(e.target.value)} style={{ flex: 1, minWidth: 160 }} />
+          <button className="btn" onClick={addLiveTarget} disabled={ltBusy || !ltTarget.trim()}>Add target</button>
+        </div>
+        {ltMsg ? <p className="sub" style={{ fontSize: 12 }}>{ltMsg}</p> : null}
+
+              </>
+            ) : null}
+          </section>
         </div>
       </div>
     </div>

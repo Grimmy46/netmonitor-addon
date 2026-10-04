@@ -17,6 +17,7 @@ import { getSkin, onSkinChange, type Skin } from "../lib/skin";
  */
 
 const POLL_MS = 10000;
+const MAX_Z = 22;
 const MISSED_AFTER_S = 120;
 
 type Health = "up" | "missed" | "down" | "dormant" | "unreach";
@@ -80,6 +81,7 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
   const [toast, setToast] = useState("");
   const [find, setFind] = useState("");
   const [drawer, setDrawer] = useState(false);
+  const [zoom, setZoom] = useState(4);
 
   const boxRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -125,13 +127,17 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
   // ── map init ──
   useEffect(() => {
     if (!boxRef.current || mapRef.current) return;
-    const m = L.map(boxRef.current, { zoomControl: false, maxZoom: 21, attributionControl: true });
-    L.control.zoom({ position: "bottomright" }).addTo(m);
+    // Fine zoom: 0.1 snap, quarter steps on wheel/buttons, slider in the UI.
+    const m = L.map(boxRef.current, {
+      zoomControl: false, maxZoom: MAX_Z, minZoom: 3, attributionControl: true,
+      zoomSnap: 0.1, zoomDelta: 0.25, wheelPxPerZoomLevel: 140, wheelDebounceTime: 20,
+    });
     m.attributionControl.setPrefix(false);
     m.setView([39.5, -98.35], 4);
-    baseRef.current = L.tileLayer(SAT, { maxNativeZoom: 19, maxZoom: 21, attribution: SAT_ATTR }).addTo(m);
+    baseRef.current = L.tileLayer(SAT, { maxNativeZoom: 19, maxZoom: MAX_Z, attribution: SAT_ATTR }).addTo(m);
     lines.current = L.layerGroup().addTo(m);
-    const zoomCls = () => boxRef.current?.classList.toggle("z-near", m.getZoom() >= 19);
+    const zoomCls = () => { boxRef.current?.classList.toggle("z-near", m.getZoom() >= 19); setZoom(m.getZoom()); };
+    m.on("zoom", () => setZoom(m.getZoom()));
     m.on("zoomend", zoomCls);
     zoomCls();
     m.on("click", (e: L.LeafletMouseEvent) => {
@@ -151,8 +157,8 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
     if (!m || !baseRef.current) return;
     m.removeLayer(baseRef.current);
     baseRef.current = base === "sat"
-      ? L.tileLayer(SAT, { maxNativeZoom: 19, maxZoom: 21, attribution: SAT_ATTR })
-      : L.tileLayer(STREET, { maxNativeZoom: 19, maxZoom: 21, attribution: STREET_ATTR });
+      ? L.tileLayer(SAT, { maxNativeZoom: 19, maxZoom: MAX_Z, attribution: SAT_ATTR })
+      : L.tileLayer(STREET, { maxNativeZoom: 19, maxZoom: MAX_Z, attribution: STREET_ATTR });
     baseRef.current.addTo(m);
     baseRef.current.bringToBack();
   }, [base]);
@@ -311,7 +317,7 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
     try {
       const g = await api.geoView(siteId!, c.lat, c.lng, m.getZoom());
       setGeo((old) => ({ ...(old ?? g), center: g.center, zoom: g.zoom }));
-      flash("Area saved — the map opens here from now on.");
+      flash(`Area saved at zoom ${m.getZoom().toFixed(1)} — the map opens exactly here.`);
     } catch (e) { flash(`Couldn't save: ${e instanceof Error ? e.message : e}`); }
   }
   function onDrop(e: React.DragEvent) {
@@ -423,6 +429,19 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
               <span>1. Search the venue above (or pan/zoom to it).<br />2. Tap <b>✎ Edit</b> → <b>Save this view as the area</b>.<br />3. Tap each switch/AP, then tap where it sits.</span>
             </div>
           ) : null}
+          <div className="geo-zoom" onDoubleClick={(e) => e.stopPropagation()}>
+            <button className="btn" title="Zoom in" onClick={() => mapRef.current?.setZoom(Math.min(MAX_Z, +(zoom + 0.25).toFixed(2)))}>+</button>
+            <input
+              type="range" min={12} max={MAX_Z} step={0.05} value={zoom}
+              onChange={(e) => mapRef.current?.setZoom(+e.target.value, { animate: false })}
+              aria-label="Zoom"
+            />
+            <button className="btn" title="Zoom out" onClick={() => mapRef.current?.setZoom(Math.max(3, +(zoom - 0.25).toFixed(2)))}>−</button>
+            <span className="geo-zoom-val">{zoom.toFixed(1)}×</span>
+            {geo?.center && geo.zoom ? (
+              <button className="btn" title="Back to the saved area" onClick={() => mapRef.current?.flyTo(geo.center as [number, number], geo.zoom!, { duration: 0.6 })}>⟲</button>
+            ) : null}
+          </div>
           <div className="geo-legend">
             <span><i className="lg up" />up</span><span><i className="lg missed" />missed beat</span>
             <span><i className="lg down" />down</span><span><i className="lg sq" />switch</span><span><i className="lg ci" />AP</span>

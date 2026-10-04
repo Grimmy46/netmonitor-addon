@@ -807,3 +807,10 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
 .geo-live-tag { font-size: 11px; font-weight: 700; letter-spacing: .08em; color: var(--good); }
 :root[data-skin="holo"] .leaflet-bar a { background: rgba(2, 18, 34, .92); color: #7df9ff; border-color: rgba(0, 229, 255, .35); }
 :root[data-skin="holo"] .leaflet-control-attribution { background: rgba(0, 10, 20, .6); color: #6fb7c9; }
+/* fine zoom control */
+.geo-zoom { position: absolute; z-index: 750; right: 10px; bottom: 26px; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 6px; border-radius: 10px; background: color-mix(in srgb, var(--surface-1) 90%, transparent); border: 1px solid var(--border); box-shadow: var(--shadow); }
+.geo-zoom .btn { width: 32px; height: 32px; padding: 0; font-size: 18px; line-height: 1; }
+.geo-zoom input[type=range] { writing-mode: vertical-lr; direction: rtl; width: 28px; height: 150px; accent-color: var(--accent); }
+.geo-zoom-val { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--ink-secondary); }
+:root[data-skin="holo"] .geo-zoom { background: rgba(2, 16, 30, .92); border-color: rgba(0, 229, 255, .3); }
+@media (max-width: 760px) { .geo-zoom input[type=range] { height: 110px; } }

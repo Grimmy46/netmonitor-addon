@@ -18,7 +18,7 @@ class GeoMap(UUIDPk, Timestamps, Base):
     site_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"), unique=True)
     center_lat: Mapped[float | None] = mapped_column(Float, default=None)
     center_lng: Mapped[float | None] = mapped_column(Float, default=None)
-    zoom: Mapped[int | None] = mapped_column(Integer, default=None)
+    zoom: Mapped[float | None] = mapped_column(Float, default=None)  # fractional zoom
     # {"<mac>": {"lat": .., "lng": ..}}
     placements: Mapped[dict] = mapped_column(JSONB, default=dict)
     share_token: Mapped[str | None] = mapped_column(String, unique=True, default=None)

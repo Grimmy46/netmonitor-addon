@@ -234,14 +234,14 @@ async def get_geo(site_id: uuid.UUID, db: AsyncSession = Depends(get_db), _user=
 class GeoView(BaseModel):
     lat: float
     lng: float
-    zoom: int
+    zoom: float
 
 
 @router.put("/geo/{site_id}/view")
 async def set_geo_view(site_id: uuid.UUID, body: GeoView, db: AsyncSession = Depends(get_db),
                        _admin=Depends(require_admin)) -> dict:
     g = await _geo(db, site_id, create=True)
-    g.center_lat, g.center_lng, g.zoom = body.lat, body.lng, max(1, min(22, body.zoom))
+    g.center_lat, g.center_lng, g.zoom = body.lat, body.lng, round(max(1.0, min(23.0, body.zoom)), 2)
     await db.commit()
     return _geo_out(g, with_share=True)
 

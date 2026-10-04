@@ -63,6 +63,63 @@ async def fetch_site_devices(console: UnifiConsole, site_ref: str) -> list[dict]
     return data.get("data", []) if isinstance(data, dict) else []
 
 
+async def fetch_site_clients(console: UnifiConsole, site_ref: str) -> list[dict]:
+    """Classic controller client list (sw_mac / sw_port per wired client)."""
+    p = urlparse(console.base_url)
+    url = f"{p.scheme}://{p.netloc}/proxy/network/api/s/{site_ref}/stat/sta"
+    headers = {"X-API-KEY": decrypt(console.encrypted_api_key), "Accept": "application/json"}
+    async with httpx.AsyncClient(timeout=45.0, verify=console.verify_tls) as client:
+        resp = await client.get(url, headers=headers)
+    resp.raise_for_status()
+    data = resp.json()
+    return data.get("data", []) if isinstance(data, dict) else []
+
+
+_KIOSK_LOC_EVERY_S = 300
+_kiosk_loc_at: dict = {}
+
+
+async def refresh_kiosk_locations(db: AsyncSession, console: UnifiConsole, site: Site,
+                                  now: datetime) -> int:
+    """Which switch + port each kiosk is plugged into, from UniFi's client list
+    matched on the kiosk's Windows hostname (or LAN IP). Every 5 min."""
+    from app.models import Agent
+    last = _kiosk_loc_at.get(site.id)
+    if last and (now - last).total_seconds() < _KIOSK_LOC_EVERY_S:
+        return 0
+    _kiosk_loc_at[site.id] = now
+    agents = list((await db.execute(select(Agent).where(Agent.hostname.is_not(None)))).scalars())
+    if not agents:
+        return 0
+    clients = await fetch_site_clients(console, site.unifi_site_ref)
+    by_host = {}
+    by_ip = {}
+    for c in clients:
+        if c.get("hostname"):
+            by_host[str(c["hostname"]).lower()] = c
+        if c.get("ip"):
+            by_ip[c["ip"]] = c
+    if not by_host and not by_ip:
+        return 0
+    names = {(_norm_mac(d.mac)): d.name for d in (await db.execute(
+        select(Device).where(Device.site_id == site.id))).scalars() if d.mac}
+    n = 0
+    for a in agents:
+        c = by_host.get((a.hostname or "").lower()) or (by_ip.get(a.lan_ip) if a.lan_ip else None)
+        if c is None:
+            continue
+        a.lan_ip = c.get("ip") or a.lan_ip
+        a.lan_mac = _norm_mac(c.get("mac")) or a.lan_mac
+        sw = _norm_mac(c.get("sw_mac")) if c.get("is_wired", True) else None
+        if sw:
+            a.switch_mac = sw
+            a.switch_port = _int(c.get("sw_port"))
+            a.switch_name = names.get(sw) or c.get("last_uplink_name") or a.switch_name
+        a.lan_seen_at = now
+        n += 1
+    return n
+
+
 # ── WAN ────────────────────────────────────────────────────────────────────
 def _wan_links(gw: dict) -> list[dict]:
     uptime = gw.get("uptime_stats") or {}
@@ -175,6 +232,12 @@ async def refresh_site_topology(db: AsyncSession, console: UnifiConsole, site: S
         }
         site.wan_status_at = now
     await db.commit()
+    try:
+        await refresh_kiosk_locations(db, console, site, now)
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001 — never break the device refresh
+        await db.rollback()
+        logger.warning("kiosk location refresh failed for %s: %s", site.name, exc)
     return {"devices": updated, "wan": bool(gw)}
 
 

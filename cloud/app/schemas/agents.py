@@ -42,6 +42,13 @@ class AgentOut(BaseModel):
     printer_cuts_per_roll: float | None = None    # effective yield (learned or seed)
     printer_roll_learned: bool = False            # yield measured from a real run-out?
     printer_roll_partial: bool = False            # anchor set mid-roll (estimate only)
+    # Where it's plugged in + fleet state.
+    lan_ip: str | None = None
+    switch_name: str | None = None
+    switch_port: int | None = None
+    switch_mac: str | None = None
+    powered_off_at: str | None = None
+    stale: bool = False   # no check-in for 7+ days (retire candidate)
 
 
 # ── enrollment (kiosk first-run station picker, PIN-gated) ───────────────────

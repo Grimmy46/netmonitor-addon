@@ -53,6 +53,17 @@ class Agent(Base, UUIDPk, Timestamps):
     # Ticket-printer (KPM180H) monitoring: the agent polls the printer's
     # real-time status and reports a normalized state; the server keeps the
     # latest reading and runs its own debounced fault alert.
+    # Where the kiosk is plugged in (from UniFi's client list, matched by
+    # hostname / IP): switch MAC + port, refreshed by the topology worker.
+    lan_ip: Mapped[str | None] = mapped_column(default=None)
+    lan_mac: Mapped[str | None] = mapped_column(default=None)
+    switch_mac: Mapped[str | None] = mapped_column(default=None)
+    switch_port: Mapped[int | None] = mapped_column(default=None)
+    switch_name: Mapped[str | None] = mapped_column(default=None)
+    lan_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # Set when a power-off command succeeds; cleared on the next report. Lets the
+    # UI show "shut down" (grey) instead of "offline".
+    powered_off_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     printer_status: Mapped[str | None] = mapped_column(default=None)  # ok|paper_out|cover_open|error|unknown
     printer_status_at: Mapped[str | None] = mapped_column(default=None)  # ISO ts of last reading
     printer_raw: Mapped[str | None] = mapped_column(default=None)  # raw status byte(s) hex

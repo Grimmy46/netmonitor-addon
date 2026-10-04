@@ -144,7 +144,7 @@ class Settings(BaseSettings):
     # Kiosk ping history (ping_samples). Raw per-second samples are kept this
     # long; older data survives only as per-minute and per-hour rollups.
     # Every reader of raw samples looks back at most 7 days (PDF report).
-    ping_raw_retention_days: int = 14
+    ping_raw_retention_days: int = 3
     # Per-minute rollups are kept this long; per-hour rollups are kept forever.
     ping_minute_retention_days: int = 90
     # How often the retention worker runs once it has caught up.

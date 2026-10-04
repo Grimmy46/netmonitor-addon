@@ -17,7 +17,7 @@ from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.security import hash_token, make_agent_token
 from app.models import (
-    Account, Agent, AgentBinary, AgentCommand, Device, PingSample, PrinterEvent, Site,
+    Account, Agent, AgentBinary, AgentCommand, Device, FleetBatch, PingSample, PrinterEvent, Site,
 )
 from app.schemas import (
     AgentCreate,
@@ -241,7 +241,18 @@ def _agent_out(a: Agent, site_name: str | None, latest_rtt: float | None) -> Age
         printer_status_at=a.printer_status_at,
         printer_detail=a.printer_detail,
         printer_raw=a.printer_raw,
+        lan_ip=a.lan_ip,
+        switch_name=a.switch_name,
+        switch_port=a.switch_port,
+        switch_mac=a.switch_mac,
+        powered_off_at=a.powered_off_at.isoformat() if a.powered_off_at else None,
+        stale=_is_stale(a.last_seen_at),
     )
+
+
+def _is_stale(last_seen_at: str | None, days: int = 7) -> bool:
+    ts = _parse_iso(last_seen_at)
+    return ts is not None and (datetime.now(tz=timezone.utc) - ts).days >= days
 
 
 # ── registration / management (dashboard side) ───────────────────────────────
@@ -588,6 +599,7 @@ async def agent_report(
     now = datetime.now(tz=timezone.utc)
     agent.last_seen_at = now.isoformat()
     agent.status = "online"
+    agent.powered_off_at = None
     if report.agent_version:
         agent.version = report.agent_version
     if report.bootstrap_version:
@@ -1204,7 +1216,8 @@ async def probe_report(
 # run them crash-isolated (bootstrap ≥ 2.5); older exes get them cancelled.
 # printer-test sends a small ESC/POS test ticket to the KPM180H and reports whether
 # the printer accepted it and is healthy afterwards.
-ALLOWED_COMMAND_KINDS = {"printer-status", "printer-probe", "printer-raw", "printer-test"}
+ALLOWED_COMMAND_KINDS = {"printer-status", "printer-probe", "printer-raw", "printer-test",
+                         "power-off", "power-cancel"}
 _CRASH_ISOLATED_KINDS = {"printer-probe", "printer-raw", "printer-test"}
 
 
@@ -1302,5 +1315,148 @@ async def command_result(
     cmd.result = result if isinstance(result, dict) else {"raw": result}
     cmd.status = "done" if body.get("ok") else "error"
     cmd.completed_at = datetime.now(tz=timezone.utc)
+    if cmd.kind == "power-off" and body.get("ok"):
+        delay = int((cmd.args or {}).get("delay", 60) or 0)
+        agent.powered_off_at = cmd.completed_at + timedelta(seconds=delay)
+    elif cmd.kind == "power-cancel" and body.get("ok"):
+        agent.powered_off_at = None
     await db.commit()
     return {"ok": True}
+
+
+# ── Fleet actions: test-print all, power off all, weekly shutdown ────────────
+FLEET_KINDS = {"test-print": "printer-test", "power-off": "power-off", "power-cancel": "power-cancel"}
+FLEET_TIMEOUT_S = 240   # a kiosk that hasn't answered by now counts as failed
+
+
+class FleetIn(BaseModel):
+    action: str                       # test-print | power-off | power-cancel
+    agent_ids: list[uuid.UUID] | None = None   # default: every claimed kiosk
+    delay: int = 60                   # power-off grace (s)
+    message: str | None = None
+
+
+async def queue_fleet(db: AsyncSession, action: str, requested_by: str, agent_ids=None,
+                      delay: int = 60, message: str | None = None) -> FleetBatch:
+    kind = FLEET_KINDS[action]
+    q = select(Agent).where(Agent.machine_id.is_not(None))
+    if agent_ids:
+        q = q.where(Agent.id.in_(agent_ids))
+    agents = list((await db.execute(q.order_by(Agent.name))).scalars())
+    batch = FleetBatch(kind=action, requested_by=requested_by, total=0, skipped=[])
+    db.add(batch)
+    await db.flush()
+    skipped = []
+    for a in agents:
+        if not _is_online(a.last_seen_at):
+            skipped.append({"id": str(a.id), "name": a.name,
+                            "why": "shut down" if a.powered_off_at else "offline"})
+            continue
+        if kind in _CRASH_ISOLATED_KINDS and not _supports_crash_isolation(a.bootstrap_version):
+            skipped.append({"id": str(a.id), "name": a.name, "why": "agent too old"})
+            continue
+        args = {"batch": str(batch.id)}
+        if kind == "printer-test":
+            args.update({"label": a.name, "cut": "full"})
+        elif kind == "power-off":
+            args.update({"delay": max(0, min(3600, delay)),
+                         "message": message or "NetMonitor: shutting down for the night"})
+        db.add(AgentCommand(agent_id=a.id, kind=kind, args=args, status="queued",
+                            requested_by=requested_by))
+        batch.total += 1
+    batch.skipped = skipped
+    await db.commit()
+    await db.refresh(batch)
+    return batch
+
+
+async def fleet_status(db: AsyncSession, batch: FleetBatch) -> dict:
+    now = datetime.now(tz=timezone.utc)
+    rows = (await db.execute(
+        select(AgentCommand, Agent.name)
+        .join(Agent, Agent.id == AgentCommand.agent_id)
+        .where(AgentCommand.args["batch"].astext == str(batch.id))
+        .order_by(Agent.name)
+    )).all()
+    items, ok_n, fail_n, wait_n = [], 0, 0, 0
+    age = (now - batch.created_at).total_seconds() if batch.created_at else 0
+    for c, name in rows:
+        r = c.result or {}
+        if c.status == "done" and (r.get("ok", True) is not False):
+            state = "ok"
+            ok_n += 1
+        elif c.status in ("done", "error"):
+            state = "failed"
+            fail_n += 1
+        elif age > FLEET_TIMEOUT_S:
+            state = "no answer"
+            fail_n += 1
+        else:
+            state = "waiting"
+            wait_n += 1
+        items.append({"agent_id": str(c.agent_id), "name": name, "state": state,
+                      "detail": r.get("detail") or r.get("error") or r.get("note") or "",
+                      "printer_state": r.get("state")})
+    for s_ in batch.skipped or []:
+        items.append({"agent_id": s_["id"], "name": s_["name"], "state": "skipped",
+                      "detail": s_.get("why", ""), "printer_state": None})
+    return {"id": str(batch.id), "action": batch.kind, "requested_by": batch.requested_by,
+            "created_at": batch.created_at.isoformat() if batch.created_at else None,
+            "total": batch.total, "ok": ok_n, "failed": fail_n, "waiting": wait_n,
+            "skipped": len(batch.skipped or []), "done": wait_n == 0, "items": items}
+
+
+@router.post("/fleet")
+async def fleet_action(body: FleetIn, db: AsyncSession = Depends(get_db), admin=Depends(require_admin)) -> dict:
+    if body.action not in FLEET_KINDS:
+        raise HTTPException(status_code=422, detail=f"Unknown action '{body.action}'")
+    batch = await queue_fleet(db, body.action, getattr(admin, "email", ""), body.agent_ids,
+                              body.delay, body.message)
+    return await fleet_status(db, batch)
+
+
+@router.get("/fleet/latest")
+async def fleet_latest(action: str = Query("test-print"), db: AsyncSession = Depends(get_db),
+                       _u=Depends(current_user)) -> dict | None:
+    b = (await db.execute(select(FleetBatch).where(FleetBatch.kind == action)
+                          .order_by(desc(FleetBatch.created_at)).limit(1))).scalars().first()
+    return await fleet_status(db, b) if b else None
+
+
+@router.get("/fleet/{batch_id}")
+async def fleet_get(batch_id: uuid.UUID, db: AsyncSession = Depends(get_db), _u=Depends(current_user)) -> dict:
+    b = await db.get(FleetBatch, batch_id)
+    if b is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return await fleet_status(db, b)
+
+
+class ShutdownScheduleIn(BaseModel):
+    enabled: bool
+    weekday: int = 6          # 0 = Monday … 6 = Sunday
+    time: str = "22:30"       # local HH:MM
+    tz: str = "America/Phoenix"
+    delay: int = 120
+
+
+@router.get("/fleet-schedule")
+async def get_schedule(db: AsyncSession = Depends(get_db), _u=Depends(current_user)) -> dict:
+    acc = (await db.execute(select(Account).limit(1))).scalars().first()
+    return {"schedule": (acc.kiosk_shutdown if acc else None), "last": acc.kiosk_shutdown_last if acc else None}
+
+
+@router.put("/fleet-schedule")
+async def put_schedule(body: ShutdownScheduleIn, db: AsyncSession = Depends(get_db),
+                       _a=Depends(require_admin)) -> dict:
+    from zoneinfo import ZoneInfo
+    try:
+        ZoneInfo(body.tz)
+        hh, mm = (int(x) for x in body.time.split(":"))
+        assert 0 <= hh < 24 and 0 <= mm < 60 and 0 <= body.weekday <= 6
+    except Exception:
+        raise HTTPException(status_code=422, detail="Bad time / weekday / timezone")
+    acc = await get_or_create_account(db)
+    acc.kiosk_shutdown = {"enabled": body.enabled, "weekday": body.weekday, "time": f"{hh:02d}:{mm:02d}",
+                          "tz": body.tz, "delay": max(30, min(1800, body.delay))}
+    await db.commit()
+    return {"schedule": acc.kiosk_shutdown, "last": acc.kiosk_shutdown_last}

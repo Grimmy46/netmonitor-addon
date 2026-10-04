@@ -520,7 +520,8 @@ async def closure_report_text(db: AsyncSession, now: datetime) -> tuple[str, str
     try:
         agents = list((await db.execute(select(Agent))).scalars())
         agents = [a for a in agents if a.status != "pending"]
-        fresh = [a for a in agents if a.status == "online"]
+        fresh = [a for a in agents if _parse_iso(a.last_seen_at) and
+                 (now - _parse_iso(a.last_seen_at)).total_seconds() <= get_settings().agent_offline_after_seconds]
         if agents:
             kiosks_txt = f" · kiosks {len(fresh)}/{len(agents)} reporting"
     except Exception:  # noqa: BLE001
@@ -530,6 +531,47 @@ async def closure_report_text(db: AsyncSession, now: datetime) -> tuple[str, str
     more = f" (+{len(roots) - 3} more)" if len(roots) > 3 else ""
     return (f"⚠️ Reopened: {len(live) - up} devices didn't come back",
             f"{up}/{len(live)} up{kiosks_txt}. " + " | ".join(parts) + more)
+
+
+async def _refresh_agent_status(db: AsyncSession, now: datetime) -> None:
+    """agents.status used to stay "online" forever; derive it from last_seen."""
+    st = get_settings()
+    for a in (await db.execute(select(Agent))).scalars():
+        seen = _parse_iso(a.last_seen_at)
+        if seen is None:
+            continue
+        want = "online" if (now - seen).total_seconds() <= st.agent_offline_after_seconds else (
+            "off" if a.powered_off_at else "offline")
+        if a.status != want:
+            a.status = want
+    await db.commit()
+
+
+async def _maybe_fire_kiosk_shutdown(db: AsyncSession, now: datetime) -> None:
+    """Weekly scheduled power-off of every online kiosk (Account.kiosk_shutdown)."""
+    from zoneinfo import ZoneInfo
+    acc = (await db.execute(select(Account).limit(1))).scalars().first()
+    cfg = (acc.kiosk_shutdown if acc else None) or {}
+    if not cfg.get("enabled"):
+        return
+    try:
+        local = now.astimezone(ZoneInfo(cfg.get("tz") or "America/Phoenix"))
+        hh, mm = (int(x) for x in str(cfg.get("time", "22:30")).split(":"))
+    except Exception:  # noqa: BLE001
+        return
+    if local.weekday() != int(cfg.get("weekday", 6)):
+        return
+    due = local.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    today = local.date().isoformat()
+    # Fire once per day, only within 2 h after the set time (no surprise late fire).
+    if acc.kiosk_shutdown_last == today or not (due <= local < due + timedelta(hours=2)):
+        return
+    acc.kiosk_shutdown_last = today
+    await db.commit()
+    from app.api.routes.agents import queue_fleet
+    batch = await queue_fleet(db, "power-off", "schedule", delay=int(cfg.get("delay", 120)),
+                              message="NetMonitor: weekly shutdown — save your work")
+    logger.info("Weekly kiosk shutdown queued for %s kiosks (batch %s)", batch.total, batch.id)
 
 
 async def sweep(db: AsyncSession) -> dict:
@@ -551,6 +593,9 @@ async def sweep(db: AsyncSession) -> dict:
     else:
         await _maybe_send_reopen_report(db, now)
     await _maybe_fire_site_teardowns(db, now)
+    # Weekly kiosk shutdown (e.g. Sunday after close) + keep agents.status honest.
+    await _maybe_fire_kiosk_shutdown(db, now)
+    await _refresh_agent_status(db, now)
 
     # No ears, no alarms: skip all work until someone has enabled notifications.
     has_subs = (await db.execute(select(PushSubscription.id).limit(1))).first()
@@ -573,6 +618,8 @@ async def sweep(db: AsyncSession) -> dict:
             continue  # claimed but never reported — nothing meaningful to say
         silent_for = (now - seen).total_seconds()
         down = silent_for >= st.alert_kiosk_offline_seconds
+        if down and a.powered_off_at is not None:
+            continue  # we shut it down on purpose — not a fault
         if down and a.alert_state is None:
             fault_age = silent_for - st.alert_kiosk_offline_seconds
             if fault_age <= fresh:

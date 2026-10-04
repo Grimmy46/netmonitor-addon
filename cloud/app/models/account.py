@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import DateTime, ForeignKey
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -71,5 +72,9 @@ class Account(Base, UUIDPk, Timestamps):
         DateTime(timezone=True), default=None
     )
 
+    # Weekly kiosk shutdown (e.g. Sunday after close): {"enabled", "weekday" 0=Mon..6=Sun,
+    # "time": "HH:MM", "tz": "America/Phoenix", "delay": seconds}
+    kiosk_shutdown: Mapped[dict | None] = mapped_column(JSONB, default=None)
+    kiosk_shutdown_last: Mapped[str | None] = mapped_column(default=None)  # local date fired
     users: Mapped[list["User"]] = relationship(back_populates="account")  # noqa: F821
     sites: Mapped[list["Site"]] = relationship(back_populates="account")  # noqa: F821

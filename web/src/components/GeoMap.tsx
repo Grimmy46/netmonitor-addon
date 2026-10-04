@@ -1,3 +1,4 @@
+import { CamerasView } from "./CamerasView";
 import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -63,6 +64,7 @@ export function SharedMapPage({ token }: { token: string }) {
   return (
     <div className="geo-share-page">
       <GeoMap shareToken={token} />
+      <div className="geo-share-cams"><CamerasView share={token} /></div>
     </div>
   );
 }

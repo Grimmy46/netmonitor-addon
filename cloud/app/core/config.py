@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     # Kiosk pushes (stopped reporting, printer, paper) paused while that side
     # is reworked. Set ALERT_KIOSKS_PAUSED=false to bring them back.
     alert_kiosks_paused: bool = False
+    # Internal go2rtc container (camera video hub; no published ports).
+    go2rtc_url: str = "http://go2rtc:1984"
 
     # Signal bot (signal-cli REST container, compose service `signal`).
     signal_api_url: str = "http://signal:8080"

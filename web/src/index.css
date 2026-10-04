@@ -1008,3 +1008,35 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
 .main-col > .container { width: 100%; min-width: 0; box-sizing: border-box; }
 .main-col > .container > * { min-width: 0; }
 .fleet-skipped { font-size: 12px; margin: 8px 0 0; color: var(--ink-muted); }
+
+/* ── Cameras ─────────────────────────────────────────────────────────── */
+.cams-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.cams-bar strong { font-size: 16px; }
+.cams-relay { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); }
+.cams-relay.ok { color: #16a34a; }
+.cams-relay.bad { color: #dc2626; }
+.cams-note { padding: 12px; border: 1px dashed var(--border); border-radius: 10px; margin-bottom: 12px; color: var(--ink-muted); }
+.cams-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.cams-grid.cams-one { grid-template-columns: 1fr; max-width: 1100px; }
+.cam-tile { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface-1); }
+.cam-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; min-width: 0; }
+.cam-head b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cam-ap { font-size: 12px; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.cam-dot { width: 8px; height: 8px; border-radius: 50%; background: #9ca3af; flex: none; }
+.cam-dot.on { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
+.cam-frame { position: relative; aspect-ratio: 16 / 9; background: #000; }
+.cam-frame .cam-video, .cam-frame video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+.cam-idle { position: absolute; inset: 0; display: grid; place-items: center; color: #9ca3af; font-size: 13px; }
+.cams-setup { border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+.cams-setup-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+.cams-setup-row label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink-muted); }
+.cams-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cams-table th, .cams-table td { text-align: left; padding: 4px 6px; border-top: 1px solid var(--border); }
+.cams-table input.search { width: 100%; min-width: 120px; }
+.geo-share-cams { margin-top: 14px; }
+@media (max-width: 720px) {
+  .cams-grid { grid-template-columns: 1fr; }
+  .cams-table th:nth-child(4), .cams-table td:nth-child(4) { display: none; }
+}
+.cams .muted { color: var(--ink-muted); }
+.cams .error-box { padding: 10px 12px; border-radius: 10px; background: rgba(220, 38, 38, .12); color: #dc2626; margin-bottom: 12px; }

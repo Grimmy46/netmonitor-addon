@@ -15,6 +15,7 @@ Rules for this file:
 `ctx`  = {"server_url", "token", "running_version"} supplied by the bootstrapper.
 """
 import hashlib
+import shutil
 import json
 import os
 import platform
@@ -33,7 +34,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.10.04.3"
+PAYLOAD_VERSION = "2026.10.04.4"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -1349,6 +1350,137 @@ def _printer_monitor_worker(ctx, stop):
             return
 
 
+
+# ── Camera relay (Tapo C110s) ─────────────────────────────────────────────
+# One designated kiosk runs go2rtc (a single-file video relay) bound to
+# localhost. go2rtc pulls each camera's low-res RTSP stream; this thread
+# forwards a camera as MPEG-TS (H.264 passthrough, no transcoding) to the
+# server over plain HTTPS — only while someone is watching it. Non-relay
+# kiosks just check in once a minute and do nothing.
+_G2R_EXE = "netmon-go2rtc.exe"
+_G2R_PORT = 11984
+
+
+def _cams_plan(ctx):
+    req = urllib.request.Request(
+        ctx["server_url"].rstrip("/") + "/cams/relay-plan",
+        headers={"X-Agent-Token": ctx["token"]})
+    with urllib.request.urlopen(req, timeout=15, context=SSL_CTX) as resp:
+        return json.loads(resp.read().decode("utf-8", "ignore"))
+
+
+def _g2r_kill():
+    if SYSTEM == "Windows":
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", _G2R_EXE], capture_output=True,
+                           timeout=15, **_no_window_kwargs())
+        except Exception:
+            pass
+
+
+def _g2r_ensure_exe(ctx, sha):
+    d = _install_dir() or tempfile.gettempdir()
+    path = os.path.join(d, _G2R_EXE)
+    def _hash(fp):
+        h = hashlib.sha256()
+        with open(fp, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    if os.path.exists(path) and (not sha or _hash(path) == sha):
+        return path
+    req = urllib.request.Request(ctx["server_url"].rstrip("/") + "/cams/go2rtc.exe",
+                                 headers={"X-Agent-Token": ctx["token"]})
+    tmp = path + ".part"
+    with urllib.request.urlopen(req, timeout=120, context=SSL_CTX) as resp, open(tmp, "wb") as f:
+        shutil.copyfileobj(resp, f)
+    if sha and _hash(tmp) != sha:
+        os.remove(tmp)
+        raise RuntimeError("go2rtc download checksum mismatch")
+    _g2r_kill()
+    os.replace(tmp, path)
+    return path
+
+
+def _g2r_start(exe, cams):
+    d = os.path.dirname(exe)
+    cfg = os.path.join(d, "netmon-go2rtc.yaml")
+    lines = ["api:", f'  listen: "127.0.0.1:{_G2R_PORT}"', "rtsp:", '  listen: ""',
+             "webrtc:", '  listen: ""', "log:", "  level: warn", "streams:"]
+    for c in cams:
+        lines.append(f'  cam{int(c["slot"]):02d}: "{c["rtsp"]}"')
+    with open(cfg, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    _g2r_kill()
+    return subprocess.Popen([exe, "-c", cfg], cwd=d, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, **_no_window_kwargs())
+
+
+def _cam_forward(ctx, slot, keep):
+    """Pipe one camera from local go2rtc to the server until keep() is false."""
+    import http.client
+    from urllib.parse import urlsplit
+    src = urllib.request.urlopen(
+        f"http://127.0.0.1:{_G2R_PORT}/api/stream.ts?src=cam{slot:02d}", timeout=20)
+    try:
+        u = urlsplit(ctx["server_url"])
+        conn = (http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=30, context=SSL_CTX)
+                if u.scheme == "https" else http.client.HTTPConnection(u.hostname, u.port or 80, timeout=30))
+
+        def body():
+            while keep():
+                b = src.read1(65536) if hasattr(src, "read1") else src.read(65536)
+                if not b:
+                    return
+                yield b
+        conn.request("POST", f"/cams/ingest/{slot}", body=body(), encode_chunked=True,
+                     headers={"Content-Type": "video/mp2t", "X-Agent-Token": ctx["token"]})
+        conn.getresponse().read()
+        conn.close()
+    finally:
+        src.close()
+
+
+def _camera_relay_worker(ctx, stop):
+    proc, sig = None, None
+    feeds = {}  # slot -> {"want": float, "th": Thread}
+    while not stop.is_set():
+        try:
+            plan = _cams_plan(ctx)
+        except Exception:
+            plan = None
+        if not plan or not plan.get("relay") or SYSTEM != "Windows":
+            if proc is not None:
+                _g2r_kill(); proc, sig = None, None
+            stop.wait(60.0 if not plan else float(plan.get("poll", 60)))
+            continue
+        try:
+            cams = plan.get("cams") or []
+            new_sig = json.dumps(cams, sort_keys=True)
+            if proc is None or proc.poll() is not None or new_sig != sig:
+                exe = _g2r_ensure_exe(ctx, plan.get("sha256"))
+                proc, sig = _g2r_start(exe, cams), new_sig
+                time.sleep(2)
+            now = time.time()
+            for slot in plan.get("wanted") or []:
+                slot = int(slot)
+                f = feeds.setdefault(slot, {"want": 0.0, "th": None})
+                f["want"] = now
+                if f["th"] is None or not f["th"].is_alive():
+                    keep = (lambda s=slot: not stop.is_set() and time.time() - feeds[s]["want"] < 15)
+                    def run(s=slot, k=keep):
+                        try:
+                            _cam_forward(ctx, s, k)
+                        except Exception as e:  # noqa: BLE001
+                            _trace(f"cam{s}: {e}")
+                    f["th"] = threading.Thread(target=run, daemon=True)
+                    f["th"].start()
+        except Exception as e:  # noqa: BLE001 — never take the agent down
+            _trace(f"camera relay: {e}")
+        stop.wait(float(plan.get("poll", 3)))
+    _g2r_kill()
+
+
 def main(cfg, ctx):
     global _CTX
     _CTX = ctx  # carries bootstrap_version + worker_exe for reporting/spawning
@@ -1382,6 +1514,10 @@ def main(cfg, ctx):
     # Gated on worker-capable exes so it can never spawn a rogue second agent.
     printer_stop = threading.Event()
     threading.Thread(target=_printer_monitor_worker, args=(ctx, printer_stop), daemon=True).start()
+
+    # Camera relay: idle unless the server names this kiosk the relay.
+    cam_stop = threading.Event()
+    threading.Thread(target=_camera_relay_worker, args=(ctx, cam_stop), daemon=True).start()
 
     buffer = []
     last_post = time.time()
@@ -1425,13 +1561,15 @@ def main(cfg, ctx):
         if time.time() - last_ver_check >= ver_check_every:
             last_ver_check = time.time()
             if _self_update(ctx):
-                live_stop.set(); printer_stop.set()
+                live_stop.set(); printer_stop.set(); cam_stop.set(); _g2r_kill()
                 os._exit(0)  # new exe launched; hard-exit so we don't run twice
             sv = _server_version(ctx)
             if sv and sv != ctx.get("running_version"):
                 print(f"[netmon-payload] newer version {sv} available — updating", flush=True)
                 live_stop.set()
                 printer_stop.set()
+                cam_stop.set()
+                _g2r_kill()
                 return
 
         remaining = interval - (time.time() - t)

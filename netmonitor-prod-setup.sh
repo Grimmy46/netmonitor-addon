@@ -52,6 +52,14 @@ services:
     volumes: [ signaldata:/home/.local/share/signal-cli ]
     mem_limit: 512m
     restart: unless-stopped
+  # Camera video hub (go2rtc). Internal only: the relay kiosk pushes each Tapo
+  # camera into it through the cloud API (/cams/ingest), browsers watch through
+  # /cams/ws. No published ports, no RTSP/WebRTC listeners.
+  go2rtc:
+    image: alexxit/go2rtc:1.9.14
+    volumes: [ "./deploy/go2rtc.yaml:/config/go2rtc.yaml:ro" ]
+    mem_limit: 256m
+    restart: unless-stopped
 volumes:
   pgdata:
   signaldata:
@@ -87,7 +95,7 @@ $DOMAIN {
     # Auth lives in the app now (login page + session cookies + roles).
     # Agents authenticate with X-Agent-Token on their own endpoints; every
     # dashboard data endpoint requires a signed-in session server-side.
-    @api path /health* /sites* /integrations* /map* /agents* /auth* /notifications* /live* /network* /scan-batches* /scan-config* /docs* /openapi.json /redoc*
+    @api path /health* /sites* /integrations* /map* /agents* /auth* /notifications* /live* /network* /scan-batches* /scan-config* /cams* /docs* /openapi.json /redoc*
     handle @api {
         reverse_proxy 127.0.0.1:8010
     }

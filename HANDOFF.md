@@ -157,3 +157,8 @@ Commits to `v2` deploy **automatically**:
 - When a kiosk misbehaves: `netmon_agent.log` next to the exe on the kiosk;
   server side: `docker logs netmonitor-cloud-1`, and the agents table
   (version + last_seen_at) tells you what each kiosk is actually running.
+
+## Cameras (2026-10-04)
+- Tapo C110s are discovered from the UniFi client list (hostname `C110`) into `cameras` (slot = go2rtc stream `camNN`).
+- Video: camera RTSP `stream2` → go2rtc on the relay kiosk (payload `_camera_relay_worker`, localhost:11984) → MPEG-TS POST `/cams/ingest/<slot>` → internal `go2rtc` container (deploy/go2rtc.yaml) → `/cams/ws` (MSE) → browser (`web/public/vendor/video-rtc.js`, MIT).
+- Only streams while someone watches. Relay kiosk + camera login set in Cameras → ⚙ Setup (password stored Fernet-encrypted). Share-link holders can view enabled cameras.

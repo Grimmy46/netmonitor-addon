@@ -4,6 +4,7 @@ import { PlannerView } from "../components/PlannerView";
 import { TeardownPlanner } from "../components/TeardownPlanner";
 import { PulseLogo } from "../components/PulseLogo";
 import { AgentsView } from "../components/AgentsView";
+import { CamerasView } from "../components/CamerasView";
 import { DormantView } from "../components/DormantView";
 import { MainHealth } from "../components/MainHealth";
 import { LiveView } from "../components/LiveView";
@@ -14,11 +15,12 @@ import { MapTab } from "../components/GeoMap";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { SitePage } from "./SitePage";
 
-type View = "live" | "fleet" | "map" | "dormant" | "kiosks" | "ticketboxes" | "planner";
+type View = "live" | "fleet" | "map" | "dormant" | "kiosks" | "cameras" | "ticketboxes" | "planner";
 const VIEWS: { key: View; label: string; icon: string; mobile: boolean; kiosk?: boolean }[] = [
   { key: "live", label: "Live", icon: "📈", mobile: true },
   { key: "map", label: "MAP", icon: "🗺", mobile: true },
   { key: "kiosks", label: "Kiosks", icon: "🖥", mobile: true, kiosk: true },
+  { key: "cameras", label: "Cameras", icon: "📷", mobile: true },
   { key: "fleet", label: "Fleet", icon: "🌐", mobile: true },
   { key: "ticketboxes", label: "Ticket Boxes", icon: "🎟", mobile: false, kiosk: true },
   { key: "dormant", label: "Dormant", icon: "💤", mobile: false },
@@ -251,6 +253,8 @@ export function Dashboard() {
           <DormantView />
         ) : view === "kiosks" ? (
           <AgentsView group="kiosk" />
+        ) : view === "cameras" ? (
+          <CamerasView />
         ) : view === "ticketboxes" ? (
           <AgentsView group="ticketbox" />
         ) : view === "planner" ? (

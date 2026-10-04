@@ -357,6 +357,17 @@ export interface FleetBatch {
 }
 export interface ShutdownSchedule { enabled: boolean; weekday: number; time: string; tz: string; delay: number }
 
+export interface Camera {
+  id: string; slot: number; name: string; enabled: boolean; live: boolean;
+  model?: string; ip?: string | null; ap_name?: string | null; mac?: string; last_seen_at?: string | null;
+}
+export interface CamRelay { agent_id: string | null; name: string | null; preferred_id: string | null; polling: boolean; login_set: boolean; username: string | null }
+export interface CamList { cameras: Camera[]; relay?: CamRelay }
+export function camWsUrl(id: string, share?: string): string {
+  const base = BASE.replace(/^http/, "ws");
+  return `${base}/cams/ws?cam=${encodeURIComponent(id)}${share ? `&share=${encodeURIComponent(share)}` : ""}`;
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -487,6 +498,11 @@ export const api = {
 
   // Site agents / stations (Kiosks tab + enrollment).
   agents: () => req<Agent[]>("/agents"),
+  cams: (share?: string) => req<CamList>(`/cams${share ? `?share=${encodeURIComponent(share)}` : ""}`),
+  camUpdate: (id: string, body: { name?: string; enabled?: boolean }) =>
+    req<{ ok: boolean }>(`/cams/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  camConfig: (body: { username?: string; password?: string; relay_agent_id?: string }) =>
+    req<{ ok: boolean }>("/cams/config/settings", { method: "PUT", body: JSON.stringify(body) }),
   createAgent: (name: string, siteId: string | null) =>
     req<Agent>("/agents", {
       method: "POST",

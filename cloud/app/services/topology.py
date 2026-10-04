@@ -18,8 +18,9 @@ for the gateway the live state of WAN1/WAN2. This module:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -27,7 +28,6 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
 from app.core.security import decrypt
 from app.models import Device, Site, StatusEvent, UnifiConsole
 from app.services.sync import _apply_online_state
@@ -79,6 +79,37 @@ _KIOSK_LOC_EVERY_S = 300
 _kiosk_loc_at: dict = {}
 
 
+_CAM_HOST = re.compile(r"^C\d{3}[A-Z]?$", re.I)   # Tapo C110 / C200 / C310 … hostnames
+
+
+async def _upsert_cameras(db: AsyncSession, site: Site, clients: list[dict], now: datetime) -> None:
+    """Tapo cameras announce themselves as e.g. 'C110' — record each by MAC
+    with its current IP and nearest AP, giving new ones the next relay slot."""
+    from app.models import Camera
+    cams = [c for c in clients if _CAM_HOST.match(str(c.get("hostname") or ""))]
+    if not cams:
+        return
+    have = {c.mac: c for c in (await db.execute(select(Camera))).scalars()}
+    used = {c.slot for c in have.values()}
+    for c in cams:
+        mac = _norm_mac(c.get("mac"))
+        if not mac:
+            continue
+        cam = have.get(mac)
+        if cam is None:
+            slot = next(i for i in range(1, 100) if i not in used)
+            used.add(slot)
+            cam = Camera(mac=mac, slot=slot, site_id=site.id, model=str(c.get("hostname")),
+                         name=f"Camera {slot}", enabled=True)
+            db.add(cam)
+            have[mac] = cam
+        cam.ip = c.get("ip") or cam.ip
+        cam.ap_name = c.get("last_uplink_name") or cam.ap_name
+        cam.site_id = site.id
+        cam.last_seen_at = now
+    await db.flush()
+
+
 async def refresh_kiosk_locations(db: AsyncSession, console: UnifiConsole, site: Site,
                                   now: datetime) -> int:
     """Which switch + port each kiosk is plugged into, from UniFi's client list
@@ -89,9 +120,14 @@ async def refresh_kiosk_locations(db: AsyncSession, console: UnifiConsole, site:
         return 0
     _kiosk_loc_at[site.id] = now
     agents = list((await db.execute(select(Agent).where(Agent.hostname.is_not(None)))).scalars())
+    clients = await fetch_site_clients(console, site.unifi_site_ref)
+    try:
+        async with db.begin_nested():
+            await _upsert_cameras(db, site, clients, now)
+    except Exception as exc:  # noqa: BLE001 — cameras must never break kiosk location
+        logger.warning("camera discovery failed for %s: %s", site.name, exc)
     if not agents:
         return 0
-    clients = await fetch_site_clients(console, site.unifi_site_ref)
     by_host = {}
     by_ip = {}
     for c in clients:

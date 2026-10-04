@@ -2,7 +2,7 @@
 from fastapi import APIRouter
 
 from app.api.routes import (
-    agents, auth, health, integrations, live, network, notifications, scan_batches, scan_config,
+    agents, auth, cams, health, integrations, live, network, notifications, scan_batches, scan_config,
     signal, sites,
 )
 from app.api.routes import map as map_routes
@@ -20,3 +20,4 @@ api_router.include_router(network.router)
 api_router.include_router(scan_batches.router)
 api_router.include_router(scan_config.router)
 api_router.include_router(signal.router)
+api_router.include_router(cams.router)

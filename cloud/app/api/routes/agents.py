@@ -894,6 +894,50 @@ async def download_agent_exe(
                              "Content-Disposition": f'attachment; filename="{row.filename}"'})
 
 
+@router.get("/install-kit")
+async def download_install_kit(db: AsyncSession = Depends(get_db), _admin=Depends(require_admin)):
+    """Admin download: a zip with everything a NEW kiosk needs — the active exe,
+    the current payload, a token-less config and install.bat. The kiosk picks
+    its station (PIN + dropdown) on first run."""
+    import io, json as _json, zipfile
+    row = await _active_binary(db)
+    if row is None:
+        raise HTTPException(status_code=404, detail="No agent exe uploaded yet (Kiosks → Agent update)")
+    st = get_settings()
+    cfg = {"server_url": str(getattr(st, "public_base_url", "") or "https://rcs-fleet-mon.duckdns.org").rstrip("/"),
+           "token": "", "enroll_pin": "", "enroll_auto": True, "target": "rcs.funcardapp.com",
+           "gateway": "auto", "interval": 1.0, "post_interval": 30.0, "timeout": 2.0,
+           "max_buffer": 5000, "version_check_interval": 600, "autostart": True}
+    bat = (
+        "@echo off\r\nrem NetMonitor kiosk agent - one-shot installer\r\nset DEST=C:\\NetMonAgent\r\n"
+        "if not exist \"%DEST%\" mkdir \"%DEST%\"\r\n"
+        "copy /Y \"%~dp0NetMonAgent.exe\" \"%DEST%\" >nul\r\n"
+        "copy /Y \"%~dp0agent_payload.py\" \"%DEST%\" >nul\r\n"
+        "if not exist \"%DEST%\\netmon_agent.config.json\" copy /Y \"%~dp0netmon_agent.config.json\" \"%DEST%\" >nul\r\n"
+        "if not exist \"%DEST%\\NetMonAgent.exe\" ( echo Copy failed. & pause & exit /b 1 )\r\n"
+        "start \"\" \"%DEST%\\NetMonAgent.exe\"\r\n"
+        "echo Installed to %DEST%. Enter the PIN and pick the station in the setup window.\r\n"
+        "timeout /t 8 >nul\r\n"
+    )
+    readme = (
+        "NetMonitor kiosk agent - install kit\r\n\r\n"
+        "1. Copy this folder to the kiosk (USB stick is fine).\r\n"
+        "2. Double-click install.bat.\r\n"
+        "3. In the setup window type the enrollment PIN (Settings > Kiosks & stations),\r\n"
+        "   pick the station or 'Add a new station', click Save & start.\r\n"
+        "The kiosk shows up on the Kiosks tab within a minute and updates itself after that.\r\n"
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("NetMonAgent/NetMonAgent.exe", row.data)
+        z.writestr("NetMonAgent/agent_payload.py", _payload_source())
+        z.writestr("NetMonAgent/netmon_agent.config.json", _json.dumps(cfg, indent=2))
+        z.writestr("NetMonAgent/install.bat", bat)
+        z.writestr("NetMonAgent/README.txt", readme)
+    return Response(content=buf.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="NetMonAgent-kit-{row.version}.zip"'})
+
+
 @router.get("/agent-update", response_model=AgentUpdateOut)
 async def agent_update_descriptor(
     db: AsyncSession = Depends(get_db), x_agent_token: str | None = Header(default=None),

@@ -33,7 +33,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.10.04.1"
+PAYLOAD_VERSION = "2026.10.04.2"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -689,7 +689,26 @@ def _build_test_ticket(label, cut="full"):
     parts.append(("Time: %s\n" % time.strftime("%Y-%m-%d %H:%M:%S")).encode("ascii", "replace"))
     parts.append(b"If you can read this, the\n")
     parts.append(b"ticket printer is working.\n")
-    parts.append(ESC + b"d\x04")  # feed 4 lines so text clears the cutter
+    # Pad to ~3x a bare ticket: a too-short ticket isn't grabbed by the
+    # KPM180H presenter and never ejects.
+    parts.append(b"------------------------\n")
+    parts.append(ESC + b"a\x00")  # left
+    for line in (
+        "Checks:",
+        "  [x] USB link",
+        "  [x] Paper feed",
+        "  [x] Print head",
+        "  [x] Cutter",
+        "  [x] Ticket eject",
+        "",
+        "Host: %s" % (socket.gethostname() or "-"),
+        "Agent: %s" % PAYLOAD_VERSION,
+    ):
+        parts.append((line + "\n").encode("ascii", "replace"))
+    parts.append(ESC + b"a\x01")  # center
+    parts.append(b"------------------------\n")
+    parts.append(b"NetMonitor - Ray Cammack Shows\n")
+    parts.append(ESC + b"d\x14")  # feed 20 lines: length + clears the cutter
     if cut == "full":
         parts.append(GS + b"V\x00")   # full cut
     elif cut == "partial":

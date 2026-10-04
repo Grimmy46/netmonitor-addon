@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, isAdmin, type Agent, type MetricPoint, type PingPoint, type SparkPoint, type TeardownStatus, type WanStatus } from "../api/client";
+import { API_BASE, api, isAdmin, type Agent, type MetricPoint, type PingPoint, type SparkPoint, type TeardownStatus, type WanStatus } from "../api/client";
 import { PrinterCheck } from "./PrinterCheck";
 import { PrinterDeep } from "./PrinterDeep";
 import { PrinterTestButton } from "./PrinterTestButton";
@@ -356,6 +356,7 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
               {isAdmin() ? <button onClick={() => setShowTeardown(true)}>🗓 Teardown planner</button> : null}
               {isAdmin() ? <button onClick={() => setManage(true)}>⚙ Manage stations</button> : null}
               {isAdmin() ? <button onClick={() => setShowUpdate(true)}>⬆ Agent update</button> : null}
+              {isAdmin() ? <button onClick={() => { window.location.href = `${API_BASE}/agents/install-kit`; }}>⤓ Install kit (new kiosk)</button> : null}
             </div>
           ) : null}
         </div>

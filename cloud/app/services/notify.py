@@ -73,6 +73,9 @@ async def send_push(
     """Send `payload` (title/body/tag/url) to every stored subscription (or one
     user's). Returns how many pushes were accepted. Dead subscriptions are
     pruned; transient failures are counted and logged, never raised."""
+    if only_user_id is None and not payload.get("no_signal"):
+        await _mirror_to_signal(db, payload)
+    payload.pop("no_signal", None)
     stmt = select(PushSubscription)
     if only_user_id is not None:
         stmt = stmt.where(PushSubscription.user_id == only_user_id)
@@ -119,3 +122,18 @@ async def send_push(
         await db.execute(delete(PushSubscription).where(PushSubscription.id.in_(dead)))
     await db.commit()
     return sent
+
+
+async def _mirror_to_signal(db: AsyncSession, payload: dict) -> None:
+    """Also post the alert into the chosen Signal group (if one is set)."""
+    try:
+        from app.services import signal as sig
+        cfg = await sig.get_config(db)
+        if not cfg.alert_group_id or not cfg.number:
+            return
+        text = str(payload.get("title", "")).strip()
+        if payload.get("body"):
+            text += "\n" + str(payload["body"]).strip()
+        await asyncio.wait_for(sig.send_group(cfg.number, cfg.alert_group_id, text), timeout=20)
+    except Exception as exc:  # noqa: BLE001 — Signal must never block a push
+        logger.warning("Signal mirror failed: %s", exc)

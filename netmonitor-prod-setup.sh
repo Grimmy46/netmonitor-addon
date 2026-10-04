@@ -43,8 +43,18 @@ services:
     ports: [ "127.0.0.1:8010:8000" ]
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     restart: unless-stopped
+  # Signal bot: signal-cli REST API, a linked device on the user's account.
+  # Internal only (no published port); the cloud service calls http://signal:8080.
+  signal:
+    image: bbernhard/signal-cli-rest-api:0.101
+    environment:
+      MODE: native
+    volumes: [ signaldata:/home/.local/share/signal-cli ]
+    mem_limit: 512m
+    restart: unless-stopped
 volumes:
   pgdata:
+  signaldata:
 YML
 
 echo "== secrets (.env generated once; never overwritten) =="

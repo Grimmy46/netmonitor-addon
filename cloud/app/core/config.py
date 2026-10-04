@@ -59,6 +59,10 @@ class Settings(BaseSettings):
     # Kiosk pushes (stopped reporting, printer, paper) paused while that side
     # is reworked. Set ALERT_KIOSKS_PAUSED=false to bring them back.
     alert_kiosks_paused: bool = True
+
+    # Signal bot (signal-cli REST container, compose service `signal`).
+    signal_api_url: str = "http://signal:8080"
+    signal_poll_seconds: int = 30
     # A device fault must persist this long before it alerts (debounce).
     alert_confirm_seconds: int = 180
     # Faults older than this when first seen never alert (e.g. right after a

@@ -315,6 +315,14 @@ export type NetworkOverview = {
   closure?: Closure | null;
 };
 export type SiteTopology = NetworkOverview & { nodes: TopoNode[] };
+export type SignalStatus = {
+  service: boolean; number: string | null; alert_group_id: string | null;
+  watched: Record<string, { name: string; role: "deploy" | "hardware" | "other" }>;
+  last_receive_at: string | null; last_error: string | null; counts: Record<string, number>;
+};
+export type SignalGroup = { id: string; send_id: string; name: string; members: number };
+export type SignalMsg = { id: string; group_id: string; group: string; sender: string; at: string; body: string; attachments: number; source: string };
+export type SignalNameSuggestion = { mac: string; current: string; proposed: string; type: string | null; line: string; from: string; at: string };
 export type GeoPinPos = { lat: number; lng: number };
 export type GeoBg = { corners: { tl: [number, number]; tr: [number, number]; bl: [number, number] }; opacity: number; version: number };
 export type GeoState = {
@@ -376,6 +384,20 @@ export const api = {
   geoBgMeta: (siteId: string, corners: GeoBg["corners"], opacity: number) =>
     req<GeoState>(`/map/geo/${siteId}/bg/meta`, { method: "PUT", body: JSON.stringify({ corners, opacity }) }),
   geoBgDelete: (siteId: string) => req<GeoState>(`/map/geo/${siteId}/bg`, { method: "DELETE" }),
+  signalStatus: () => req<SignalStatus>("/integrations/signal/status"),
+  signalGroups: () => req<SignalGroup[]>("/integrations/signal/groups"),
+  signalWatch: (watched: SignalStatus["watched"], alert_group_id: string | null) =>
+    req<{ watched: SignalStatus["watched"] }>("/integrations/signal/watch", { method: "PUT", body: JSON.stringify({ watched, alert_group_id }) }),
+  signalTest: () => req<{ ok: boolean }>("/integrations/signal/test", { method: "POST" }),
+  signalImport: (file: File, group_name: string) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("group_name", group_name);
+    return req<{ chats: string[]; parsed: number; added: number }>("/integrations/signal/import", { method: "POST", headers: {}, body: fd });
+  },
+  signalMessages: (q: string, group = "") =>
+    req<{ messages: SignalMsg[] }>(`/integrations/signal/messages?limit=60&q=${encodeURIComponent(q)}&group=${encodeURIComponent(group)}`),
+  signalNames: () => req<SignalNameSuggestion[]>("/integrations/signal/name-suggestions"),
   sharedMap: (token: string) => req<SharedMap>(`/map/shared/${encodeURIComponent(token)}`),
   setClosure: (start: string, end: string, note: string) =>
     req<{ closure: Closure | null }>("/network/closure", {

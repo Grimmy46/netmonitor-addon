@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { SignalPanel } from "./SignalPanel";
 import { api, type Agent, type AuthUser, type LiveTarget, type UnifiConsole, type UnifiStatus } from "../api/client";
 
 export function SettingsModal({
@@ -236,6 +237,7 @@ export function SettingsModal({
     { id: "unifi", icon: "🔑", label: "UniFi connections", hint: "Consoles & API keys" },
     { id: "kiosks", icon: "🖥", label: "Kiosks & stations", hint: "Enrollment PIN" },
     { id: "live", icon: "📈", label: "Live page", hint: "Probe kiosk & targets" },
+    { id: "signal", icon: "💬", label: "Signal", hint: "Group chats & bot" },
   ] as const;
   type Sec = (typeof SECTIONS)[number]["id"];
   const [sec, setSecRaw] = useState<Sec>(() => {
@@ -470,6 +472,7 @@ export function SettingsModal({
 
               </>
             ) : null}
+            {sec === "signal" ? <SignalPanel /> : null}
             {sec === "live" ? (
               <>
         {/* ── Live page ───────────────────────────────────────────────────── */}

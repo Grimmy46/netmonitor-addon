@@ -14,6 +14,7 @@ from app.models.probe import ProbeSample, ProbeTarget
 from app.models.push_subscription import PushSubscription
 from app.models.scan_batch import ScanBatch
 from app.models.scan_config import ScanConfig
+from app.models.signal import SignalConfig, SignalMessage
 from app.models.site import Site
 from app.models.site_plan import SitePlan
 from app.models.status_event import StatusEvent
@@ -40,6 +41,8 @@ __all__ = [
     "PushSubscription",
     "ScanBatch",
     "ScanConfig",
+    "SignalConfig",
+    "SignalMessage",
     "Site",
     "SitePlan",
     "StatusEvent",

@@ -8,6 +8,7 @@ it via asyncio.to_thread so the event loop never blocks.
 A push whose subscription the push service reports gone (404/410) is pruned.
 """
 import asyncio
+import re
 import base64
 import json
 import logging
@@ -132,6 +133,9 @@ async def _mirror_to_signal(db: AsyncSession, payload: dict) -> None:
         if not cfg.alert_group_id or not cfg.number:
             return
         text = str(payload.get("title", "")).strip()
+        # Group gets switch/gateway outages only (no APs, recoveries, tests).
+        if not re.search(r"(SWITCH|GATEWAY) DOWN|switches down", text, re.I):
+            return
         if payload.get("body"):
             text += "\n" + str(payload["body"]).strip()
         await asyncio.wait_for(sig.send_group(cfg.number, cfg.alert_group_id, text), timeout=20)

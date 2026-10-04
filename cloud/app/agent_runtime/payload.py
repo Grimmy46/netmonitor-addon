@@ -33,7 +33,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.08.16.4"
+PAYLOAD_VERSION = "2026.10.04.1"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -488,9 +488,9 @@ def _usb_txn(path, data, read_to, read_max):
         _trace("usb: drain")
         dbuf = ctypes.create_string_buffer(256)
         for _ in range(8):
-            if io(k32.ReadFile, "drain", dbuf, 256, 60) <= 0:
+            if io(k32.ReadFile, "drain", dbuf, 256, 150) <= 0:
                 break
-        wrote = io(k32.WriteFile, "write", data, len(data))
+        wrote = io(k32.WriteFile, "write", data, len(data)) if data else 0
         time.sleep(0.05)
         rbuf = ctypes.create_string_buffer(read_max)
         rn = io(k32.ReadFile, "read", rbuf, read_max)
@@ -575,6 +575,50 @@ def _cmd_printer_raw(args):
     return {"error": f"unrecognized target {target!r} (use COMx, SPOOL:<name>, or usb)"}
 
 
+def _status_byte(read_hex):
+    """Pick the DLE EOT 2 status byte out of a reply, or None if there isn't a
+    valid one. A real reply always has bit1 = bit4 = 1 and bit0 = bit7 = 0
+    ((b & 0x93) == 0x12). Anything else — e.g. 0x30, the ASCII '0' left over
+    from the cut-count string — is stale data, NOT a status (it used to be
+    misread as 'paper out' thousands of times a day)."""
+    try:
+        data = bytes.fromhex(read_hex or "")
+    except ValueError:
+        return None
+    for b in reversed(data):          # newest byte wins if several came back
+        if (b & 0x93) == 0x12:
+            return b
+    return None
+
+
+def _decode_status(b):
+    if b & 0x20:            # bit5 — roll-paper end (paper out)
+        return "paper_out", "out of paper"
+    if b & 0x04:            # bit2 — cover / paper-door open
+        return "cover_open", "cover / paper door open"
+    if b & 0x40:            # bit6 — printer error
+        return "error", "printer error"
+    return "ok", "paper present, cover closed"
+
+
+def _read_status(path):
+    """DLE EOT 2 with validation + retries. Returns (byte|None, raw_hex, err)."""
+    raw, err = "", None
+    for attempt, wait_ms in enumerate((600, 1500, 2500)):
+        res = _usb_txn(path, b"\x10\x04\x02", wait_ms, 8) or {}
+        raw = res.get("read_hex") or ""
+        err = res.get("error")
+        if err and "could not open" in err:
+            break
+        b = _status_byte(raw)
+        if b is not None:
+            return b, raw, None
+        time.sleep(0.4 + attempt * 0.4)
+    return None, raw, err
+
+
+
+
 def _cmd_printer_monitor(args):
     """Auto-find the USB ticket printer and read its real-time status (DLE EOT 2,
     the 'offline cause' byte, calibrated on the KPM180H: 0x12 healthy, 0x72 paper
@@ -590,21 +634,15 @@ def _cmd_printer_monitor(args):
         return {"present": False}
     # Prefer the Custom S.p.A. KPM180H (VID 0DD4); else the only USB printer iface.
     path = next((p for p in paths if re.search(r"(?i)vid_0dd4|kpm|custom", p)), paths[0])
-    res = _usb_txn(path, b"\x10\x04\x02", 600, 8)  # DLE EOT 2
-    raw = (res or {}).get("read_hex") or ""
-    if not raw:
-        return {"present": True, "state": "unknown", "raw": "",
-                "detail": (res or {}).get("error") or "no reply"}
-    b = bytes.fromhex(raw)[0]
-    if b & 0x20:            # bit5 — roll-paper end (paper out)
-        state, detail = "paper_out", "out of paper"
-    elif b & 0x04:         # bit2 — cover / paper-door open
-        state, detail = "cover_open", "cover / paper door open"
-    elif b & 0x40:         # bit6 — printer error
-        state, detail = "error", "printer error"
-    else:
-        state, detail = "ok", "paper present, cover closed"
-    result = {"present": True, "state": state, "raw": f"{b:02x}", "detail": detail}
+    b, raw, err = _read_status(path)
+    iface = path[-48:]
+    if b is None:
+        why = err or ("unexpected reply 0x%s" % raw if raw else "no reply")
+        return {"present": True, "state": "unknown", "raw": raw, "detail": why,
+                "iface": iface, "paths": len(paths)}
+    state, detail = _decode_status(b)
+    result = {"present": True, "state": state, "raw": f"{b:02x}", "detail": detail,
+              "iface": iface, "paths": len(paths)}
     # Paper-usage signals for predictive paper. The KPM180H can volunteer two
     # different strings; read what's there and classify by suffix, never guessing:
     #   "<N>cuts" = lifetime cut count (≈ tickets)  → consumption model
@@ -612,8 +650,10 @@ def _cmd_printer_monitor(args):
     #               length programmed into the printer, else it reads 0)
     # Best-effort; never fail the status read over it, and never treat "0cm" as a
     # cut count (that mistake parked the gauge at 0).
+    if (args or {}).get("cuts") is False:
+        return result
     try:
-        cc = _usb_txn(path, b"\x1d\xe1", 600, 32)
+        cc = _usb_txn(path, b"\x1d\xe1", 800, 64)
         txt = bytes.fromhex((cc or {}).get("read_hex") or "").decode("ascii", "ignore")
         mcuts = re.search(r"(\d+)\s*cuts", txt)
         if mcuts:
@@ -621,6 +661,11 @@ def _cmd_printer_monitor(args):
         mcm = re.search(r"(\d+)\s*cm", txt)
         if mcm:
             result["paper_remaining_cm"] = int(mcm.group(1))
+        # Soak up any tail of that string so the NEXT status read is clean.
+        for _ in range(3):
+            t = _usb_txn(path, b"", 300, 64) or {}
+            if not t.get("read_hex"):
+                break
     except Exception:  # noqa: BLE001
         pass
     return result
@@ -680,11 +725,9 @@ def _cmd_printer_test(args):
 
     # Confirm the printer is healthy right after printing.
     time.sleep(0.3)
-    st = _usb_txn(path, b"\x10\x04\x02", 600, 8) or {}   # DLE EOT 2
-    raw = st.get("read_hex") or ""
+    b, raw, _err = _read_status(path)
     state, detail = "ok", "printed; printer online"
-    if raw:
-        b = bytes.fromhex(raw)[0]
+    if b is not None:
         if b & 0x20:
             state, detail = "paper_out", "ticket sent, but paper is now out"
         elif b & 0x04:
@@ -694,12 +737,38 @@ def _cmd_printer_test(args):
         else:
             state, detail = "ok", "ticket printed — paper present, cover closed"
     else:
-        detail = "ticket sent; printer gave no status reply"
-    return {"ok": state == "ok", "printed_bytes": wrote, "state": state,
+        state, detail = "unknown", "ticket sent; printer gave no valid status reply"
+    return {"ok": state in ("ok", "unknown"), "printed_bytes": wrote, "state": state,
             "raw": raw, "detail": detail, "cut": cut}
 
 
+def _cmd_power_off(args):
+    """Planned shutdown (Sunday close): Windows `shutdown /s` with a grace
+    period and an on-screen message. Cancellable with power-cancel."""
+    if SYSTEM != "Windows":
+        return {"ok": False, "note": f"not windows ({SYSTEM})"}
+    delay = max(0, min(3600, int(args.get("delay", 60))))
+    msg = str(args.get("message") or "NetMonitor: scheduled shutdown")[:200]
+    proc = subprocess.run(["shutdown", "/s", "/f", "/t", str(delay), "/c", msg],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
+                          **_no_window_kwargs())
+    err = (proc.stderr or b"").decode("utf-8", "ignore").strip()
+    if proc.returncode != 0:
+        return {"error": f"shutdown refused (rc={proc.returncode}) {err}"[:300]}
+    return {"ok": True, "delay": delay}
+
+
+def _cmd_power_cancel(_args):
+    if SYSTEM != "Windows":
+        return {"ok": False, "note": f"not windows ({SYSTEM})"}
+    proc = subprocess.run(["shutdown", "/a"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          timeout=20, **_no_window_kwargs())
+    return {"ok": proc.returncode == 0, "rc": proc.returncode}
+
+
 _COMMAND_HANDLERS = {
+    "power-off": _cmd_power_off,
+    "power-cancel": _cmd_power_cancel,
     "printer-status": _cmd_printer_status,
     "printer-probe": _cmd_printer_probe,
     "printer-raw": _cmd_printer_raw,
@@ -799,7 +868,8 @@ def _run_commands(ctx, commands):
                     if handler is None:
                         _post_command_result(ctx, cid, False, {"error": f"unknown kind '{kind}'"})
                         return
-                    result, ok = handler(args), True
+                    result = handler(args)
+                    ok = not (isinstance(result, dict) and "error" in result)
                 _post_command_result(ctx, cid, ok, result)
                 print(f"[netmon-payload] command {kind} {'ok' if ok else 'error'}", flush=True)
             except Exception as e:
@@ -1219,12 +1289,31 @@ def _printer_monitor_worker(ctx, stop):
         return
     if stop.wait(20):  # let enrollment + first ping settle
         return
+    last_cuts = 0.0
     while not stop.is_set():
+        want_cuts = time.time() - last_cuts >= 600   # cut counter: every 10 min only
         try:
-            res = _spawn_device_worker("printer-monitor", {}, timeout=30)
+            res = _spawn_device_worker("printer-monitor", {"cuts": want_cuts}, timeout=45)
         except Exception as e:  # noqa: BLE001 — a poll must never kill the loop
             res = {"present": False, "error": str(e)}
+        if want_cuts:
+            last_cuts = time.time()
+        # A change of state must be seen twice in a row before it's reported
+        # (one odd reading must never flip the dashboard or fire an alert).
+        prev = (_PRINTER_STATUS or {}).get("state") if _PRINTER_STATUS else None
+        if (isinstance(res, dict) and res.get("present") and _PRINTER_STATUS
+                and res.get("state") != prev):
+            if stop.wait(5):
+                return
+            try:
+                again = _spawn_device_worker("printer-monitor", {"cuts": False}, timeout=45)
+            except Exception as e:  # noqa: BLE001
+                again = {"present": False, "error": str(e)}
+            if not (isinstance(again, dict) and again.get("state") == res.get("state")):
+                res = None  # not confirmed — keep the previous reading
         if isinstance(res, dict) and "present" in res:
+            if "cut_count" not in res and _PRINTER_STATUS and "cut_count" in _PRINTER_STATUS:
+                res["cut_count"] = _PRINTER_STATUS["cut_count"]  # carry the last known count
             _PRINTER_STATUS = res
         present = isinstance(res, dict) and res.get("present")
         if stop.wait(60.0 if present else 600.0):

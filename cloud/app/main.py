@@ -1,4 +1,6 @@
 """FastAPI application entrypoint."""
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -8,6 +10,15 @@ from app.core.config import get_settings
 from app.workers.poller import poller_lifespan
 
 settings = get_settings()
+
+# App loggers (netmonitor.*) at INFO so alert sweeps / pushes show in docker logs.
+_nm = logging.getLogger("netmonitor")
+if not _nm.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    _nm.addHandler(_h)
+    _nm.setLevel(logging.INFO)
+    _nm.propagate = False
 
 app = FastAPI(
     title="NetMonitor Cloud",

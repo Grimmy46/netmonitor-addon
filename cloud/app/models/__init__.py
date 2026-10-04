@@ -5,6 +5,7 @@ from app.models.agent_binary import AgentBinary
 from app.models.agent_command import AgentCommand
 from app.models.device import Device
 from app.models.isp_metric import IspMetric
+from app.models.notification_log import NotificationLog
 from app.models.ping_rollup import PingRollup1h, PingRollup1m
 from app.models.ping_sample import PingSample
 from app.models.printer_event import PrinterEvent
@@ -27,6 +28,7 @@ __all__ = [
     "AgentCommand",
     "Device",
     "IspMetric",
+    "NotificationLog",
     "PingRollup1h",
     "PingRollup1m",
     "PingSample",

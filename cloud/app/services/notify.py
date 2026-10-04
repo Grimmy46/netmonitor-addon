@@ -19,7 +19,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.models import PushSubscription
+from app.models import NotificationLog, PushSubscription
 from app.services.sync import get_or_create_account
 
 logger = logging.getLogger("netmonitor.notify")
@@ -77,7 +77,13 @@ async def send_push(
     if only_user_id is not None:
         stmt = stmt.where(PushSubscription.user_id == only_user_id)
     subs = list((await db.execute(stmt)).scalars())
+    log = NotificationLog(title=str(payload.get("title", "")), body=str(payload.get("body", "")),
+                          tag=payload.get("tag"), url=payload.get("url"), devices=len(subs))
+    db.add(log)
     if not subs:
+        log.error = "no registered devices"
+        logger.warning("Push NOT sent (no registered devices): %s", payload.get("title"))
+        await db.commit()
         return 0
     _, private_key = await get_vapid_keys(db)
     ttl = int(payload.pop("ttl", 6 * 3600))
@@ -105,6 +111,10 @@ async def send_push(
         except Exception as exc:  # noqa: BLE001 — a push must never kill the sweep
             s.failures += 1
             logger.warning("Push failed: %s", exc)
+    log.delivered = sent
+    if sent < len(subs):
+        log.error = f"{len(subs) - sent} failed" + (f", {len(dead)} expired" if dead else "")
+    logger.info("Push '%s' -> %d/%d device(s)", payload.get("title"), sent, len(subs))
     if dead:
         await db.execute(delete(PushSubscription).where(PushSubscription.id.in_(dead)))
     await db.commit()

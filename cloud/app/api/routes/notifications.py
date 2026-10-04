@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import current_user
 from app.core.db import SessionLocal, get_db
-from app.models import PushSubscription
+from app.models import NotificationLog, PushSubscription
 from app.models.user import User
 from app.services.notify import get_vapid_keys, send_push
 
@@ -160,3 +160,13 @@ async def test_push(
     _pending_tests.add(t)
     t.add_done_callback(_pending_tests.discard)
     return {"sent": int(n), "delay": delay}
+
+
+@router.get("/recent")
+async def recent(db: AsyncSession = Depends(get_db), _user: User = Depends(current_user)) -> list[dict]:
+    """Last 20 pushes the server tried to send, with delivery counts."""
+    rows = (await db.execute(
+        select(NotificationLog).order_by(NotificationLog.created_at.desc()).limit(20)
+    )).scalars()
+    return [{"at": r.created_at.isoformat(), "title": r.title, "body": r.body, "url": r.url,
+             "devices": r.devices, "delivered": r.delivered, "error": r.error} for r in rows]

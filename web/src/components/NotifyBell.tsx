@@ -15,6 +15,7 @@ export function NotifyBell() {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const [recent, setRecent] = useState<Awaited<ReturnType<typeof api.pushRecent>>>([]);
   const [popStyle, setPopStyle] = useState<React.CSSProperties>({});
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
@@ -25,6 +26,7 @@ export function NotifyBell() {
         const reg = await navigator.serviceWorker.getRegistration();
         endpoint = (await reg?.pushManager.getSubscription())?.endpoint;
       }
+      api.pushRecent().then(setRecent).catch(() => {});
       const st = await api.pushStatus(endpoint);
       setOn(!!endpoint && st.this_device);
       setMine(st.mine);
@@ -151,6 +153,27 @@ export function NotifyBell() {
               </p>
             </>
           )}
+          {recent.length ? (
+            <div style={{ marginTop: 10, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
+              <div className="sub" style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>RECENT ALERTS</div>
+              <div style={{ maxHeight: 220, overflowY: "auto" }}>
+                {recent.slice(0, 12).map((r, i) => (
+                  <a key={i} href={r.url || "/"} style={{ display: "block", textDecoration: "none", color: "inherit", padding: "4px 0", fontSize: 12, borderBottom: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <strong style={{ flex: 1, minWidth: 0 }}>{r.title}</strong>
+                      <span className="sub" style={{ whiteSpace: "nowrap" }}>
+                        {new Date(r.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                      </span>
+                    </div>
+                    <div className="sub" style={{ fontSize: 11, color: r.delivered < r.devices || !r.devices ? "var(--critical)" : undefined }}>
+                      {r.devices ? `sent to ${r.delivered}/${r.devices} device${r.devices === 1 ? "" : "s"}` : "not sent — no devices registered"}
+                      {r.error && r.devices ? ` · ${r.error}` : ""}
+                    </div>
+                  </a>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {msg ? (
             <p className="sub" style={{ fontSize: 12, marginTop: 8, wordBreak: "break-word" }}>{msg}</p>
           ) : null}

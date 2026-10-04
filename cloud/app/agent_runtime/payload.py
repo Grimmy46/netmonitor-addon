@@ -33,7 +33,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.10.04.2"
+PAYLOAD_VERSION = "2026.10.04.3"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -473,6 +473,12 @@ def _usb_txn(path, data, read_to, read_max):
                 _trace(f"usb: {name} pending")
                 if k32.WaitForSingleObject(ev, timeout) != 0:  # timeout / abandoned
                     k32.CancelIo(h)
+                    # WAIT for the cancel to finish. Without this the cancelled
+                    # read could still complete later and swallow the NEXT
+                    # command's reply — the cause of sporadic "no reply".
+                    if k32.GetOverlappedResult(h, ctypes.byref(ov), ctypes.byref(n), True) and n.value:
+                        _trace(f"usb: {name} late n={int(n.value)}")
+                        return int(n.value)
                     _trace(f"usb: {name} timeout")
                     return 0
                 k32.GetOverlappedResult(h, ctypes.byref(ov), ctypes.byref(n), False)
@@ -1320,8 +1326,12 @@ def _printer_monitor_worker(ctx, stop):
         # A change of state must be seen twice in a row before it's reported
         # (one odd reading must never flip the dashboard or fire an alert).
         prev = (_PRINTER_STATUS or {}).get("state") if _PRINTER_STATUS else None
+        # Leaving "unknown" for a real reading needs no second look (unknown
+        # isn't a state, just a missed read) — otherwise one more missed read
+        # during the confirm kept good printers stuck on "no reply".
         if (isinstance(res, dict) and res.get("present") and _PRINTER_STATUS
-                and res.get("state") != prev):
+                and res.get("state") != prev
+                and not (prev == "unknown" and res.get("state") == "ok")):
             if stop.wait(5):
                 return
             try:

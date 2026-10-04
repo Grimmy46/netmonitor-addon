@@ -237,7 +237,7 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
       m.get(k)!.push(a);
     }
     const out = [...m.entries()].map(([name, list]) => ({
-      name, list: list.sort((x, y) => (x.switch_port ?? 99) - (y.switch_port ?? 99) || x.name.localeCompare(y.name)),
+      name, list: list.sort((x, y) => x.name.localeCompare(y.name, undefined, { numeric: true, sensitivity: "base" })),
     }));
     // Order banks by the kiosks in them (K1-… first), not by the switch's
     // name — switch names start with brackets / asset tags in any order.

@@ -316,11 +316,13 @@ export type NetworkOverview = {
 };
 export type SiteTopology = NetworkOverview & { nodes: TopoNode[] };
 export type GeoPinPos = { lat: number; lng: number };
+export type GeoBg = { corners: { tl: [number, number]; tr: [number, number]; bl: [number, number] }; opacity: number; version: number };
 export type GeoState = {
   center: [number, number] | null;
   zoom: number | null;
   placements: Record<string, GeoPinPos>;
   share_token: string | null;
+  bg?: GeoBg | null;
 };
 export type SharedMap = {
   site_name: string;
@@ -328,6 +330,7 @@ export type SharedMap = {
   zoom: number | null;
   placements: Record<string, GeoPinPos>;
   nodes: TopoNode[];
+  bg?: GeoBg | null;
   generated_at: string;
 };
 
@@ -368,6 +371,11 @@ export const api = {
     req<{ ok: boolean }>(`/map/geo/${siteId}/pin/${encodeURIComponent(mac)}`, { method: "DELETE" }),
   geoShare: (siteId: string) => req<{ share_token: string }>(`/map/geo/${siteId}/share`, { method: "POST" }),
   geoUnshare: (siteId: string) => req<{ share_token: null }>(`/map/geo/${siteId}/share`, { method: "DELETE" }),
+  geoBgUpload: (siteId: string, blob: Blob) =>
+    req<GeoState>(`/map/geo/${siteId}/bg`, { method: "PUT", headers: { "Content-Type": blob.type || "image/jpeg" }, body: blob }),
+  geoBgMeta: (siteId: string, corners: GeoBg["corners"], opacity: number) =>
+    req<GeoState>(`/map/geo/${siteId}/bg/meta`, { method: "PUT", body: JSON.stringify({ corners, opacity }) }),
+  geoBgDelete: (siteId: string) => req<GeoState>(`/map/geo/${siteId}/bg`, { method: "DELETE" }),
   sharedMap: (token: string) => req<SharedMap>(`/map/shared/${encodeURIComponent(token)}`),
   setClosure: (start: string, end: string, note: string) =>
     req<{ closure: Closure | null }>("/network/closure", {

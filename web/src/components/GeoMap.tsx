@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { api, isAdmin, type GeoState, type Site, type TopoNode } from "../api/client";
+import { api, isAdmin, type GeoBg, type GeoState, type Site, type TopoNode } from "../api/client";
+import { AffineImage, shrinkImage } from "../lib/affineImage";
 import { humanizeDuration } from "../lib/duration";
 import { splitName } from "../lib/names";
 import { getSkin, onSkinChange, type Skin } from "../lib/skin";
@@ -19,6 +20,11 @@ import { getSkin, onSkinChange, type Skin } from "../lib/skin";
 const POLL_MS = 10000;
 const MAX_Z = 22;
 const MISSED_AFTER_S = 120;
+const BG_Z = 20; // fixed zoom for image-geometry maths (pixels ≈ conformal locally)
+const LABEL_SIZES = [12, 13.5, 15.5] as const;
+
+type Pt = { x: number; y: number };
+type BgGeom = { c: Pt; u: Pt; v: Pt }; // centre + half-width / half-height vectors (z20 px)
 
 type Health = "up" | "missed" | "down" | "dormant" | "unreach";
 function health(n: TopoNode): Health {
@@ -76,12 +82,15 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
   const [edit, setEdit] = useState(false);
   const [placing, setPlacing] = useState<string | null>(null);
   const [q, setQ] = useState("");
-  const [base, setBase] = useState<"sat" | "street">("sat");
+  const [base, setBase] = useState<"sat" | "street" | "none">("sat");
   const [shareOpen, setShareOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [find, setFind] = useState("");
   const [drawer, setDrawer] = useState(false);
   const [zoom, setZoom] = useState(4);
+  const [labelSize, setLabelSize] = useState<number>(() => Math.min(2, Math.max(0, Number(localStorage.getItem("nm-geo-lbl") ?? 1))));
+  const [bgAdjust, setBgAdjust] = useState(false);
+  const [bgBusy, setBgBusy] = useState(false);
 
   const boxRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -92,6 +101,10 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
   const placingRef = useRef<string | null>(null);
   placingRef.current = placing;
   const fitted = useRef(false);
+  const bgLayer = useRef<{ layer: AffineImage; version: number } | null>(null);
+  const bgHandles = useRef<L.LayerGroup | null>(null);
+  const bgGeom = useRef<BgGeom | null>(null);
+  const layoutRef = useRef<() => void>(() => {});
 
   const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(""), 2500); };
 
@@ -104,8 +117,8 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
           const s = await api.sharedMap(shareToken!);
           if (!alive) return;
           setSiteName(s.site_name);
-          setGeo((g) => g ?? { center: s.center, zoom: s.zoom, placements: s.placements, share_token: null });
-          setGeo((g) => (g ? { ...g, placements: s.placements } : g));
+          setGeo((g) => (g ? { ...g, placements: s.placements, bg: s.bg ?? null }
+            : { center: s.center, zoom: s.zoom, placements: s.placements, share_token: null, bg: s.bg ?? null }));
           setNodes(s.nodes);
         } else {
           const t = await api.siteTopology(siteId!);
@@ -135,7 +148,10 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
     m.attributionControl.setPrefix(false);
     m.setView([39.5, -98.35], 4);
     baseRef.current = L.tileLayer(SAT, { maxNativeZoom: 19, maxZoom: MAX_Z, attribution: SAT_ATTR }).addTo(m);
+    m.createPane("geoBg").style.zIndex = "250"; // above tiles, under lines/pins
     lines.current = L.layerGroup().addTo(m);
+    bgHandles.current = L.layerGroup().addTo(m);
+    m.on("moveend zoomend resize", () => layoutRef.current());
     const zoomCls = () => { boxRef.current?.classList.toggle("z-near", m.getZoom() >= 19); setZoom(m.getZoom()); };
     m.on("zoom", () => setZoom(m.getZoom()));
     m.on("zoomend", zoomCls);
@@ -147,7 +163,10 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
       setPlacing(null);
     });
     mapRef.current = m;
-    return () => { m.remove(); mapRef.current = null; markers.current.clear(); };
+    // Toolbar wrapping / drawer opening resizes the box — keep Leaflet in sync.
+    const ro = new ResizeObserver(() => m.invalidateSize({ pan: false }));
+    ro.observe(boxRef.current);
+    return () => { ro.disconnect(); m.remove(); mapRef.current = null; markers.current.clear(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -156,6 +175,8 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
     const m = mapRef.current;
     if (!m || !baseRef.current) return;
     m.removeLayer(baseRef.current);
+    boxRef.current?.classList.toggle("geo-nobase", base === "none");
+    if (base === "none") { baseRef.current = L.tileLayer(""); return; }
     baseRef.current = base === "sat"
       ? L.tileLayer(SAT, { maxNativeZoom: 19, maxZoom: MAX_Z, attribution: SAT_ATTR })
       : L.tileLayer(STREET, { maxNativeZoom: 19, maxZoom: MAX_Z, attribution: STREET_ATTR });
@@ -192,6 +213,276 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
     });
     mapRef.current?.closePopup();
     try { await api.geoUnpin(siteId!, mac); } catch { /* next load fixes it */ }
+  }
+
+  // ── AP auto-attach: put an AP right next to the switch feeding it ──
+  /** Nearest pinned ancestor (the switch it hangs off, or the mesh parent). */
+  function pinnedParent(n: TopoNode, pp: Record<string, { lat: number; lng: number }>): TopoNode | undefined {
+    let p = n.parent_id ? byId.get(n.parent_id) : undefined;
+    for (let i = 0; p && !pp[keyOf(p)] && i < 12; i++) p = p.parent_id ? byId.get(p.parent_id) : undefined;
+    return p && pp[keyOf(p)] ? p : undefined;
+  }
+  /** Free spot on a ring around the parent (14 m, then 22 m, 30 m…). */
+  function spotNear(par: TopoNode, pp: Record<string, { lat: number; lng: number }>): [number, number] {
+    const c = pp[keyOf(par)];
+    const mLat = 1 / 111320, mLng = 1 / (111320 * Math.cos((c.lat * Math.PI) / 180));
+    const all = Object.values(pp);
+    const dist = (a: number, b: number, p: { lat: number; lng: number }) => Math.hypot((a - p.lat) / mLat, (b - p.lng) / mLng);
+    for (const r of [14, 22, 30, 40, 52]) {
+      const steps = Math.round((2 * Math.PI * r) / 9);
+      for (let i = 0; i < steps; i++) {
+        const a = -Math.PI / 2 + (i * 2 * Math.PI) / steps; // start straight up, go clockwise
+        const lat = c.lat - r * Math.sin(a) * mLat, lng = c.lng + r * Math.cos(a) * mLng;
+        if (all.every((p) => dist(lat, lng, p) >= 8)) return [lat, lng];
+      }
+    }
+    return [c.lat + 10 * mLat, c.lng + 10 * mLng];
+  }
+  function attachAp(n: TopoNode): boolean {
+    const par = pinnedParent(n, pins);
+    if (!par) return false;
+    const [lat, lng] = spotNear(par, pins);
+    pin(keyOf(n), lat, lng);
+    flash(`${splitName(n.name).label} → next to ${splitName(par.name).label}. Drag to fine-tune.`);
+    return true;
+  }
+  async function autoPlaceAps() {
+    const pp = { ...pins };
+    const todo: [string, number, number][] = [];
+    // Shallow first so mesh children can follow their (just placed) parents.
+    const cand = nodes.filter((n) => n.type === "ap" && !n.dormant && !pp[keyOf(n)])
+      .sort((a, b) => (a.depth ?? 0) - (b.depth ?? 0));
+    for (const n of cand) {
+      const par = pinnedParent(n, pp);
+      if (!par) continue;
+      const [lat, lng] = spotNear(par, pp);
+      pp[keyOf(n)] = { lat, lng };
+      todo.push([keyOf(n), lat, lng]);
+    }
+    if (!todo.length) return flash("No APs to attach — place their switches first.");
+    setGeo((g) => (g ? { ...g, placements: pp } : g));
+    let bad = 0;
+    for (const [k, lat, lng] of todo) { try { await api.geoPin(siteId!, k, lat, lng); } catch { bad++; } }
+    flash(bad ? `Placed ${todo.length - bad}, ${bad} failed — try again.` : `Placed ${todo.length} APs next to their switches. Drag any to fine-tune.`);
+  }
+
+  // ── label layout: no overlaps, readable; hidden ones show on hover ──
+  layoutRef.current = () => {
+    const m = mapRef.current;
+    if (!m) return;
+    const z = m.getZoom();
+    const showAps = z >= 18;
+    const boxes: { x1: number; y1: number; x2: number; y2: number }[] = [];
+    const items: { el: HTMLElement; lbl: HTMLElement; pt: L.Point; pri: number; sw: boolean }[] = [];
+    for (const mk of markers.current.values()) {
+      const el = mk.getElement()?.querySelector(".gp") as HTMLElement | null;
+      const lbl = el?.querySelector(".gp-label") as HTMLElement | null;
+      if (!el || !lbl) continue;
+      const pt = m.latLngToContainerPoint(mk.getLatLng());
+      const sw = el.classList.contains("gp-sw");
+      const r = sw ? 10 : 7;
+      boxes.push({ x1: pt.x - r, y1: pt.y - r, x2: pt.x + r, y2: pt.y + r }); // dots are obstacles
+      const pri = (el.classList.contains("gp-down") ? 0 : el.classList.contains("gp-root") ? 0 : sw ? 1 : 2);
+      lbl.classList.remove("lbl-hide");
+      items.push({ el, lbl, pt, pri, sw });
+    }
+    items.sort((a, b) => a.pri - b.pri);
+    const sz = m.getSize();
+    const dims = items.map((it) => [it.lbl.offsetWidth, it.lbl.offsetHeight]); // one layout pass
+    items.forEach((it, i) => {
+      const [w, h] = dims[i];
+      if (!it.sw && !showAps && it.pri > 0) { it.lbl.classList.add("lbl-hide"); return; }
+      const g = it.sw ? 13 : 10;
+      const cands: [number, number][] = [
+        [-w / 2, g], [-w / 2, -g - h], [g, -h / 2], [-g - w, -h / 2],
+        [g - 4, g - 2], [-w - g + 4, g - 2], [g - 4, -g - h + 2], [-w - g + 4, -g - h + 2],
+      ];
+      for (const [dx, dy] of cands) {
+        const b = { x1: it.pt.x + dx - 2, y1: it.pt.y + dy - 1, x2: it.pt.x + dx + w + 2, y2: it.pt.y + dy + h + 1 };
+        if (b.x2 < 0 || b.y2 < 0 || b.x1 > sz.x || b.y1 > sz.y) continue;
+        if (boxes.some((o) => b.x1 < o.x2 && b.x2 > o.x1 && b.y1 < o.y2 && b.y2 > o.y1)) continue;
+        boxes.push(b);
+        it.lbl.style.left = `${13 + dx}px`;
+        it.lbl.style.top = `${13 + dy}px`;
+        return;
+      }
+      it.lbl.classList.add("lbl-hide");
+      it.lbl.style.left = `${13 - w / 2}px`;
+      it.lbl.style.top = `${13 + g}px`;
+    });
+  };
+  useEffect(() => {
+    localStorage.setItem("nm-geo-lbl", String(labelSize));
+    boxRef.current?.style.setProperty("--gp-fs", `${LABEL_SIZES[labelSize]}px`);
+    requestAnimationFrame(() => layoutRef.current());
+  }, [labelSize]);
+
+  // ── background image (plan / drone photo instead of the satellite) ──
+  const bgUrl = geo?.bg
+    ? shared ? `/map/shared/${encodeURIComponent(shareToken!)}/bg?v=${geo.bg.version}` : `/map/geo/${siteId}/bg?v=${geo.bg.version}`
+    : "";
+  const toPx = (ll: [number, number]) => mapRef.current!.project(L.latLng(ll[0], ll[1]), BG_Z);
+  const toLL = (p: Pt) => mapRef.current!.unproject(L.point(p.x, p.y), BG_Z);
+  const geomFromCorners = (c: GeoBg["corners"]): BgGeom => {
+    const tl = toPx(c.tl), tr = toPx(c.tr), bl = toPx(c.bl);
+    return { c: { x: (tr.x + bl.x) / 2, y: (tr.y + bl.y) / 2 }, u: { x: (tr.x - tl.x) / 2, y: (tr.y - tl.y) / 2 }, v: { x: (bl.x - tl.x) / 2, y: (bl.y - tl.y) / 2 } };
+  };
+  const cornersFromGeom = (g: BgGeom) => {
+    const P = (sx: number, sy: number) => toLL({ x: g.c.x + sx * g.u.x + sy * g.v.x, y: g.c.y + sx * g.u.y + sy * g.v.y });
+    return { tl: P(-1, -1), tr: P(1, -1), bl: P(-1, 1) };
+  };
+  const llPair = (l: L.LatLng): [number, number] => [l.lat, l.lng];
+
+  useEffect(() => {
+    const m = mapRef.current;
+    if (!m) return;
+    if (!geo?.bg || !bgUrl) {
+      if (bgLayer.current) { bgLayer.current.layer.remove(); bgLayer.current = null; }
+      return;
+    }
+    const c = geo.bg.corners;
+    const corners = { tl: L.latLng(c.tl[0], c.tl[1]), tr: L.latLng(c.tr[0], c.tr[1]), bl: L.latLng(c.bl[0], c.bl[1]) };
+    if (bgLayer.current && bgLayer.current.version === geo.bg.version) {
+      bgLayer.current.layer.setCorners(corners);
+      bgLayer.current.layer.setOpacity(geo.bg.opacity);
+    } else {
+      bgLayer.current?.layer.remove();
+      const layer = new AffineImage(bgUrl, corners, geo.bg.opacity, "geoBg");
+      layer.addTo(m);
+      bgLayer.current = { layer, version: geo.bg.version };
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bgUrl, JSON.stringify(geo?.bg ?? null)]);
+
+  const saveBgTimer = useRef<number | undefined>(undefined);
+  function commitBg(g: BgGeom, opacity?: number, save = true) {
+    bgGeom.current = g;
+    const cs = cornersFromGeom(g);
+    bgLayer.current?.layer.setCorners(cs);
+    const corners = { tl: llPair(cs.tl), tr: llPair(cs.tr), bl: llPair(cs.bl) } as GeoBg["corners"];
+    let op = opacity;
+    setGeo((old) => {
+      if (!old?.bg) return old;
+      op = op ?? old.bg.opacity;
+      return { ...old, bg: { ...old.bg, corners, opacity: op } };
+    });
+    if (!save) return;
+    window.clearTimeout(saveBgTimer.current);
+    saveBgTimer.current = window.setTimeout(() => {
+      api.geoBgMeta(siteId!, corners, op ?? geo?.bg?.opacity ?? 0.85).catch((e) => flash(`Couldn't save image position: ${e instanceof Error ? e.message : e}`));
+    }, 400);
+  }
+  function setBgOpacity(o: number) {
+    if (!geo?.bg) return;
+    bgLayer.current?.layer.setOpacity(o);
+    const g = bgGeom.current ?? geomFromCorners(geo.bg.corners);
+    commitBg(g, o);
+  }
+  function rotateBg(deg: number) {
+    if (!geo?.bg) return;
+    const g = bgGeom.current ?? geomFromCorners(geo.bg.corners);
+    const a = (deg * Math.PI) / 180, co = Math.cos(a), si = Math.sin(a);
+    const rot = (p: Pt) => ({ x: p.x * co - p.y * si, y: p.x * si + p.y * co });
+    commitBg({ c: g.c, u: rot(g.u), v: rot(g.v) });
+    drawBgHandles();
+  }
+  function scaleBg(f: number) {
+    if (!geo?.bg) return;
+    const g = bgGeom.current ?? geomFromCorners(geo.bg.corners);
+    commitBg({ c: g.c, u: { x: g.u.x * f, y: g.u.y * f }, v: { x: g.v.x * f, y: g.v.y * f } });
+    drawBgHandles();
+  }
+
+  /** Handles: ✥ centre = move · ⤡ corner = rotate + resize · ↔ / ↕ = stretch. */
+  function drawBgHandles() {
+    const m = mapRef.current, hg = bgHandles.current;
+    if (!m || !hg) return;
+    hg.clearLayers();
+    if (!bgAdjust || !geo?.bg) return;
+    const g0 = bgGeom.current ?? geomFromCorners(geo.bg.corners);
+    bgGeom.current = g0;
+    const at = (g: BgGeom, sx: number, sy: number) => toLL({ x: g.c.x + sx * g.u.x + sy * g.v.x, y: g.c.y + sx * g.u.y + sy * g.v.y });
+    const outline = L.polygon([at(g0, -1, -1), at(g0, 1, -1), at(g0, 1, 1), at(g0, -1, 1)], { className: "geo-bg-outline", interactive: false }).addTo(hg);
+    const mk = (sx: number, sy: number, glyph: string, cls: string, title: string) =>
+      L.marker(at(g0, sx, sy), { draggable: true, title, icon: L.divIcon({ className: `geo-h ${cls}`, html: glyph, iconSize: [30, 30], iconAnchor: [15, 15] }), zIndexOffset: 3000 }).addTo(hg);
+    const hc = mk(0, 0, "✥", "geo-h-move", "Drag to move the image");
+    const hr = mk(1, 1, "⤡", "geo-h-rot", "Drag to rotate + resize");
+    const hw = mk(1, 0, "↔", "geo-h-str", "Drag to stretch width");
+    const hh = mk(0, 1, "↕", "geo-h-str", "Drag to stretch height");
+    let start: BgGeom = g0;
+    const begin = () => { start = bgGeom.current!; };
+    const place = (g: BgGeom) => {
+      outline.setLatLngs([at(g, -1, -1), at(g, 1, -1), at(g, 1, 1), at(g, -1, 1)]);
+      hc.setLatLng(at(g, 0, 0)); hr.setLatLng(at(g, 1, 1)); hw.setLatLng(at(g, 1, 0)); hh.setLatLng(at(g, 0, 1));
+    };
+    const live = (g: BgGeom, done: boolean) => { place(g); commitBg(g, undefined, done); };
+    const P = (h: L.Marker) => { const p = m.project(h.getLatLng(), BG_Z); return { x: p.x, y: p.y }; };
+    for (const h of [hc, hr, hw, hh]) h.on("dragstart", begin);
+    const onMove = (g: () => BgGeom) => (e: L.LeafletEvent) => live(g(), e.type === "dragend");
+    const moveG = () => ({ ...start, c: P(hc) });
+    const rotG = () => {
+      const p = P(hr), d0 = { x: start.u.x + start.v.x, y: start.u.y + start.v.y }, d = { x: p.x - start.c.x, y: p.y - start.c.y };
+      const s = Math.max(0.05, Math.hypot(d.x, d.y) / Math.max(1, Math.hypot(d0.x, d0.y)));
+      const a = Math.atan2(d.y, d.x) - Math.atan2(d0.y, d0.x), co = Math.cos(a) * s, si = Math.sin(a) * s;
+      const rot = (q: Pt) => ({ x: q.x * co - q.y * si, y: q.x * si + q.y * co });
+      return { c: start.c, u: rot(start.u), v: rot(start.v) };
+    };
+    const strG = (axis: "u" | "v", h: L.Marker) => () => {
+      const p = P(h), vec = start[axis], len = Math.max(1, Math.hypot(vec.x, vec.y));
+      const proj = Math.max(4, ((p.x - start.c.x) * vec.x + (p.y - start.c.y) * vec.y) / len);
+      return { ...start, [axis]: { x: (vec.x / len) * proj, y: (vec.y / len) * proj } } as BgGeom;
+    };
+    hc.on("drag dragend", onMove(moveG));
+    hr.on("drag dragend", onMove(rotG));
+    hw.on("drag dragend", onMove(strG("u", hw)));
+    hh.on("drag dragend", onMove(strG("v", hh)));
+  }
+  useEffect(() => {
+    if (!bgAdjust) bgGeom.current = null;
+    drawBgHandles();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bgAdjust, geo?.bg?.version]);
+  useEffect(() => { if (!edit) setBgAdjust(false); }, [edit]);
+
+  async function uploadBg(file: File | undefined) {
+    const m = mapRef.current;
+    if (!file || !m) return;
+    setBgBusy(true);
+    try {
+      const blob = await shrinkImage(file);
+      // Natural size → initial fit: ~70% of the current view, aspect kept.
+      const dim = await new Promise<[number, number]>((res) => {
+        const u = URL.createObjectURL(blob), i = new Image();
+        i.onload = () => { res([i.naturalWidth || 1, i.naturalHeight || 1]); URL.revokeObjectURL(u); };
+        i.onerror = () => res([4, 3]);
+        i.src = u;
+      });
+      const g = await api.geoBgUpload(siteId!, blob);
+      const b = m.getBounds(), nw = m.project(b.getNorthWest(), BG_Z), se = m.project(b.getSouthEast(), BG_Z);
+      const vw = se.x - nw.x, vh = se.y - nw.y, asp = dim[0] / dim[1];
+      let hw = 0.35 * vw, hh = hw / asp;
+      if (hh > 0.35 * vh) { hh = 0.35 * vh; hw = hh * asp; }
+      const cpx = m.project(m.getCenter(), BG_Z);
+      const geom: BgGeom = { c: { x: cpx.x, y: cpx.y }, u: { x: hw, y: 0 }, v: { x: 0, y: hh } };
+      const cs = cornersFromGeom(geom);
+      const corners = { tl: llPair(cs.tl), tr: llPair(cs.tr), bl: llPair(cs.bl) } as GeoBg["corners"];
+      const g2 = await api.geoBgMeta(siteId!, corners, 0.85);
+      setGeo((old) => ({ ...(old ?? g), bg: g2.bg ?? null }));
+      bgGeom.current = geom;
+      setBgAdjust(true);
+      flash("Image added. Drag ✥ to move, ⤡ to rotate/resize, ↔ ↕ to stretch.");
+    } catch (e) {
+      flash(`Upload failed: ${e instanceof Error ? e.message : e}`);
+    } finally { setBgBusy(false); }
+  }
+  async function removeBg() {
+    if (!window.confirm("Remove the background image?")) return;
+    try {
+      await api.geoBgDelete(siteId!);
+      setBgAdjust(false);
+      setGeo((old) => (old ? { ...old, bg: null } : old));
+      if (base === "none") setBase("sat");
+    } catch (e) { flash(`Couldn't remove: ${e instanceof Error ? e.message : e}`); }
   }
 
   // Popup buttons (Leaflet HTML) → React actions.
@@ -277,6 +568,7 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
         interactive: false,
       }).addTo(lg);
     }
+    requestAnimationFrame(() => layoutRef.current());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodes, pins, edit, byId, shared]);
 
@@ -291,6 +583,7 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
     .filter((n) => !q || `${n.name} ${n.ip ?? ""}`.toLowerCase().includes(q.toLowerCase()))
     .sort((a, b) => Number(isSwitch(b)) - Number(isSwitch(a)) || splitName(a.name).label.localeCompare(splitName(b.name).label));
   const placedCount = live.filter((n) => pins[keyOf(n)]).length;
+  const apsAttachable = live.filter((n) => n.type === "ap" && !pins[keyOf(n)] && pinnedParent(n, pins)).length;
 
   const goTo = (n: TopoNode) => {
     const p = pins[keyOf(n)];
@@ -356,7 +649,11 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
         <div className="seg">
           <button className={base === "sat" ? "on" : ""} onClick={() => setBase("sat")}>Satellite</button>
           <button className={base === "street" ? "on" : ""} onClick={() => setBase("street")}>Street</button>
+          {geo?.bg ? <button className={base === "none" ? "on" : ""} onClick={() => setBase("none")} title="Only your image, no satellite">Image</button> : null}
         </div>
+        <button className="btn geo-lbl-btn" title="Label size" onClick={() => setLabelSize((v) => (v + 1) % 3)}>
+          Aa <span className="sub">{["S", "M", "L"][labelSize]}</span>
+        </button>
         {admin ? (
           <>
             <button className={`btn ${edit ? "btn-primary" : ""}`} onClick={() => { setEdit((v) => !v); setPlacing(null); setDrawer(true); }}>
@@ -392,7 +689,10 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
             </div>
             <button className="btn geo-save-area" onClick={saveArea} title="The map will open at exactly this view">📍 Save this view as the area</button>
             <input className="search" placeholder="Filter…" value={q} onChange={(e) => setQ(e.target.value)} />
-            <p className="sub geo-help">{placing ? "Now tap the spot on the map." : "Tap a device, then tap where it sits. Drag pins to fine-tune."}</p>
+            <p className="sub geo-help">{placing ? "Now tap the spot on the map." : "Tap a switch, then tap where it sits. Tap an AP and it snaps next to its switch. Drag pins to fine-tune."}</p>
+            {apsAttachable > 0 ? (
+              <button className="btn btn-primary geo-auto" onClick={autoPlaceAps}>⚡ Auto-place {apsAttachable} AP{apsAttachable > 1 ? "s" : ""} next to their switches</button>
+            ) : null}
             <div className="geo-list">
               {unplaced.map((n) => {
                 const nm = splitName(n.name);
@@ -403,7 +703,12 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
                     className={`geo-item ${placing === k ? "on" : ""} gi-${health(n)}`}
                     draggable
                     onDragStart={(e) => e.dataTransfer.setData("text/nm-mac", k)}
-                    onClick={() => { setPlacing(placing === k ? null : k); if (window.innerWidth < 760) setDrawer(false); }}
+                    onClick={() => {
+                      // APs snap next to the switch feeding them (if it's on the map).
+                      if (n.type === "ap" && placing !== k && attachAp(n)) { setPlacing(null); return; }
+                      setPlacing(placing === k ? null : k);
+                      if (window.innerWidth < 760) setDrawer(false);
+                    }}
                   >
                     <span className={`gi-dot ${isSwitch(n) ? "sw" : "ap"}`} />
                     <span className="gi-name">{nm.label}</span>
@@ -412,6 +717,31 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
                 );
               })}
               {!unplaced.length ? <p className="sub" style={{ padding: 8 }}>Everything is on the map.</p> : null}
+            </div>
+            <div className="geo-bgbox">
+              <b>Background image</b>
+              <span className="sub">Site plan or drone photo instead of the satellite.</span>
+              <label className={`btn ${bgBusy ? "disabled" : ""}`}>
+                {bgBusy ? "Uploading…" : geo?.bg ? "Replace image…" : "＋ Add image…"}
+                <input type="file" accept="image/*" hidden disabled={bgBusy} onChange={(e) => { uploadBg(e.target.files?.[0]); e.target.value = ""; }} />
+              </label>
+              {geo?.bg ? (
+                <>
+                  <button className={`btn ${bgAdjust ? "btn-primary" : ""}`} onClick={() => setBgAdjust((v) => !v)}>{bgAdjust ? "✓ Done adjusting" : "✥ Adjust / fit image"}</button>
+                  {bgAdjust ? (
+                    <div className="geo-bg-fine">
+                      <button className="btn" title="Rotate left 1°" onClick={() => rotateBg(-1)}>⟲ 1°</button>
+                      <button className="btn" title="Rotate right 1°" onClick={() => rotateBg(1)}>⟳ 1°</button>
+                      <button className="btn" title="Smaller" onClick={() => scaleBg(0.98)}>−</button>
+                      <button className="btn" title="Bigger" onClick={() => scaleBg(1.02)}>＋</button>
+                    </div>
+                  ) : null}
+                  <label className="geo-bg-op">Opacity
+                    <input type="range" min={0.1} max={1} step={0.05} value={geo.bg.opacity} onChange={(e) => setBgOpacity(+e.target.value)} />
+                  </label>
+                  <button className="btn" onClick={removeBg}>Remove image</button>
+                </>
+              ) : null}
             </div>
           </aside>
         ) : null}

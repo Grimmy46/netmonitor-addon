@@ -223,6 +223,9 @@ def _geo_out(g: GeoMap | None, with_share: bool) -> dict:
     }
     if with_share:
         out["share_token"] = g.share_token if g else None
+    out["bg"] = ({"corners": g.bg_corners, "opacity": g.bg_opacity if g.bg_opacity is not None else 0.85,
+                  "version": g.bg_version}
+                 if g and g.bg_image is not None and g.bg_corners else None)
     return out
 
 
@@ -337,7 +340,80 @@ async def shared_geo(token: str, db: AsyncSession = Depends(get_db)) -> dict:
         "zoom": g.zoom,
         "placements": out_pins,
         "nodes": out_nodes,
+        "bg": _geo_out(g, with_share=False)["bg"],
         "wan": view["wan"] and {"links": [{k: l.get(k) for k in ("key", "up", "active", "latency_ms")}
                                            for l in view["wan"].get("links", [])]},
         "generated_at": _dt.now(tz=_tz.utc).isoformat(),
     }
+
+
+# ── Background image (instead of / over the satellite) ───────────────────────
+MAX_BG_BYTES = 12 * 1024 * 1024
+
+
+@router.put("/geo/{site_id}/bg")
+async def put_geo_bg(site_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db),
+                     _admin=Depends(require_admin)) -> dict:
+    raw = await request.body()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty image.")
+    if len(raw) > MAX_BG_BYTES:
+        raise HTTPException(status_code=413, detail="Image too large (12 MB max).")
+    mime = (request.headers.get("content-type") or "image/jpeg").split(";")[0]
+    if not mime.startswith("image/"):
+        raise HTTPException(status_code=415, detail="Not an image.")
+    g = await _geo(db, site_id, create=True)
+    g.bg_image, g.bg_mime = raw, mime
+    g.bg_version = (g.bg_version or 0) + 1
+    await db.commit()
+    return _geo_out(g, with_share=True)
+
+
+class GeoBgMeta(BaseModel):
+    corners: dict          # {"tl": [lat, lng], "tr": [...], "bl": [...]}
+    opacity: float = 0.85
+
+
+@router.put("/geo/{site_id}/bg/meta")
+async def put_geo_bg_meta(site_id: uuid.UUID, body: GeoBgMeta, db: AsyncSession = Depends(get_db),
+                          _admin=Depends(require_admin)) -> dict:
+    for k in ("tl", "tr", "bl"):
+        v = body.corners.get(k)
+        if not (isinstance(v, list) and len(v) == 2 and all(isinstance(x, (int, float)) for x in v)):
+            raise HTTPException(status_code=422, detail=f"corner {k} must be [lat, lng]")
+    g = await _geo(db, site_id, create=True)
+    g.bg_corners = {k: [float(body.corners[k][0]), float(body.corners[k][1])] for k in ("tl", "tr", "bl")}
+    g.bg_opacity = max(0.05, min(1.0, body.opacity))
+    flag_modified(g, "bg_corners")
+    await db.commit()
+    return _geo_out(g, with_share=True)
+
+
+@router.delete("/geo/{site_id}/bg")
+async def del_geo_bg(site_id: uuid.UUID, db: AsyncSession = Depends(get_db),
+                     _admin=Depends(require_admin)) -> dict:
+    g = await _geo(db, site_id)
+    if g:
+        g.bg_image = g.bg_mime = g.bg_corners = None
+        g.bg_opacity = None
+        await db.commit()
+    return _geo_out(g, with_share=True)
+
+
+@router.get("/geo/{site_id}/bg")
+async def get_geo_bg(site_id: uuid.UUID, db: AsyncSession = Depends(get_db), _user=Depends(current_user)) -> Response:
+    g = await _geo(db, site_id)
+    if g is None or g.bg_image is None:
+        raise HTTPException(status_code=404, detail="No background image.")
+    return Response(content=g.bg_image, media_type=g.bg_mime or "image/jpeg",
+                    headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.get("/shared/{token}/bg")
+async def get_shared_bg(token: str, db: AsyncSession = Depends(get_db)) -> Response:
+    """PUBLIC: the background image behind a share link."""
+    g = (await db.execute(select(GeoMap).where(GeoMap.share_token == token))).scalars().first() if len(token) >= 16 else None
+    if g is None or g.bg_image is None:
+        raise HTTPException(status_code=404, detail="Not found.")
+    return Response(content=g.bg_image, media_type=g.bg_mime or "image/jpeg",
+                    headers={"Cache-Control": "public, max-age=3600"})

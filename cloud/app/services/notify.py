@@ -133,8 +133,10 @@ async def _mirror_to_signal(db: AsyncSession, payload: dict) -> None:
         if not cfg.alert_group_id or not cfg.number:
             return
         text = str(payload.get("title", "")).strip()
-        # Group gets switch/gateway outages only (no APs, recoveries, tests).
-        if not re.search(r"(SWITCH|GATEWAY) DOWN|switches down", text, re.I):
+        # Group gets outages only (no APs, recoveries, tests): switches/gateways,
+        # kiosks that stop reporting, and ticket printers out of paper.
+        if not re.search(r"(SWITCH|GATEWAY) DOWN|switches down|kiosks? .*stopped reporting|printer: paper out",
+                         text, re.I):
             return
         if payload.get("body"):
             text += "\n" + str(payload["body"]).strip()

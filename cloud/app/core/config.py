@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     alert_kiosk_offline_seconds: int = 300
     # Kiosk pushes (stopped reporting, printer, paper) paused while that side
     # is reworked. Set ALERT_KIOSKS_PAUSED=false to bring them back.
-    alert_kiosks_paused: bool = True
+    alert_kiosks_paused: bool = False
 
     # Signal bot (signal-cli REST container, compose service `signal`).
     signal_api_url: str = "http://signal:8080"

@@ -99,7 +99,7 @@ function KioskTile({ agent, spark, onOpen }: { agent: Agent; spark: SparkPoint[]
         {st !== "online" ? <span className="ktile-state">{STATE_LABEL[st]}</span> : null}
       </div>
       <PaperGauge agent={agent} />
-      {agent.online ? <div className="ktile-spark"><Sparkline points={spark} /></div> : null}
+      <div className="ktile-spark"><Sparkline points={spark} height={34} /></div>
     </button>
   );
 }

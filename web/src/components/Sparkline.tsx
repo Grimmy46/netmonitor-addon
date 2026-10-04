@@ -7,7 +7,7 @@ import type { SparkPoint } from "../api/client";
  * to "now", so an offline kiosk shows its line stopping short of the right
  * edge — the gap IS the signal.
  */
-export function Sparkline({ points, minutes = 45 }: { points: SparkPoint[]; minutes?: number }) {
+export function Sparkline({ points, minutes = 45, height = 38 }: { points: SparkPoint[]; minutes?: number; height?: number }) {
   const W = 100;
   const H = 34;
   const end = Date.now();
@@ -47,7 +47,7 @@ export function Sparkline({ points, minutes = 45 }: { points: SparkPoint[]; minu
       <svg
         viewBox={`0 0 ${W} ${H}`}
         preserveAspectRatio="none"
-        style={{ width: "100%", height: 38, display: "block" }}
+        style={{ width: "100%", height, display: "block" }}
         aria-hidden="true"
       >
         <line

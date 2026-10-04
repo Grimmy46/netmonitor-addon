@@ -965,7 +965,9 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
 .ktile-offline .ktile-state { color: var(--critical); }
 .ktile-printer { border-color: color-mix(in srgb, var(--critical) 55%, var(--border)); }
 .ktile-off, .ktile-stale { opacity: .7; }
-.ktile-spark { height: 28px; overflow: hidden; }
+.ktile-spark { margin-top: 2px; }
+.ktile-spark .spark { margin-top: 0; }
+.ktile-spark .spark-empty { height: 34px; }
 .kdot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 10px; background: var(--ink-muted); }
 .kdot-online { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 20%, transparent); }
 .kdot-offline { background: var(--critical); }
@@ -1000,7 +1002,6 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
   .fi-detail:empty { display: none; }
   .ktiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
   .ktile { padding: 9px 10px; }
-  .ktile-spark { display: none; }
   .kiosk-toolbar .filter-chips { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; }
   .kiosk-toolbar .chip { white-space: nowrap; }
 }

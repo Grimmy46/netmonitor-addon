@@ -94,6 +94,12 @@ export interface Agent {
   printer_cuts_per_roll: number | null;      // effective yield (learned or seed)
   printer_roll_learned: boolean;             // yield measured from a real run-out?
   printer_roll_partial: boolean;             // anchor set mid-roll (estimate only)
+  lan_ip?: string | null;
+  switch_name?: string | null;
+  switch_port?: number | null;
+  switch_mac?: string | null;
+  powered_off_at?: string | null;
+  stale?: boolean;
 }
 
 export interface PrinterEvent {
@@ -342,6 +348,14 @@ export type SharedMap = {
   generated_at: string;
 };
 
+export type FleetAction = "test-print" | "power-off" | "power-cancel";
+export interface FleetItem { agent_id: string; name: string; state: "ok" | "failed" | "no answer" | "waiting" | "skipped"; detail: string; printer_state: string | null }
+export interface FleetBatch {
+  id: string; action: FleetAction; requested_by: string; created_at: string | null;
+  total: number; ok: number; failed: number; waiting: number; skipped: number; done: boolean; items: FleetItem[];
+}
+export interface ShutdownSchedule { enabled: boolean; weekday: number; time: string; tz: string; delay: number }
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -478,6 +492,13 @@ export const api = {
       body: JSON.stringify({ name, site_id: siteId }),
     }),
   deleteAgent: (id: string) => req<void>(`/agents/${id}`, { method: "DELETE" }),
+  fleetRun: (action: FleetAction, opts: { delay?: number; agent_ids?: string[] } = {}) =>
+    req<FleetBatch>("/agents/fleet", { method: "POST", body: JSON.stringify({ action, ...opts }) }),
+  fleetGet: (id: string) => req<FleetBatch>(`/agents/fleet/${id}`),
+  fleetLatest: (action: FleetAction) => req<FleetBatch | null>(`/agents/fleet/latest?action=${action}`),
+  shutdownSchedule: () => req<{ schedule: ShutdownSchedule | null; last: string | null }>("/agents/fleet-schedule"),
+  setShutdownSchedule: (s: ShutdownSchedule) =>
+    req<{ schedule: ShutdownSchedule; last: string | null }>("/agents/fleet-schedule", { method: "PUT", body: JSON.stringify(s) }),
   releaseAgent: (id: string) => req<Agent>(`/agents/${id}/release`, { method: "POST" }),
   setAgentSite: (id: string, siteId: string | null) =>
     req<Agent>(`/agents/${id}/site`, {

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { api, isAdmin, type Agent, type MetricPoint, type PingPoint, type SparkPoint, type TeardownStatus, type WanStatus } from "../api/client";
 import { PrinterCheck } from "./PrinterCheck";
 import { PrinterDeep } from "./PrinterDeep";
@@ -12,6 +12,7 @@ import { PrinterLogPanel } from "./PrinterLogPanel";
 import { WanPanel } from "./WanPanel";
 import { TeardownPlanner } from "./TeardownPlanner";
 import { StatusPill } from "./StatusPill";
+import { FleetActions } from "./FleetActions";
 
 function timeAgo(iso: string | null): string {
   if (!iso) return "never";
@@ -66,114 +67,102 @@ function PaperGauge({ agent }: { agent: Agent }) {
   );
 }
 
-function AgentCard({
-  agent,
-  spark,
-  open,
-  onToggle,
-}: {
-  agent: Agent;
-  spark: SparkPoint[];
-  open: boolean;
-  onToggle: () => void;
-}) {
-  const [pings, setPings] = useState<MetricPoint[] | null>(null);
+type Filter = "all" | "online" | "offline" | "printer" | "off" | "stale";
 
-  // Detailed history only loads while this card's row is expanded.
+function printerBad(a: Agent) {
+  return a.printer_status === "paper_out" || a.printer_status === "cover_open" || a.printer_status === "error";
+}
+function stateOf(a: Agent): "online" | "off" | "offline" | "stale" {
+  if (a.online) return "online";
+  if (a.stale) return "stale";
+  if (a.powered_off_at) return "off";
+  return "offline";
+}
+const STATE_LABEL = { online: "Online", off: "Shut down", offline: "Offline", stale: "Stale" };
+
+/** Compact kiosk tile — one glance: status, printer, paper, latency, port. */
+function KioskTile({ agent, spark, onOpen }: { agent: Agent; spark: SparkPoint[]; onOpen: () => void }) {
+  const st = stateOf(agent);
+  return (
+    <button className={`ktile ktile-${st}${printerBad(agent) ? " ktile-printer" : ""}`} onClick={onOpen}>
+      <div className="ktile-top">
+        <span className={`kdot kdot-${st}`} />
+        <span className="ktile-name">{agent.name}</span>
+        <span className="spacer" />
+        <span className="ktile-rtt">
+          {agent.online && agent.latest_rtt_ms != null ? `${Math.round(agent.latest_rtt_ms)} ms` : st === "online" ? "—" : timeAgo(agent.last_seen_at)}
+        </span>
+      </div>
+      <div className="ktile-sub">
+        {agent.switch_port != null ? <span>port {agent.switch_port}</span> : null}
+        {agent.printer_status && agent.online ? <PrinterChip agent={agent} /> : null}
+        {st !== "online" ? <span className="ktile-state">{STATE_LABEL[st]}</span> : null}
+      </div>
+      <PaperGauge agent={agent} />
+      {agent.online ? <div className="ktile-spark"><Sparkline points={spark} /></div> : null}
+    </button>
+  );
+}
+
+/** Full detail for one kiosk — a right-side drawer on desktop, a sheet on phones. */
+function KioskSheet({ agent, onClose }: { agent: Agent; onClose: () => void }) {
+  const [pings, setPings] = useState<MetricPoint[] | null>(null);
   useEffect(() => {
-    if (!open) return;
     let alive = true;
     const load = () =>
-      api
-        .agentPings(agent.id)
-        .then((ps: PingPoint[]) =>
-          alive &&
-          setPings(ps.map((p) => ({
-            ts: p.ts,
-            latency_ms: p.rtt_ms,
-            packet_loss_pct: null,
-            download_mbps: null,
-            upload_mbps: null,
-          }))),
-        )
+      api.agentPings(agent.id)
+        .then((ps: PingPoint[]) => alive && setPings(ps.map((p) => ({
+          ts: p.ts, latency_ms: p.rtt_ms, packet_loss_pct: null, download_mbps: null, upload_mbps: null,
+        }))))
         .catch(() => alive && setPings([]));
     load();
     const id = setInterval(load, 15000);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
-  }, [open, agent.id]);
-
+    return () => { alive = false; clearInterval(id); };
+  }, [agent.id]);
+  const st = stateOf(agent);
   return (
-    <div className="card clickable" onClick={open ? undefined : onToggle}>
-      <div className="card-head">
-        <div>
-          <div className="name">{agent.name}</div>
-          <div className="isp">
-            {agent.hostname ?? "—"}
-            {agent.os ? ` · ${agent.os}` : ""}
-            {agent.site_name ? ` · ${agent.site_name}` : ""}
-            {` · agent ${agent.bootstrap_version ?? "—"}`}
-          </div>
-          {agent.printer_status ? (
-            <div style={{ marginTop: 4 }}><PrinterChip agent={agent} /></div>
-          ) : null}
-          <PaperGauge agent={agent} />
+    <div className="overlay sheet-overlay" onClick={onClose}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-head">
+          <span className={`kdot kdot-${st}`} />
+          <h2>{agent.name}</h2>
+          <StatusPill status={agent.online ? "online" : agent.last_seen_at ? "offline" : "unknown"} />
+          <span className="spacer" />
+          <button className="btn" onClick={onClose} aria-label="Close">✕</button>
         </div>
-        <div className="spacer" />
-        <StatusPill status={agent.online ? "online" : agent.last_seen_at ? "offline" : "unknown"} />
+        <div className="kv">
+          <div><span>Last seen</span><b>{timeAgo(agent.last_seen_at)}</b></div>
+          <div><span>Latency</span><b>{agent.latest_rtt_ms == null ? "—" : `${Math.round(agent.latest_rtt_ms)} ms`}</b></div>
+          <div><span>Switch</span><b>{agent.switch_name ?? "—"}{agent.switch_port != null ? ` · port ${agent.switch_port}` : ""}</b></div>
+          <div><span>LAN IP</span><b>{agent.lan_ip ?? "—"}</b></div>
+          <div><span>Hostname</span><b>{agent.hostname ?? "—"}</b></div>
+          <div><span>Agent</span><b>{agent.bootstrap_version ?? "—"}{agent.version ? ` · ${agent.version}` : ""}</b></div>
+          {agent.powered_off_at ? <div><span>Shut down</span><b>{new Date(agent.powered_off_at).toLocaleString()}</b></div> : null}
+        </div>
+        {agent.printer_status ? (
+          <div style={{ margin: "10px 0" }}>
+            <PrinterChip agent={agent} />
+            <span className="sub" style={{ fontSize: 12, marginLeft: 8 }}>{agent.printer_detail}</span>
+            <PaperGauge agent={agent} />
+          </div>
+        ) : null}
+        <div className="sub" style={{ fontSize: 12, margin: "12px 0 6px" }}>Ping latency</div>
+        {pings === null ? <p className="hint">Loading…</p> : <LatencyChart data={pings} />}
+        {isAdmin() ? (
+          <div className="sheet-tools">
+            <PrinterCheck agentId={agent.id} />
+            <PrinterTestButton agentId={agent.id} label={agent.name} />
+            {agent.printer_cut_count != null ? (
+              <button className="btn" style={{ fontSize: 12, padding: "4px 10px", marginLeft: 8 }}
+                title="Tell the tracker a fresh roll was just loaded (resets the paper gauge)"
+                onClick={() => { api.markNewRoll(agent.id).catch(() => {}); }}>
+                🧻 New roll
+              </button>
+            ) : null}
+            <PrinterDeep agentId={agent.id} />
+          </div>
+        ) : null}
       </div>
-
-      <div className="tiles">
-        <div className="tile">
-          <span className={`val${agent.latest_rtt_ms == null ? " muted" : ""}`}>
-            {agent.latest_rtt_ms == null ? "—" : Math.round(agent.latest_rtt_ms)}
-            {agent.latest_rtt_ms != null ? <span style={{ fontSize: 12, color: "var(--ink-muted)" }}> ms</span> : null}
-          </span>
-          <span className="lbl">Latency</span>
-        </div>
-        <div className="tile">
-          <span className="val" style={{ fontSize: 15 }}>{timeAgo(agent.last_seen_at)}</span>
-          <span className="lbl">Last seen</span>
-        </div>
-        <div className="tile">
-          <span className="val" style={{ fontSize: 15 }}>{agent.last_target ?? "—"}</span>
-          <span className="lbl">Target</span>
-        </div>
-      </div>
-
-      {/* Always-on mini trend; the expanded chart below carries the labels. */}
-      <Sparkline points={spark} />
-
-      {open ? (
-        <div className="detail">
-          <div style={{ fontSize: 12, color: "var(--ink-muted)", margin: "10px 0 6px" }}>
-            Ping latency · agent {agent.bootstrap_version ?? "—"}
-            {agent.version ? ` · build ${agent.version}` : ""}
-            {agent.last_ip ? ` · ${agent.last_ip}` : ""}
-          </div>
-          {pings === null ? <p className="hint">Loading…</p> : <LatencyChart data={pings} />}
-          {isAdmin() ? <PrinterCheck agentId={agent.id} /> : null}
-          {isAdmin() ? <PrinterTestButton agentId={agent.id} label={agent.name} /> : null}
-          {isAdmin() && agent.printer_cut_count != null ? (
-            <button
-              className="btn"
-              style={{ fontSize: 12, padding: "4px 10px", marginLeft: 8 }}
-              title="Tell the tracker a fresh roll was just loaded (resets the paper gauge)"
-              onClick={(e) => { e.stopPropagation(); api.markNewRoll(agent.id).catch(() => {}); }}
-            >
-              🧻 New roll
-            </button>
-          ) : null}
-          {isAdmin() ? <PrinterDeep agentId={agent.id} /> : null}
-          <div style={{ marginTop: 12, textAlign: "right" }}>
-            <button className="btn" onClick={(e) => { e.stopPropagation(); onToggle(); }}>
-              Collapse
-            </button>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -198,9 +187,9 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
   const [teardown, setTeardown] = useState<TeardownStatus | null>(null);
   const [notice, setNotice] = useState<{ notice: string | null; at: string | null } | null>(null);
   const [pdfBusy, setPdfBusy] = useState(false);
-  const [cols, setCols] = useState(1);
-  const [openRows, setOpenRows] = useState<Set<number>>(new Set());
-  const gridRef = useRef<HTMLDivElement | null>(null);
+  const [filter, setFilter] = useState<Filter>("all");
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
 
   const load = () =>
     api.agents().then(setAgents).catch((e) => setError(String(e instanceof Error ? e.message : e)));
@@ -222,34 +211,46 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
     };
   }, []);
 
-  // Track how many columns the responsive grid currently renders, so "expand
-  // the row" matches what the user actually sees at this window size.
-  useLayoutEffect(() => {
-    const el = gridRef.current;
-    if (!el) return;
-    const measure = () => {
-      const n = getComputedStyle(el).gridTemplateColumns.split(" ").filter(Boolean).length || 1;
-      setCols((prev) => {
-        if (prev !== n) setOpenRows(new Set()); // row membership changed — reset
-        return n;
-      });
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  });
-
   const live = (agents ?? []).filter((a) => (a.claimed || a.last_seen_at) && a.station_group === group);
   const online = live.filter((a) => a.online).length;
 
-  function toggleRow(row: number) {
-    setOpenRows((prev) => {
-      const next = new Set(prev);
-      if (next.has(row)) next.delete(row);
-      else next.add(row);
-      return next;
-    });
+  const counts: Record<Filter, number> = {
+    all: live.filter((a) => !a.stale).length,
+    online,
+    offline: live.filter((a) => stateOf(a) === "offline").length,
+    printer: live.filter((a) => a.online && printerBad(a)).length,
+    off: live.filter((a) => stateOf(a) === "off").length,
+    stale: live.filter((a) => a.stale).length,
+  };
+  const shown = live.filter((a) =>
+    filter === "all" ? !a.stale :
+    filter === "online" ? a.online :
+    filter === "printer" ? a.online && printerBad(a) :
+    stateOf(a) === filter);
+  // Group by the switch each kiosk is plugged into (from UniFi), so a dead
+  // bank reads as one problem: "Kiosk 1 switch · 0/8 online".
+  const groups = (() => {
+    const m = new Map<string, Agent[]>();
+    for (const a of shown) {
+      const k = a.switch_name || "Not located yet";
+      if (!m.has(k)) m.set(k, []);
+      m.get(k)!.push(a);
+    }
+    const out = [...m.entries()].map(([name, list]) => ({
+      name, list: list.sort((x, y) => (x.switch_port ?? 99) - (y.switch_port ?? 99) || x.name.localeCompare(y.name)),
+    }));
+    const key = (n: string) => n.replace(/[^\w ]+/g, " ").trim();
+    out.sort((x, y) => (x.name === "Not located yet" ? 1 : y.name === "Not located yet" ? -1 : key(x.name).localeCompare(key(y.name), undefined, { numeric: true })));
+    return out;
+  })();
+  const openAgent = live.find((a) => a.id === openId) ?? null;
+  async function retireStale() {
+    const stale = live.filter((a) => a.stale);
+    if (!stale.length) return;
+    if (!window.confirm(`Remove ${stale.length} stale station${stale.length === 1 ? "" : "s"} (no check-in for 7+ days)?\n\n${stale.map((a) => a.name).join(", ")}\n\nA kiosk that comes back can simply re-enroll.`)) return;
+    for (const a of stale) await api.deleteAgent(a.id).catch(() => {});
+    setFilter("all");
+    load();
   }
 
   async function makePdf() {
@@ -327,43 +328,38 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
           ) : null}
         </div>
       ) : null}
-      <div className="devices-toolbar" style={{ marginBottom: 14 }}>
-        <div className="panel-title" style={{ margin: 0 }}>
-          {agents === null ? "Loading…" : `${live.length} ${live.length === 1 ? noun : nounPlural} · ${online} online`}
+      {group === "kiosk" && live.length ? <FleetActions agents={live} onChanged={load} /> : null}
+      <div className="kiosk-toolbar">
+        <div className="filter-chips">
+          {([
+            ["all", "All"], ["online", "Online"], ["offline", "Offline"], ["printer", "Printer issues"],
+            ["off", "Shut down"], ["stale", "Stale"],
+          ] as [Filter, string][]).filter(([k]) => k === "all" || k === "online" || counts[k] > 0).map(([k, l]) => (
+            <button key={k} className={`chip ${filter === k ? "active" : ""}${k === "printer" || k === "offline" ? " chip-warn" : ""}`}
+              onClick={() => setFilter(k)}>
+              {l} <b>{counts[k]}</b>
+            </button>
+          ))}
         </div>
         <div className="spacer" />
-        <button
-          className="btn"
-          onClick={makePdf}
-          disabled={pdfBusy || live.length === 0}
-          title="Download a 24-hour ping report (one page per kiosk)"
-        >
-          {pdfBusy ? "Building PDF…" : "⤓ PDF report"}
-        </button>
-        <button className="btn" onClick={() => setShowPrinterLog(true)} title="View the ticket-printer status-change log">
-          🖨 Printer log
-        </button>
-        <button className="btn" onClick={() => setShowWan(true)} title="WAN / ISP health — brownout detection + per-WAN metrics"
-          style={wan?.state === "brownout" ? { borderColor: "var(--critical)", color: "var(--critical)" } : undefined}>
-          🌐 WAN health
-        </button>
-        {isAdmin() ? (
-          <button className="btn" onClick={toggleTeardown}
-            title="Teardown mode — pause all fault alerts while packing up a venue"
-            style={teardown?.active ? { borderColor: "var(--warn, #b7791f)", color: "var(--warn, #b7791f)" } : undefined}>
-            🧰 {teardown?.active ? "Teardown ON" : "Teardown"}
-          </button>
+        {filter === "stale" && isAdmin() ? (
+          <button className="btn" onClick={retireStale}>🗑 Retire {counts.stale} stale</button>
         ) : null}
-        {isAdmin() ? (
-          <button className="btn" onClick={() => setShowTeardown(true)}
-            title="Teardown planner — schedule per-site teardown + keep critical sites monitored">
-            🗓 Teardown planner
-          </button>
-        ) : null}
-        {isAdmin() ? <button className="btn" onClick={() => setManage(true)}>⚙ Manage stations</button> : null}
-        {isAdmin() ? <button className="btn" onClick={() => setShowUpdate(true)} title="Upload the agent exe and stage a rollout">⬆ Agent update</button> : null}
+        <div className="more-wrap">
+          <button className="btn" onClick={() => setMoreOpen(!moreOpen)} aria-expanded={moreOpen}>More ▾</button>
+          {moreOpen ? (
+            <div className="more-menu" onClick={() => setMoreOpen(false)}>
+              <button onClick={makePdf} disabled={pdfBusy || live.length === 0}>{pdfBusy ? "Building PDF…" : "⤓ 24 h PDF report"}</button>
+              <button onClick={() => setShowPrinterLog(true)}>🖨 Printer log</button>
+              <button onClick={() => setShowWan(true)}>🌐 WAN health</button>
+              {isAdmin() ? <button onClick={toggleTeardown}>🧰 {teardown?.active ? "End teardown" : "Teardown mode"}</button> : null}
+              {isAdmin() ? <button onClick={() => setShowTeardown(true)}>🗓 Teardown planner</button> : null}
+              {isAdmin() ? <button onClick={() => setManage(true)}>⚙ Manage stations</button> : null}
+              {isAdmin() ? <button onClick={() => setShowUpdate(true)}>⬆ Agent update</button> : null}
+            </div>
+          ) : null}
+        </div>
       </div>
-
       {error ? <div className="banner err">{error}</div> : null}
 
       {agents !== null && live.length === 0 ? (
@@ -376,21 +372,29 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
           </p>
         </div>
       ) : (
-        <div className="grid" ref={gridRef}>
-          {live.map((a, i) => {
-            const row = Math.floor(i / cols);
+        <div className="kgroups">
+          {groups.map((g) => {
+            const up = g.list.filter((a) => a.online).length;
+            const dead = up === 0 && g.list.length > 1;
             return (
-              <AgentCard
-                key={a.id}
-                agent={a}
-                spark={sparks[a.id] ?? []}
-                open={openRows.has(row)}
-                onToggle={() => toggleRow(row)}
-              />
+              <section key={g.name} className={`kgroup${dead ? " kgroup-dead" : ""}`}>
+                <div className="kgroup-head">
+                  <span className="kgroup-name" title={g.name}>{g.name.replace(/\s+US[WLX]\b.*$/, "")}</span>
+                  <span className={`kgroup-count${up < g.list.length ? " warn" : ""}`}>{up}/{g.list.length} online</span>
+                  {dead ? <span className="kgroup-hint">whole bank silent — check this switch / its power</span> : null}
+                </div>
+                <div className="ktiles">
+                  {g.list.map((a) => (
+                    <KioskTile key={a.id} agent={a} spark={sparks[a.id] ?? []} onOpen={() => setOpenId(a.id)} />
+                  ))}
+                </div>
+              </section>
             );
           })}
+          {!shown.length && agents !== null ? <p className="hint">Nothing matches this filter.</p> : null}
         </div>
       )}
+      {openAgent ? <KioskSheet agent={openAgent} onClose={() => setOpenId(null)} /> : null}
       {panel}
     </>
   );

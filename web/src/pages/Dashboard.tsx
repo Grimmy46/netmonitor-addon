@@ -14,6 +14,16 @@ import { MapTab } from "../components/GeoMap";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { SitePage } from "./SitePage";
 
+type View = "live" | "fleet" | "map" | "dormant" | "kiosks" | "ticketboxes" | "planner";
+const VIEWS: { key: View; label: string; icon: string; mobile: boolean; kiosk?: boolean }[] = [
+  { key: "live", label: "Live", icon: "📈", mobile: true },
+  { key: "map", label: "MAP", icon: "🗺", mobile: true },
+  { key: "kiosks", label: "Kiosks", icon: "🖥", mobile: true, kiosk: true },
+  { key: "fleet", label: "Fleet", icon: "🌐", mobile: true },
+  { key: "ticketboxes", label: "Ticket Boxes", icon: "🎟", mobile: false, kiosk: true },
+  { key: "dormant", label: "Dormant", icon: "💤", mobile: false },
+];
+
 type FleetFilter = "all" | "online" | "attention" | "offline" | "dormant";
 
 // Dormant (packed-up) venues drop out of every active filter into their own chip.
@@ -48,7 +58,12 @@ export function Dashboard() {
     window.dispatchEvent(new Event("nm-unauthorized"));
   }
   const [syncing, setSyncing] = useState(false);
-  const [view, setView] = useState<"live" | "fleet" | "map" | "dormant" | "kiosks" | "ticketboxes" | "planner">("live");
+  const [view, setViewRaw] = useState<View>(() => {
+    const v = localStorage.getItem("nm-view") as View | null;
+    return v && VIEWS.some((x) => x.key === v) ? v : "live";
+  });
+  const setView = (v: View) => { setViewRaw(v); setMoreOpen(false); localStorage.setItem("nm-view", v); };
+  const [moreOpen, setMoreOpen] = useState(false);
   const [fleetFilter, setFleetFilter] = useState<FleetFilter>("all");
   const [siteRoute, setSiteRoute] = useState<string | null>(siteIdFromHash());
   const [teardown, setTeardown] = useState<TeardownStatus | null>(null);
@@ -132,37 +147,63 @@ export function Dashboard() {
   const issues = counts.attention ?? 0;
   const shownSites = sites.filter(FLEET_FILTERS.find((f) => f.key === fleetFilter)!.match);
 
+  const navItems = VIEWS.filter((v) => !(td && v.kiosk));
+  const viewLabel = VIEWS.find((v) => v.key === view)?.label ?? "";
+  const badge = (k: View) => (k === "fleet" && issues > 0 ? <span className="nav-badge">{issues}</span> : null);
+
   return (
-    <>
-      <header className="app-header">
-        <PulseLogo size={26} />
-        <h1>NetMonitor</h1>
-        <span className="sub hide-sm">2.0{version && ` · cloud v${version}`}</span>
-        {configured && !siteRoute ? (
-          <nav className="map-tabs" style={{ marginLeft: 12 }}>
-            <button className={`tab ${view === "live" ? "active" : ""}`} onClick={() => setView("live")}>Live</button>
-            <button className={`tab ${view === "fleet" ? "active" : ""}`} onClick={() => setView("fleet")}>Fleet</button>
-            <button className={`tab ${view === "map" ? "active" : ""}`} onClick={() => setView("map")}>MAP</button>
-            <button className={`tab ${view === "dormant" ? "active" : ""}`} onClick={() => setView("dormant")}>Dormant</button>
-            {!td ? <button className={`tab ${view === "kiosks" ? "active" : ""}`} onClick={() => setView("kiosks")}>Kiosks</button> : null}
-            {!td ? <button className={`tab ${view === "ticketboxes" ? "active" : ""}`} onClick={() => setView("ticketboxes")}>Ticket Boxes</button> : null}
+    <div className={`shell${siteRoute ? " shell-site" : ""}`}>
+      {/* Desktop: left rail. Hidden on phones (bottom bar instead). */}
+      <aside className="side-nav">
+        <div className="side-brand">
+          <PulseLogo size={24} />
+          <span>NetMonitor</span>
+        </div>
+        {configured ? (
+          <nav className="side-items">
+            {navItems.map((v) => (
+              <button key={v.key} className={`side-item${view === v.key && !siteRoute ? " active" : ""}`}
+                onClick={() => { window.location.hash = ""; setView(v.key); }}>
+                <span className="side-ico">{v.icon}</span>{v.label}{badge(v.key)}
+              </button>
+            ))}
           </nav>
         ) : null}
         <div className="spacer" />
-        {isAdmin() && !siteRoute ? (
-          <>
-            <button className="btn" onClick={toggleTeardown} title="Teardown mode — pause alerts + focus on what's online"
-              style={td ? { borderColor: "var(--warn, #b7791f)", color: "var(--warn, #b7791f)" } : undefined}>
-              🧰 {td ? "Teardown ON" : "Teardown"}
-            </button>
-            <button className="btn" onClick={() => setShowPlanner(true)} title="Teardown planner + sequence">🗓</button>
-          </>
+        <div className="side-foot">
+          {isAdmin() ? (
+            <>
+              <button className={`side-item${td ? " warn" : ""}`} onClick={toggleTeardown}>
+                <span className="side-ico">🧰</span>{td ? "Teardown ON" : "Teardown"}
+              </button>
+              <button className="side-item" onClick={() => setShowPlanner(true)}><span className="side-ico">🗓</span>Planner</button>
+              <button className="side-item" onClick={openSettings}><span className="side-ico">⚙</span>Settings</button>
+            </>
+          ) : null}
+          <div className="side-user">
+            <span className="sub" title={session.user?.email}>{session.user?.email}</span>
+            <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
+              <ThemeToggle />
+              <button className="btn btn-xs" onClick={signOut} title="Sign out">⎋ Sign out</button>
+            </div>
+            <span className="sub" style={{ fontSize: 11 }}>2.0{version && ` · v${version}`}</span>
+          </div>
+        </div>
+      </aside>
+
+      <div className="main-col">
+      <header className="app-header">
+        <span className="mobile-only"><PulseLogo size={22} /></span>
+        <h1>{siteRoute ? "Site" : viewLabel}</h1>
+        {sites.length > 0 && !siteRoute && view === "fleet" ? (
+          <span className="sub hide-sm">{sites.length} sites · {online} online{issues > 0 ? ` · ${issues} need attention` : ""}</span>
+        ) : null}
+        <div className="spacer" />
+        {configured && view === "fleet" && !siteRoute ? (
+          <button className="btn btn-primary" onClick={sync} disabled={syncing}>{syncing ? "Syncing…" : "Sync now"}</button>
         ) : null}
         <NotifyBell />
-        <ThemeToggle />
-        <span className="sub hide-sm" style={{ margin: "0 4px" }}>{session.user?.email}</span>
-        {isAdmin() ? <button className="btn" onClick={openSettings}>☰ Settings</button> : null}
-        <button className="btn" onClick={signOut} title="Sign out">⎋</button>
+        <button className="btn mobile-only" onClick={() => setMoreOpen(true)} aria-label="Menu">☰</button>
       </header>
 
       {siteRoute ? (
@@ -175,29 +216,12 @@ export function Dashboard() {
           <div className="banner" style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10, borderLeft: "3px solid var(--warn, #b7791f)" }}>
             <span style={{ fontSize: 18 }}>🧰</span>
             <span style={{ flex: 1 }}>
-              <strong>Teardown mode</strong> — fault alerts paused; kiosk views hidden. Showing what's still online.
+              <strong>Teardown mode</strong> — fault alerts paused; kiosk views hidden.
               {teardown ? <span className="sub" style={{ fontSize: 12 }}> · {teardown.offline}/{teardown.total} stations offline</span> : null}
             </span>
-            <button className="btn" style={{ fontSize: 12, padding: "3px 10px" }} onClick={() => setShowPlanner(true)}>Planner</button>
-            <button className="btn" style={{ fontSize: 12, padding: "3px 10px" }} onClick={toggleTeardown}>End teardown</button>
+            <button className="btn" style={{ fontSize: 12, padding: "3px 10px" }} onClick={toggleTeardown}>End</button>
           </div>
         ) : null}
-        <div className="toolbar">
-          <div>
-            {sites.length > 0 ? (
-              <span className="sub" style={{ fontSize: 14 }}>
-                {sites.length} sites · {online} online{issues > 0 ? ` · ${issues} need attention` : ""}
-              </span>
-            ) : null}
-          </div>
-          <div className="spacer" />
-          {configured ? (
-            <button className="btn btn-primary" onClick={sync} disabled={syncing}>
-              {syncing ? "Syncing…" : "Sync now"}
-            </button>
-          ) : null}
-        </div>
-
         {error ? <div className="banner err">{error}</div> : null}
 
         {view === "live" ? (
@@ -258,6 +282,42 @@ export function Dashboard() {
       </div>
       )}
 
+      </div>
+
+      {/* Phones: bottom tab bar + a "More" sheet for everything else. */}
+      {configured ? (
+        <nav className="bottom-nav">
+          {navItems.filter((v) => v.mobile).map((v) => (
+            <button key={v.key} className={view === v.key && !siteRoute ? "active" : ""}
+              onClick={() => { window.location.hash = ""; setView(v.key); }}>
+              <span className="bn-ico">{v.icon}</span><span>{v.label}</span>{badge(v.key)}
+            </button>
+          ))}
+          <button className={moreOpen ? "active" : ""} onClick={() => setMoreOpen(true)}>
+            <span className="bn-ico">⋯</span><span>More</span>
+          </button>
+        </nav>
+      ) : null}
+      {moreOpen ? (
+        <div className="overlay sheet-overlay" onClick={() => setMoreOpen(false)}>
+          <div className="sheet more-sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="sheet-head"><h2>More</h2><span className="spacer" /><button className="btn" onClick={() => setMoreOpen(false)}>✕</button></div>
+            {navItems.filter((v) => !v.mobile).map((v) => (
+              <button key={v.key} className="sheet-row" onClick={() => { window.location.hash = ""; setView(v.key); }}>{v.icon} {v.label}</button>
+            ))}
+            {isAdmin() ? (
+              <>
+                <button className="sheet-row" onClick={() => { setMoreOpen(false); toggleTeardown(); }}>🧰 {td ? "End teardown" : "Teardown mode"}</button>
+                <button className="sheet-row" onClick={() => { setMoreOpen(false); setShowPlanner(true); }}>🗓 Teardown planner</button>
+                <button className="sheet-row" onClick={() => { setMoreOpen(false); openSettings(); }}>⚙ Settings</button>
+              </>
+            ) : null}
+            <div className="sheet-row" style={{ display: "flex", alignItems: "center", gap: 10 }}>Theme <ThemeToggle /></div>
+            <button className="sheet-row" onClick={signOut}>⎋ Sign out <span className="sub">{session.user?.email}</span></button>
+          </div>
+        </div>
+      ) : null}
+
       {settingsOpen ? (
         <SettingsModal
           status={status}
@@ -268,6 +328,6 @@ export function Dashboard() {
       {showPlanner ? (
         <TeardownPlanner onClose={() => { setShowPlanner(false); refresh(); }} />
       ) : null}
-    </>
+    </div>
   );
 }

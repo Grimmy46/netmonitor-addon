@@ -10,7 +10,7 @@ import { LiveView } from "../components/LiveView";
 import { NotifyBell } from "../components/NotifyBell";
 import { SettingsModal } from "../components/SettingsModal";
 import { SiteCard } from "../components/SiteCard";
-import { SiteMap } from "../components/SiteMap";
+import { MapTab } from "../components/GeoMap";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { SitePage } from "./SitePage";
 
@@ -142,11 +142,10 @@ export function Dashboard() {
           <nav className="map-tabs" style={{ marginLeft: 12 }}>
             <button className={`tab ${view === "live" ? "active" : ""}`} onClick={() => setView("live")}>Live</button>
             <button className={`tab ${view === "fleet" ? "active" : ""}`} onClick={() => setView("fleet")}>Fleet</button>
-            <button className={`tab ${view === "map" ? "active" : ""}`} onClick={() => setView("map")}>Map</button>
+            <button className={`tab ${view === "map" ? "active" : ""}`} onClick={() => setView("map")}>MAP</button>
             <button className={`tab ${view === "dormant" ? "active" : ""}`} onClick={() => setView("dormant")}>Dormant</button>
             {!td ? <button className={`tab ${view === "kiosks" ? "active" : ""}`} onClick={() => setView("kiosks")}>Kiosks</button> : null}
             {!td ? <button className={`tab ${view === "ticketboxes" ? "active" : ""}`} onClick={() => setView("ticketboxes")}>Ticket Boxes</button> : null}
-            <button className={`tab ${view === "planner" ? "active" : ""}`} onClick={() => setView("planner")}>Planner</button>
           </nav>
         ) : null}
         <div className="spacer" />
@@ -223,7 +222,7 @@ export function Dashboard() {
             </button>
           </div>
         ) : view === "map" ? (
-          <SiteMap sites={sites} />
+          <MapTab />
         ) : view === "dormant" ? (
           <DormantView />
         ) : view === "kiosks" ? (

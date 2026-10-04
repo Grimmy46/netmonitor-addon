@@ -4,6 +4,7 @@ from app.models.agent import Agent
 from app.models.agent_binary import AgentBinary
 from app.models.agent_command import AgentCommand
 from app.models.device import Device
+from app.models.geo_map import GeoMap
 from app.models.isp_metric import IspMetric
 from app.models.notification_log import NotificationLog
 from app.models.ping_rollup import PingRollup1h, PingRollup1m
@@ -27,6 +28,7 @@ __all__ = [
     "AgentBinary",
     "AgentCommand",
     "Device",
+    "GeoMap",
     "IspMetric",
     "NotificationLog",
     "PingRollup1h",

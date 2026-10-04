@@ -315,6 +315,21 @@ export type NetworkOverview = {
   closure?: Closure | null;
 };
 export type SiteTopology = NetworkOverview & { nodes: TopoNode[] };
+export type GeoPinPos = { lat: number; lng: number };
+export type GeoState = {
+  center: [number, number] | null;
+  zoom: number | null;
+  placements: Record<string, GeoPinPos>;
+  share_token: string | null;
+};
+export type SharedMap = {
+  site_name: string;
+  center: [number, number] | null;
+  zoom: number | null;
+  placements: Record<string, GeoPinPos>;
+  nodes: TopoNode[];
+  generated_at: string;
+};
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
@@ -344,6 +359,16 @@ export const api = {
   health: () => req<{ status: string; version: string }>("/health"),
   networkOverview: () => req<NetworkOverview>("/network/overview"),
   siteTopology: (siteId: string) => req<SiteTopology>(`/network/sites/${siteId}/topology`),
+  geo: (siteId: string) => req<GeoState>(`/map/geo/${siteId}`),
+  geoView: (siteId: string, lat: number, lng: number, zoom: number) =>
+    req<GeoState>(`/map/geo/${siteId}/view`, { method: "PUT", body: JSON.stringify({ lat, lng, zoom }) }),
+  geoPin: (siteId: string, mac: string, lat: number, lng: number) =>
+    req<{ ok: boolean }>(`/map/geo/${siteId}/pin`, { method: "PUT", body: JSON.stringify({ mac, lat, lng }) }),
+  geoUnpin: (siteId: string, mac: string) =>
+    req<{ ok: boolean }>(`/map/geo/${siteId}/pin/${encodeURIComponent(mac)}`, { method: "DELETE" }),
+  geoShare: (siteId: string) => req<{ share_token: string }>(`/map/geo/${siteId}/share`, { method: "POST" }),
+  geoUnshare: (siteId: string) => req<{ share_token: null }>(`/map/geo/${siteId}/share`, { method: "DELETE" }),
+  sharedMap: (token: string) => req<SharedMap>(`/map/shared/${encodeURIComponent(token)}`),
   setClosure: (start: string, end: string, note: string) =>
     req<{ closure: Closure | null }>("/network/closure", {
       method: "PUT", headers: { "Content-Type": "application/json" },

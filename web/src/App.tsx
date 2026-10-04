@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, session, type AuthUser } from "./api/client";
 import { Dashboard } from "./pages/Dashboard";
 import { LoginPage } from "./pages/LoginPage";
+import { SharedMapPage } from "./components/GeoMap";
 
 type Gate =
   | { s: "loading" }
@@ -9,6 +10,13 @@ type Gate =
   | { s: "ready"; user: AuthUser };
 
 export function App() {
+  // Public view-only map link: no sign-in at all.
+  const share = window.location.hash.match(/^#\/share\/([\w-]+)/);
+  if (share) return <SharedMapPage token={share[1]} />;
+  return <AuthedApp />;
+}
+
+function AuthedApp() {
   const [gate, setGate] = useState<Gate>({ s: "loading" });
 
   useEffect(() => {

@@ -239,8 +239,11 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
     const out = [...m.entries()].map(([name, list]) => ({
       name, list: list.sort((x, y) => (x.switch_port ?? 99) - (y.switch_port ?? 99) || x.name.localeCompare(y.name)),
     }));
-    const key = (n: string) => n.replace(/[^\w ]+/g, " ").trim();
-    out.sort((x, y) => (x.name === "Not located yet" ? 1 : y.name === "Not located yet" ? -1 : key(x.name).localeCompare(key(y.name), undefined, { numeric: true })));
+    // Order banks by the kiosks in them (K1-… first), not by the switch's
+    // name — switch names start with brackets / asset tags in any order.
+    const cmp = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+    const first = (l: Agent[]) => l.map((a) => a.name).sort(cmp)[0] ?? "";
+    out.sort((x, y) => (x.name === "Not located yet" ? 1 : y.name === "Not located yet" ? -1 : cmp(first(x.list), first(y.list))));
     return out;
   })();
   const openAgent = live.find((a) => a.id === openId) ?? null;

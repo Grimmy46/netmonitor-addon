@@ -607,7 +607,7 @@ async def sweep(db: AsyncSession) -> dict:
         p_fresh = p_at is not None and (now - p_at).total_seconds() <= st.alert_printer_fresh_seconds
         if down or p_state is None or p_state == "unknown" or not p_fresh:
             pass  # no trustworthy signal this sweep — leave alert state untouched
-        elif p_state in _PRINTER_FAULTS:
+        elif p_state == "paper_out":   # only paper-out is worth a push
             if a.printer_alert_state is None:
                 a.printer_alert_state, a.printer_alert_state_at = "pending", now
             elif (
@@ -622,13 +622,7 @@ async def sweep(db: AsyncSession) -> dict:
                     tag=f"printer-{a.id}", url="/",
                 ))
         else:  # "ok" — healthy
-            if a.printer_alert_state == "notified":
-                recoveries.append(_Fault(
-                    entity=a,
-                    title=f"🟢 {a.name} printer OK",
-                    body="Ticket printer recovered (paper/cover restored)",
-                    tag=f"printer-{a.id}", url="/",
-                ))
+            # Recovered: clear quietly (no "printer OK" pushes).
             a.printer_alert_state, a.printer_alert_state_at = None, None
 
         # ── Predictive paper: the current roll is nearly used up ──────────
@@ -917,6 +911,19 @@ async def sweep(db: AsyncSession) -> dict:
         pushed += await send_push(db, {
             "title": f.title, "body": f.body, "tag": f.tag, "url": f.url,
         })
+    # Kiosk pushes paused (settings.alert_kiosks_paused): drop them quietly,
+    # marking state so nothing replays when they're turned back on.
+    if st.alert_kiosks_paused:
+        for f in printer_faults:
+            f.entity.printer_alert_state, f.entity.printer_alert_state_at = "suppressed", now
+        for f in paper_low_faults:
+            f.entity.printer_low_alert_state, f.entity.printer_low_alert_at = "suppressed", now
+        for f in faults:
+            if isinstance(f.entity, Agent):
+                f.entity.alert_state, f.entity.alert_state_at = "suppressed", now
+        printer_faults, paper_low_faults = [], []
+        faults = [f for f in faults if not isinstance(f.entity, Agent)]
+        recoveries = [r for r in recoveries if not isinstance(r.entity, Agent)]
     # Printer faults are per-station and always sent (a full-site power-down
     # takes the agents offline, so those printers are skipped above, not here).
     for f in printer_faults:

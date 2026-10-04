@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # A kiosk silent this long counts as a fault (kiosks check in ~every 60s;
     # 5 min rides out reboots and brief network blips without flapping).
     alert_kiosk_offline_seconds: int = 300
+    # Kiosk pushes (stopped reporting, printer, paper) paused while that side
+    # is reworked. Set ALERT_KIOSKS_PAUSED=false to bring them back.
+    alert_kiosks_paused: bool = True
     # A device fault must persist this long before it alerts (debounce).
     alert_confirm_seconds: int = 180
     # Faults older than this when first seen never alert (e.g. right after a

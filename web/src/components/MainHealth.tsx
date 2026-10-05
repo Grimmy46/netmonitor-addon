@@ -96,6 +96,23 @@ function ClosureBar({ c, onChange }: { c: Closure | null | undefined; onChange: 
     try { await api.endClosure(); onChange(); } finally { setBusy(false); }
   };
 
+  // One tap after an early close: pause alerts from now until tomorrow 10 AM
+  // (or 10 AM today if it's already past midnight).
+  const closedNow = async () => {
+    const now = new Date();
+    const end = new Date(now);
+    if (now.getHours() >= 6) end.setDate(end.getDate() + 1);
+    end.setHours(10, 0, 0, 0);
+    const when = end.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+    if (!window.confirm(`We're closed: pause all alerts now until ${when}?`)) return;
+    setBusy(true); setErr("");
+    try {
+      await api.setClosure(now.toISOString(), end.toISOString(), "Closed early");
+      onChange();
+    } catch (e) { window.alert(e instanceof Error ? e.message : String(e)); }
+    setBusy(false);
+  };
+
   if (editing) {
     return (
       <div className="mh-closure edit">
@@ -117,7 +134,8 @@ function ClosureBar({ c, onChange }: { c: Closure | null | undefined; onChange: 
   }
   if (!c) {
     return admin ? (
-      <div className="mh-closure-link">
+      <div className="mh-closure-link" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button className="btn btn-primary" style={{ fontSize: 13, padding: "5px 12px" }} disabled={busy} onClick={closedNow}>🌙 We're closed</button>
         <button className="btn" style={{ fontSize: 12, padding: "3px 10px" }} onClick={openForm}>Plan a closure…</button>
       </div>
     ) : null;

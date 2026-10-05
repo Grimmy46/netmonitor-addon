@@ -74,6 +74,12 @@ async def send_push(
     """Send `payload` (title/body/tag/url) to every stored subscription (or one
     user's). Returns how many pushes were accepted. Dead subscriptions are
     pruned; transient failures are counted and logged, never raised."""
+    # Hard stop while the show is closed ("We're closed" / planned closure):
+    # nothing goes out except the reopen summary and a user's own test push.
+    from app.services import closure
+    if only_user_id is None and closure.alerts_paused() and payload.get("tag") != "closure-report":
+        logger.info("Push held (closed): %s", payload.get("title"))
+        return 0
     if only_user_id is None and not payload.get("no_signal"):
         await _mirror_to_signal(db, payload)
     payload.pop("no_signal", None)

@@ -588,7 +588,8 @@ async def sweep(db: AsyncSession) -> dict:
     # Planned closure: pause alerts through the closure + reopen grace, then
     # send one "what didn't come back" summary.
     await closure.refresh(db)
-    if closure.alerts_paused(now):
+    closed = closure.alerts_paused(now)
+    if closed:
         quiet = True
     else:
         await _maybe_send_reopen_report(db, now)
@@ -875,7 +876,11 @@ async def sweep(db: AsyncSession) -> dict:
     # Main office …), which keeps alerting off the UniFi API even mid-move.
     sites_by_id = {s.id: s for s in (await db.execute(select(Site))).scalars()}
 
+    # A closure ("We're closed") silences EVERYTHING, critical sites included:
+    # the whole show is dark, so a down Main switch is expected, not news.
     def _entity_suppressed(entity) -> bool:
+        if closed:
+            return True
         if getattr(entity, "keep_monitored", False):
             return False
         s = sites_by_id.get(getattr(entity, "site_id", None))
@@ -887,6 +892,8 @@ async def sweep(db: AsyncSession) -> dict:
         return bool(quiet)
 
     def _site_suppressed(s) -> bool:
+        if closed:
+            return True
         if s.keep_monitored:
             return False
         if s.teardown_active:

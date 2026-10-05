@@ -34,7 +34,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.10.04.4"
+PAYLOAD_VERSION = "2026.10.04.5"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -792,7 +792,64 @@ def _cmd_power_cancel(_args):
     return {"ok": proc.returncode == 0, "rc": proc.returncode}
 
 
+def _cmd_cam_diag(_args):
+    """Why isn't camera video flowing? Relay process, local go2rtc, camera reachability."""
+    out = {"errors": list(_CAM_ERRS)}
+    d = _install_dir() or tempfile.gettempdir()
+    exe = os.path.join(d, _G2R_EXE)
+    out["exe"] = os.path.exists(exe)
+    out["exe_dir"] = d
+    if SYSTEM == "Windows":
+        try:
+            tl = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {_G2R_EXE}", "/NH"], capture_output=True,
+                                timeout=15, **_no_window_kwargs())
+            out["running"] = _G2R_EXE.lower() in (tl.stdout or b"").decode("utf-8", "ignore").lower()
+        except Exception as e:  # noqa: BLE001
+            out["running"] = f"? {e}"
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{_G2R_PORT}/api/streams", timeout=5) as r:
+            streams = json.loads(r.read().decode("utf-8", "ignore") or "{}")
+        out["local_api"] = True
+        out["streams"] = sorted(streams)
+    except Exception as e:  # noqa: BLE001
+        out["local_api"] = f"down: {e}"
+        streams = {}
+    cfg = os.path.join(d, "netmon-go2rtc.yaml")
+    ips = []
+    try:
+        for line in open(cfg, encoding="utf-8"):
+            m = re.search(r'^\s+(cam\d+): "rtsp://[^@]+@([\d.]+):554', line)
+            if m:
+                ips.append((m.group(1), m.group(2)))
+    except Exception as e:  # noqa: BLE001
+        out["config"] = f"missing: {e}"
+    reach = {}
+    for name, ip in ips:
+        t0 = time.time()
+        try:
+            socket.create_connection((ip, 554), timeout=3).close()
+            reach[name] = f"{ip} rtsp open {int((time.time() - t0) * 1000)}ms"
+        except Exception as e:  # noqa: BLE001
+            reach[name] = f"{ip} {e}"
+    out["rtsp"] = reach
+    # Ask local go2rtc to actually open the first reachable camera (auth check).
+    first = next((n for n, v in reach.items() if "open" in v), None)
+    if first and out.get("local_api") is True:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{_G2R_PORT}/api/stream.ts?src={first}", timeout=12) as r:
+                out["probe"] = {first: f"{len(r.read(65536))} bytes"}
+        except Exception as e:  # noqa: BLE001
+            body = ""
+            try:
+                body = e.read().decode("utf-8", "ignore")[:200]  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            out["probe"] = {first: f"{e} {body}".strip()}
+    return out
+
+
 _COMMAND_HANDLERS = {
+    "cam-diag": _cmd_cam_diag,
     "power-off": _cmd_power_off,
     "power-cancel": _cmd_power_cancel,
     "printer-status": _cmd_printer_status,
@@ -1359,6 +1416,12 @@ def _printer_monitor_worker(ctx, stop):
 # kiosks just check in once a minute and do nothing.
 _G2R_EXE = "netmon-go2rtc.exe"
 _G2R_PORT = 11984
+_CAM_ERRS = []  # last few relay errors, for the cam-diag command
+
+
+def _cam_err(msg):
+    _CAM_ERRS.append(f"{time.strftime('%H:%M:%S')} {msg}"[:300])
+    del _CAM_ERRS[:-12]
 
 
 def _cams_plan(ctx):
@@ -1472,11 +1535,11 @@ def _camera_relay_worker(ctx, stop):
                         try:
                             _cam_forward(ctx, s, k)
                         except Exception as e:  # noqa: BLE001
-                            _trace(f"cam{s}: {e}")
+                            _cam_err(f"cam{s}: {e}")
                     f["th"] = threading.Thread(target=run, daemon=True)
                     f["th"].start()
         except Exception as e:  # noqa: BLE001 — never take the agent down
-            _trace(f"camera relay: {e}")
+            _cam_err(f"relay: {e}")
         stop.wait(float(plan.get("poll", 3)))
     _g2r_kill()
 

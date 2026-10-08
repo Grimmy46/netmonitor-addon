@@ -83,7 +83,9 @@ async def build(db: AsyncSession, now: datetime | None = None) -> str:
         mark = "✅" if not bad else "⚠️"
         issues += bool(bad)
         okp = sum(1 for a in up if a.printer_status == "ok")
-        lines.append(f"{mark} Printers: {okp}/{len(up)} OK" + (f" — check: {_names(bad)}" if bad else ""))
+        nor = len(up) - okp - len(bad)
+        lines.append(f"{mark} Printers: {okp}/{len(up)} OK" + (f" — check: {_names(bad)}" if bad else "")
+                     + (f" ({nor} no reading)" if nor else ""))
 
     site = await _main_site(db)
     view = await _site_view(db, site) if site else None
@@ -130,7 +132,7 @@ async def build(db: AsyncSession, now: datetime | None = None) -> str:
     head = (f"☀️ Good morning IT team — NETBOT here with the opening check "
             f"({local.strftime('%a %b %-d, %-I:%M %p')})")
     tail = ("All systems go. Have a great show! 🎡" if not issues
-            else f"{issues} item{'s' if issues != 1 else ''} need a look before the gates open.")
+            else (f"{issues} items need" if issues != 1 else "1 item needs") + " a look before the gates open.")
     return "\n".join([head, "", *lines, "", tail])
 
 

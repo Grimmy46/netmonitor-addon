@@ -24,7 +24,7 @@ from app.services import closure
 
 logger = logging.getLogger("netmonitor.morning")
 
-DEFAULTS = {"enabled": True, "time": "12:05", "tz": "America/Phoenix", "speedtest": False,
+DEFAULTS = {"enabled": True, "time": "12:05", "tz": "America/Phoenix", "speedtest": True,
             "min_down": 100, "min_up": 20, "max_latency": 80}
 _STALE_DAYS = 7
 _speedtest_fired: dict[str, str] = {}  # local date → "fired"
@@ -125,6 +125,8 @@ async def build(db: AsyncSession, now: datetime | None = None) -> str:
                          f"({'within' if sp_ok else 'BELOW'} target ↓ {cfg['min_down']} / ↑ {cfg['min_up']})")
             issues += not good
             lines.append(line)
+        if cfg.get("speedtest") and not speed:
+            lines.append("ℹ️ Speed test: no fresh result from UniFi this morning")
         if wan.get("stale"):
             lines.append("⚠️ WAN reading is stale — UniFi hasn't reported in a while")
             issues += 1

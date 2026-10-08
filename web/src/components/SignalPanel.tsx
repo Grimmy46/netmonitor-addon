@@ -239,6 +239,15 @@ function MorningReport() {
             {Array.from(new Set([cfg.tz, "America/Phoenix", "America/Los_Angeles", "America/Denver", "America/Chicago", "America/New_York"])).map((z) => <option key={z} value={z}>{z.replace("America/", "").replace("_", " ")}</option>)}
           </select>
         </label>
+        <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <input type="checkbox" checked={cfg.speedtest} onChange={(e) => save({ speedtest: e.target.checked })} /> Speed test at {cfg.time ? "10 min before" : ""}
+        </label>
+        {cfg.speedtest ? (
+          <span className="sub" style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            target ↓<input type="number" style={{ width: 64 }} value={cfg.min_down} onChange={(e) => setCfg({ ...cfg, min_down: Number(e.target.value) })} onBlur={() => save({ min_down: cfg.min_down })} />
+            ↑<input type="number" style={{ width: 56 }} value={cfg.min_up} onChange={(e) => setCfg({ ...cfg, min_up: Number(e.target.value) })} onBlur={() => save({ min_up: cfg.min_up })} /> Mbps
+          </span>
+        ) : null}
         <button className="btn" onClick={load}>Refresh preview</button>
         <button className="btn" onClick={sendNow}>Send now</button>
         <span className="sub">{msg}{last ? ` · last sent ${last}` : ""}</span>

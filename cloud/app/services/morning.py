@@ -195,6 +195,11 @@ async def maybe_send(db: AsyncSession, now: datetime) -> None:
                 await _start_speedtest(db, site)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("speed test start failed: %s", exc)
+    if acc.morning_report_last is None:
+        # First run after this feature ships: start tomorrow, don't post mid-day.
+        acc.morning_report_last = today
+        await db.commit()
+        return
     if acc.morning_report_last == today or not (due <= local < due + timedelta(hours=2)):
         return
     acc.morning_report_last = today

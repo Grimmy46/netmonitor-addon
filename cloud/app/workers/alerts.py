@@ -592,6 +592,9 @@ async def sweep(db: AsyncSession) -> dict:
     try:
         from app.services import nightly
         await nightly.maybe_autoclose(db, now)
+        from app.services import netbot
+        await netbot.maybe_early_close(db, now)
+        await netbot.maybe_weather(db, now)
     except Exception as exc:  # noqa: BLE001
         logger.warning("nightly auto-close: %s", exc)
     closed = closure.alerts_paused(now)

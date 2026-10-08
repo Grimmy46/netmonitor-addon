@@ -138,15 +138,39 @@ async def receive_once(db: AsyncSession) -> int:
             return 0
         envs = resp.json() or []
     rows: list[dict] = []
+    commands: list[dict] = []
     for env in envs if isinstance(envs, list) else []:
         rows += _envelope_rows(env, cfg.watched or {})
+        if cfg.alert_group_id:
+            commands += _envelope_rows(env, _AnyGroup(cfg.alert_group_id))
     n = await _store(db, rows)
     cfg.last_receive_at = datetime.now(timezone.utc)
     cfg.last_error = None
     await db.commit()
     if n:
         logger.info("signal: stored %d new message(s)", n)
+    if commands:
+        from app.services import netbot
+        for r in commands:
+            if netbot.is_alert_group(r["group_id"], cfg.alert_group_id):
+                try:
+                    await netbot.handle_message(db, r["body"], r["sender"], r["sent_at"])
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("netbot command failed: %s", exc)
     return n
+
+
+class _AnyGroup(dict):
+    """Lets _envelope_rows pass every group through (filtered by is_alert_group)."""
+    def __init__(self, alert_gid: str):
+        super().__init__()
+        self._a = alert_gid
+
+    def __contains__(self, gid) -> bool:  # noqa: D105
+        return True
+
+    def __getitem__(self, gid):  # noqa: D105
+        return {"name": "alert"}
 
 
 # ── history import (Signal Desktop export / pasted text) ─────────────────────

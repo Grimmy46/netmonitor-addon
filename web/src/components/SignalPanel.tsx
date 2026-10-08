@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type SignalGroup, type SignalMsg, type SignalNameSuggestion, type SignalStatus } from "../api/client";
 import type { MorningCfg } from "../api/client";
+import { API_BASE } from "../api/client";
 
 /** Settings → Signal: link the bot, pick chats, import history, search, names. */
 export function SignalPanel() {
@@ -181,6 +182,7 @@ export function SignalPanel() {
       ) : null}
 
       <MorningReport />
+      <ClosingEarly />
 
       <h4 style={{ margin: "16px 0 6px" }}>Names from the equipment list</h4>
       <p style={{ marginTop: 0 }}>
@@ -255,6 +257,39 @@ function MorningReport() {
         <span className="sub">{msg}{last ? ` · last sent ${last}` : ""}</span>
       </div>
       <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, background: "var(--surface-2, rgba(127,127,127,.08))", padding: 10, borderRadius: 8, marginTop: 8 }}>{preview}</pre>
+    </>
+  );
+}
+
+
+/** How the team tells NETBOT we're closing early. */
+function ClosingEarly() {
+  const [tok, setTok] = useState<string | null>(null);
+  const [msg, setMsg] = useState("");
+  const get = (rotate = false) => api.shortcutLink(rotate).then((r) => setTok(r.token)).catch((e) => setMsg(String(e.message ?? e)));
+  const url = (a: string) => `${API_BASE}/network/closure/shortcut/${tok}/${a}`;
+  return (
+    <>
+      <h4 style={{ margin: "16px 0 6px" }}>Closing early</h4>
+      <ul style={{ marginTop: 0, paddingLeft: 18, fontSize: 13 }}>
+        <li>Anyone in the alert group can send <b>closed</b> (or “closing early”) — alerts pause until the gates open next. <b>open</b> undoes it, <b>status</b> posts the report now.</li>
+        <li>From 5 PM, if 40%+ of kiosks drop at once, NETBOT pauses alerts and asks the group. Reply <b>closed</b> to confirm or <b>no</b> if it's an outage.</li>
+        <li>Weather heads-up: NETBOT posts National Weather Service wind, dust, storm and flood alerts for the fairgrounds on fair days.</li>
+        <li>After 10:30 PM, a mass kiosk drop is treated as normal closing (no question asked).</li>
+      </ul>
+      <b style={{ fontSize: 13 }}>Phone shortcut / NFC tag</b>
+      <p className="sub" style={{ marginTop: 4, fontSize: 12 }}>
+        iPhone: Shortcuts → New Shortcut → <i>Get Contents of URL</i>, paste the “closed” link, set Method to POST. Add it to your Home Screen,
+        or Shortcuts → Automation → NFC to run it by tapping a tag. Keep the link private — anyone with it can pause alerts.
+      </p>
+      {tok ? (
+        <div style={{ fontSize: 12, wordBreak: "break-all" }}>
+          <div>Closed: <code>{url("closed")}</code> <button className="btn" onClick={() => navigator.clipboard.writeText(url("closed"))}>Copy</button></div>
+          <div style={{ marginTop: 4 }}>Open: <code>{url("open")}</code> <button className="btn" onClick={() => navigator.clipboard.writeText(url("open"))}>Copy</button></div>
+          <button className="btn" style={{ marginTop: 6 }} onClick={() => window.confirm("Make new links? The old ones stop working.") && get(true)}>New links</button>
+        </div>
+      ) : <button className="btn" onClick={() => get()}>Show shortcut links</button>}
+      <span className="sub">{msg}</span>
     </>
   );
 }

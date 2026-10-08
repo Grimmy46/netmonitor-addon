@@ -159,6 +159,31 @@ async def close_tonight(db: AsyncSession = Depends(get_db), _admin=Depends(requi
     return {"closure": await _closure_out(db)}
 
 
+# Phone shortcut / NFC tag: a secret link, no browser session (like agent
+# endpoints). POST /network/closure/shortcut/<token>/closed  (or /open).
+@router.post("/closure/shortcut/{token}/{action}")
+async def closure_shortcut(token: str, action: str, db: AsyncSession = Depends(get_db)) -> dict:
+    from app.services import netbot
+    if not await netbot.check_token(db, token):
+        raise HTTPException(status_code=404, detail="Not found")
+    now = _now()
+    if action in ("closed", "close"):
+        msg = await netbot.close_now(db, now, "phone shortcut")
+    elif action == "open":
+        msg = await netbot.open_now(db, now, "phone shortcut")
+    else:
+        raise HTTPException(status_code=404, detail="Not found")
+    await netbot.say(db, msg)
+    return {"ok": True, "message": msg.replace("NETBOT: ", "")}
+
+
+@router.get("/closure/shortcut-link")
+async def shortcut_link(rotate: bool = False, db: AsyncSession = Depends(get_db),
+                        _admin=Depends(require_admin)) -> dict:
+    from app.services import netbot
+    return {"token": await netbot.shortcut_token(db, rotate)}
+
+
 @router.delete("/closure")
 async def clear_closure(db: AsyncSession = Depends(get_db), _admin=Depends(require_admin)) -> dict:
     """Cancel (or end early). Ending early still gets the reopen report: the

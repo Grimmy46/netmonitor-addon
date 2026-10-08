@@ -65,6 +65,8 @@ class Account(Base, UUIDPk, Timestamps):
     # None = settings.closure_reopen_grace_hours.
     closure_grace_min: Mapped[int | None] = mapped_column(default=None)
     autoclose_last: Mapped[str | None] = mapped_column(default=None)  # local date auto-closed
+    # NETBOT scratch state: early-close nights, weather alert ids sent, shortcut token.
+    netbot_state: Mapped[dict | None] = mapped_column(JSONB, default=None)
     closure_report_sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )

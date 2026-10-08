@@ -439,6 +439,7 @@ export const api = {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ start, end, note }),
     }),
+  shortcutLink: (rotate = false) => req<{ token: string }>(`/network/closure/shortcut-link${rotate ? "?rotate=true" : ""}`),
   closeTonight: () => req<{ closure: Closure | null }>("/network/closure/tonight", { method: "POST" }),
   endClosure: () => req<{ closure: Closure | null }>("/network/closure", { method: "DELETE" }),
   sites: () => req<Site[]>("/sites"),

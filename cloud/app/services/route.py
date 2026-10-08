@@ -36,16 +36,16 @@ _HLSR_2026 = {  # Midway carnival, exact per-day table
 }
 
 EVENTS = [
-    {"key": "hlsr", "name": "Houston Livestock Show and Rodeo", "tz": "America/Chicago", "week": _WEEK_HLSR,
+    {"key": "hlsr", "latlon": (29.6847, -95.4107), "name": "Houston Livestock Show and Rodeo", "tz": "America/Chicago", "week": _WEEK_HLSR,
      "runs": [("2026-03-02", "2026-03-22", _HLSR_2026), ("2027-03-02", "2027-03-21", {"2027-03-02": "14:00"})]},
-    {"key": "pima", "name": "Pima County Fair", "tz": "America/Phoenix", "week": _WEEK_PIMA,
+    {"key": "pima", "latlon": (32.0478, -110.7826), "name": "Pima County Fair", "tz": "America/Phoenix", "week": _WEEK_PIMA,
      "runs": [("2026-04-16", "2026-04-26", {}), ("2027-04-15", "2027-04-25", {})]},
-    {"key": "lacf", "name": "LA County Fair", "tz": "America/Los_Angeles", "week": _WEEK_LACF,
+    {"key": "lacf", "latlon": (34.0836, -117.7653), "name": "LA County Fair", "tz": "America/Los_Angeles", "week": _WEEK_LACF,
      "runs": [("2026-05-07", "2026-05-31", {"2026-05-25": "11:00"}),
               ("2027-05-06", "2027-05-31", {"2027-05-31": "11:00"})]},
-    {"key": "oc", "name": "OC Fair", "tz": "America/Los_Angeles", "week": _WEEK_OC,
+    {"key": "oc", "latlon": (33.6662, -117.9008), "name": "OC Fair", "tz": "America/Los_Angeles", "week": _WEEK_OC,
      "runs": [("2026-07-17", "2026-08-16", {})]},
-    {"key": "asf", "name": "Arizona State Fair", "tz": "America/Phoenix", "week": _WEEK_ASF,
+    {"key": "asf", "latlon": (33.4655, -112.0947), "name": "Arizona State Fair", "tz": "America/Phoenix", "week": _WEEK_ASF,
      "runs": [("2026-10-01", "2026-11-01", {})]},
 ]
 

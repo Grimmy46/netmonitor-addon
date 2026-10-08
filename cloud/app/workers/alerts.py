@@ -596,6 +596,12 @@ async def sweep(db: AsyncSession) -> dict:
     await _maybe_fire_site_teardowns(db, now)
     # Weekly kiosk shutdown (e.g. Sunday after close) + keep agents.status honest.
     await _maybe_fire_kiosk_shutdown(db, now)
+    # NETBOT's daily opening report to the Signal group.
+    try:
+        from app.services import morning
+        await morning.maybe_send(db, now)
+    except Exception as exc:  # noqa: BLE001 — a report must never break the sweep
+        logger.warning("morning report: %s", exc)
     await _refresh_agent_status(db, now)
 
     # No ears, no alarms: skip all work until someone has enabled notifications.

@@ -76,5 +76,8 @@ class Account(Base, UUIDPk, Timestamps):
     # "time": "HH:MM", "tz": "America/Phoenix", "delay": seconds}
     kiosk_shutdown: Mapped[dict | None] = mapped_column(JSONB, default=None)
     kiosk_shutdown_last: Mapped[str | None] = mapped_column(default=None)  # local date fired
+    # Daily opening report to the Signal alert group ({enabled, time, tz, …}).
+    morning_report: Mapped[dict | None] = mapped_column(JSONB, default=None)
+    morning_report_last: Mapped[str | None] = mapped_column(default=None)  # local date sent
     users: Mapped[list["User"]] = relationship(back_populates="account")  # noqa: F821
     sites: Mapped[list["Site"]] = relationship(back_populates="account")  # noqa: F821

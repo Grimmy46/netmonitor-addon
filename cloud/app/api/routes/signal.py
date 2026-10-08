@@ -119,3 +119,58 @@ async def messages(q: str = "", group: str = "", before: str = "", limit: int = 
 @router.get("/name-suggestions")
 async def name_suggestions(db: AsyncSession = Depends(get_db), _a=Depends(require_admin)) -> list[dict]:
     return await sig.name_suggestions(db)
+
+
+# ── NETBOT daily opening report ────────────────────────────────────────────
+class MorningIn(BaseModel):
+    enabled: bool | None = None
+    time: str | None = None
+    tz: str | None = None
+    speedtest: bool | None = None
+    min_down: int | None = None
+    min_up: int | None = None
+    max_latency: int | None = None
+
+
+@router.get("/morning")
+async def morning_get(db: AsyncSession = Depends(get_db), _=Depends(current_user)) -> dict:
+    from app.models import Account
+    from app.services import morning
+    acc = (await db.execute(select(Account).limit(1))).scalars().first()
+    return {"config": morning.config(acc), "last": acc.morning_report_last if acc else None,
+            "preview": await morning.build(db)}
+
+
+@router.put("/morning")
+async def morning_put(body: MorningIn, db: AsyncSession = Depends(get_db), _=Depends(require_admin)) -> dict:
+    import re
+    from zoneinfo import ZoneInfo
+    from app.models import Account
+    from app.services import morning
+    acc = (await db.execute(select(Account).limit(1))).scalars().first()
+    if acc is None:
+        raise HTTPException(status_code=404, detail="No account.")
+    cfg = morning.config(acc)
+    upd = body.model_dump(exclude_none=True)
+    if "time" in upd and not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", upd["time"]):
+        raise HTTPException(status_code=400, detail="Time must be HH:MM.")
+    if "tz" in upd:
+        try:
+            ZoneInfo(upd["tz"])
+        except Exception:
+            raise HTTPException(status_code=400, detail="Unknown time zone.")
+    cfg.update(upd)
+    acc.morning_report = cfg
+    await db.commit()
+    return {"config": cfg}
+
+
+@router.post("/morning/send-now")
+async def morning_send_now(db: AsyncSession = Depends(get_db), _=Depends(require_admin)) -> dict:
+    from app.services import morning
+    text = await morning.build(db)
+    try:
+        await morning.send(db, text)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Signal send failed: {exc}")
+    return {"sent": True, "text": text}

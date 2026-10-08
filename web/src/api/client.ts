@@ -368,6 +368,11 @@ export function camWsUrl(id: string, share?: string): string {
   return `${base}/cams/ws?cam=${encodeURIComponent(id)}${share ? `&share=${encodeURIComponent(share)}` : ""}`;
 }
 
+export interface MorningCfg {
+  enabled: boolean; time: string; tz: string; speedtest: boolean;
+  min_down: number; min_up: number; max_latency: number;
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -414,6 +419,10 @@ export const api = {
   signalGroups: () => req<SignalGroup[]>("/integrations/signal/groups"),
   signalWatch: (watched: SignalStatus["watched"], alert_group_id: string | null) =>
     req<{ watched: SignalStatus["watched"] }>("/integrations/signal/watch", { method: "PUT", body: JSON.stringify({ watched, alert_group_id }) }),
+  morning: () => req<{ config: MorningCfg; last: string | null; preview: string }>("/integrations/signal/morning"),
+  morningSave: (c: Partial<MorningCfg>) =>
+    req<{ config: MorningCfg }>("/integrations/signal/morning", { method: "PUT", body: JSON.stringify(c) }),
+  morningSendNow: () => req<{ sent: boolean; text: string }>("/integrations/signal/morning/send-now", { method: "POST" }),
   signalTest: () => req<{ ok: boolean }>("/integrations/signal/test", { method: "POST" }),
   signalImport: (file: File, group_name: string) => {
     const fd = new FormData();

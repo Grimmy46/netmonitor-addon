@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type SignalGroup, type SignalMsg, type SignalNameSuggestion, type SignalStatus } from "../api/client";
+import type { MorningCfg } from "../api/client";
 
 /** Settings → Signal: link the bot, pick chats, import history, search, names. */
 export function SignalPanel() {
@@ -179,6 +180,8 @@ export function SignalPanel() {
         </div>
       ) : null}
 
+      <MorningReport />
+
       <h4 style={{ margin: "16px 0 6px" }}>Names from the equipment list</h4>
       <p style={{ marginTop: 0 }}>
         Lines in the equipment list that mention a device's tag (like 0903) or MAC become suggested names.
@@ -197,6 +200,50 @@ export function SignalPanel() {
           {names.length ? <p className="sub" style={{ fontSize: 12 }}>Review only for now. Renaming in UniFi comes once we've checked these against your real list.</p> : null}
         </div>
       ) : null}
+    </>
+  );
+}
+
+
+/** NETBOT's daily opening report to the alert group. */
+function MorningReport() {
+  const [cfg, setCfg] = useState<MorningCfg | null>(null);
+  const [preview, setPreview] = useState("");
+  const [last, setLast] = useState<string | null>(null);
+  const [msg, setMsg] = useState("");
+  const load = () => api.morning().then((r) => { setCfg(r.config); setPreview(r.preview); setLast(r.last); }).catch((e) => setMsg(String(e.message ?? e)));
+  useEffect(() => { load(); }, []);
+  if (!cfg) return null;
+  const save = async (patch: Partial<MorningCfg>) => {
+    setMsg("Saving…");
+    try { const r = await api.morningSave(patch); setCfg(r.config); setMsg("Saved"); }
+    catch (e) { setMsg(String((e as Error).message ?? e)); }
+  };
+  const sendNow = async () => {
+    if (!window.confirm("Send the opening report to the alert group now?")) return;
+    setMsg("Sending…");
+    try { const r = await api.morningSendNow(); setPreview(r.text); setMsg("Sent to the group"); }
+    catch (e) { setMsg(String((e as Error).message ?? e)); }
+  };
+  return (
+    <>
+      <h4 style={{ margin: "16px 0 6px" }}>Daily opening report (NETBOT)</h4>
+      <p style={{ marginTop: 0 }}>Posts kiosks, printers, switches, APs and WAN status to the alert group once a day. Skipped while the show is closed.</p>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <input type="checkbox" checked={cfg.enabled} onChange={(e) => save({ enabled: e.target.checked })} /> On
+        </label>
+        <label>Time <input type="time" value={cfg.time} onChange={(e) => setCfg({ ...cfg, time: e.target.value })} onBlur={() => save({ time: cfg.time })} /></label>
+        <label>Time zone{" "}
+          <select value={cfg.tz} onChange={(e) => save({ tz: e.target.value })}>
+            {Array.from(new Set([cfg.tz, "America/Phoenix", "America/Los_Angeles", "America/Denver", "America/Chicago", "America/New_York"])).map((z) => <option key={z} value={z}>{z.replace("America/", "").replace("_", " ")}</option>)}
+          </select>
+        </label>
+        <button className="btn" onClick={load}>Refresh preview</button>
+        <button className="btn" onClick={sendNow}>Send now</button>
+        <span className="sub">{msg}{last ? ` · last sent ${last}` : ""}</span>
+      </div>
+      <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, background: "var(--surface-2, rgba(127,127,127,.08))", padding: 10, borderRadius: 8, marginTop: 8 }}>{preview}</pre>
     </>
   );
 }

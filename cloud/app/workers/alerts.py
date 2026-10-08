@@ -588,6 +588,12 @@ async def sweep(db: AsyncSession) -> dict:
     # Planned closure: pause alerts through the closure + reopen grace, then
     # send one "what didn't come back" summary.
     await closure.refresh(db)
+    # Nightly auto-close (10:30 PM–2 AM, mass kiosk drop → closed till gates open).
+    try:
+        from app.services import nightly
+        await nightly.maybe_autoclose(db, now)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("nightly auto-close: %s", exc)
     closed = closure.alerts_paused(now)
     if closed:
         quiet = True

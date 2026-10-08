@@ -61,6 +61,10 @@ class Account(Base, UUIDPk, Timestamps):
     closure_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     closure_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     closure_note: Mapped[str | None] = mapped_column(default=None)
+    # Per-closure reopen grace in minutes (nightly closes use a short one);
+    # None = settings.closure_reopen_grace_hours.
+    closure_grace_min: Mapped[int | None] = mapped_column(default=None)
+    autoclose_last: Mapped[str | None] = mapped_column(default=None)  # local date auto-closed
     closure_report_sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )

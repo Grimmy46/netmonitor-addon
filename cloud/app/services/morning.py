@@ -25,7 +25,8 @@ from app.services import closure
 logger = logging.getLogger("netmonitor.morning")
 
 DEFAULTS = {"enabled": True, "time": "12:05", "tz": "America/Phoenix", "speedtest": True,
-            "min_down": 100, "min_up": 20, "max_latency": 80}
+            "min_down": 100, "min_up": 20, "max_latency": 80,
+            "follow_route": True, "after_open_min": 5}
 _STALE_DAYS = 7
 _speedtest_fired: dict[str, str] = {}  # local date → "fired"
 
@@ -61,8 +62,10 @@ async def build(db: AsyncSession, now: datetime | None = None) -> str:
     now = now or datetime.now(timezone.utc)
     acc = (await db.execute(select(Account).limit(1))).scalars().first()
     cfg = config(acc)
+    from app.services import route
+    ev = route.current_event(now)
     try:
-        local = now.astimezone(ZoneInfo(cfg["tz"]))
+        local = now.astimezone(route.tz_now(now) if ev else ZoneInfo(cfg["tz"]))
     except Exception:  # noqa: BLE001
         local = now
     issues = 0
@@ -178,17 +181,31 @@ async def _speedtest_result(db: AsyncSession, site: Site) -> dict | None:
             "ping": best.get("latency")}
 
 
-async def maybe_send(db: AsyncSession, now: datetime) -> None:
-    acc = (await db.execute(select(Account).limit(1))).scalars().first()
-    cfg = config(acc)
-    if acc is None or not cfg.get("enabled") or closure.alerts_paused(now):
-        return
+def due_today(cfg: dict, now: datetime) -> datetime | None:
+    """When today's report goes out: gate opening + N min from the show route,
+    or the fixed time when we're between fairs. None = fair closed today."""
+    from app.services import route
+    if cfg.get("follow_route", True) and route.current_event(now):
+        tz = route.tz_now(now)
+        o = route.opening_on(now.astimezone(tz).date())
+        return o + timedelta(minutes=int(cfg.get("after_open_min", 5))) if o else None
     try:
         local = now.astimezone(ZoneInfo(cfg["tz"]))
         hh, mm = (int(x) for x in str(cfg["time"]).split(":"))
     except Exception:  # noqa: BLE001
+        return None
+    return local.replace(hour=hh, minute=mm, second=0, microsecond=0)
+
+
+async def maybe_send(db: AsyncSession, now: datetime) -> None:
+    acc = (await db.execute(select(Account).limit(1))).scalars().first()
+    cfg = config(acc)
+    if acc is None or not cfg.get("enabled"):
         return
-    due = local.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    due = due_today(cfg, now)
+    if due is None:
+        return  # fair closed today
+    local = now.astimezone(due.tzinfo)
     today = local.date().isoformat()
     if cfg.get("speedtest") and _speedtest_fired.get("d") != today and \
             due - timedelta(minutes=10) <= local < due - timedelta(minutes=2):
@@ -199,6 +216,9 @@ async def maybe_send(db: AsyncSession, now: datetime) -> None:
                 await _start_speedtest(db, site)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("speed test start failed: %s", exc)
+    # Skip while closed; the short post-opening grace is fine (that's when we report).
+    if closure.phase(now) == "closed":
+        return
     if acc.morning_report_last is None:
         # First run after this feature ships: start tomorrow, don't post mid-day.
         acc.morning_report_last = today

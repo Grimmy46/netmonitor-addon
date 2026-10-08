@@ -210,8 +210,9 @@ function MorningReport() {
   const [cfg, setCfg] = useState<MorningCfg | null>(null);
   const [preview, setPreview] = useState("");
   const [last, setLast] = useState<string | null>(null);
+  const [route, setRoute] = useState<{ event: string | null; due: string | null; tz?: string }>({ event: null, due: null });
   const [msg, setMsg] = useState("");
-  const load = () => api.morning().then((r) => { setCfg(r.config); setPreview(r.preview); setLast(r.last); }).catch((e) => setMsg(String(e.message ?? e)));
+  const load = () => api.morning().then((r) => { setCfg(r.config); setPreview(r.preview); setLast(r.last); setRoute({ event: r.route?.event ?? null, due: r.due_today, tz: r.route?.tz }); }).catch((e) => setMsg(String(e.message ?? e)));
   useEffect(() => { load(); }, []);
   if (!cfg) return null;
   const save = async (patch: Partial<MorningCfg>) => {
@@ -228,7 +229,8 @@ function MorningReport() {
   return (
     <>
       <h4 style={{ margin: "16px 0 6px" }}>Daily opening report (NETBOT)</h4>
-      <p style={{ marginTop: 0 }}>Posts kiosks, printers, switches, APs and WAN status to the alert group once a day. Skipped while the show is closed.</p>
+      <p style={{ marginTop: 0 }}>Posts kiosks, printers, switches, APs and WAN status to the alert group once a day. Skipped while the show is closed.
+        {route.event ? <> At <b>{route.event}</b> it goes out 5 min after the gates open — {route.due ? `today ${new Date(route.due).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZone: route.tz || cfg.tz })}` : "fair closed today"}. The time below is used between fairs.</> : null}</p>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
         <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <input type="checkbox" checked={cfg.enabled} onChange={(e) => save({ enabled: e.target.checked })} /> On

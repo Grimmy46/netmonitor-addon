@@ -142,7 +142,20 @@ async def set_closure(body: ClosureIn, db: AsyncSession = Depends(get_db),
     acc.closure_start, acc.closure_end = start, end
     acc.closure_note = (body.note or "").strip()[:120] or None
     acc.closure_report_sent_at = None
+    acc.closure_grace_min = None
     await db.commit()
+    return {"closure": await _closure_out(db)}
+
+
+@router.post("/closure/tonight")
+async def close_tonight(db: AsyncSession = Depends(get_db), _admin=Depends(require_admin)) -> dict:
+    """"We're closed": pause alerts now until the next gate opening (from the
+    show route), with a short 30-min reopen grace."""
+    from app.services import nightly
+    acc = (await db.execute(select(Account).limit(1))).scalar_one_or_none()
+    if acc is None:
+        raise HTTPException(status_code=404, detail="No account")
+    await nightly.close_until_open(db, acc, _now(), "Closed for the night")
     return {"closure": await _closure_out(db)}
 
 

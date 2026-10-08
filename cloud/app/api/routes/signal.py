@@ -130,6 +130,8 @@ class MorningIn(BaseModel):
     min_down: int | None = None
     min_up: int | None = None
     max_latency: int | None = None
+    follow_route: bool | None = None
+    after_open_min: int | None = None
 
 
 @router.get("/morning")
@@ -137,7 +139,13 @@ async def morning_get(db: AsyncSession = Depends(get_db), _=Depends(current_user
     from app.models import Account
     from app.services import morning
     acc = (await db.execute(select(Account).limit(1))).scalars().first()
-    return {"config": morning.config(acc), "last": acc.morning_report_last if acc else None,
+    from datetime import datetime, timezone
+    from app.services import route
+    now = datetime.now(timezone.utc)
+    cfg = morning.config(acc)
+    due = morning.due_today(cfg, now)
+    return {"config": cfg, "last": acc.morning_report_last if acc else None,
+            "route": route.today_info(now), "due_today": due.isoformat() if due else None,
             "preview": await morning.build(db)}
 
 

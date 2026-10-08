@@ -419,7 +419,7 @@ export const api = {
   signalGroups: () => req<SignalGroup[]>("/integrations/signal/groups"),
   signalWatch: (watched: SignalStatus["watched"], alert_group_id: string | null) =>
     req<{ watched: SignalStatus["watched"] }>("/integrations/signal/watch", { method: "PUT", body: JSON.stringify({ watched, alert_group_id }) }),
-  morning: () => req<{ config: MorningCfg; last: string | null; preview: string }>("/integrations/signal/morning"),
+  morning: () => req<{ config: MorningCfg; last: string | null; preview: string; route?: { event: string | null; tz: string }; due_today: string | null }>("/integrations/signal/morning"),
   morningSave: (c: Partial<MorningCfg>) =>
     req<{ config: MorningCfg }>("/integrations/signal/morning", { method: "PUT", body: JSON.stringify(c) }),
   morningSendNow: () => req<{ sent: boolean; text: string }>("/integrations/signal/morning/send-now", { method: "POST" }),
@@ -439,6 +439,7 @@ export const api = {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ start, end, note }),
     }),
+  closeTonight: () => req<{ closure: Closure | null }>("/network/closure/tonight", { method: "POST" }),
   endClosure: () => req<{ closure: Closure | null }>("/network/closure", { method: "DELETE" }),
   sites: () => req<Site[]>("/sites"),
   site: (siteId: string) => req<Site>(`/sites/${siteId}`),

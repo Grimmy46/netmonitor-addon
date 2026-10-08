@@ -96,18 +96,13 @@ function ClosureBar({ c, onChange }: { c: Closure | null | undefined; onChange: 
     try { await api.endClosure(); onChange(); } finally { setBusy(false); }
   };
 
-  // One tap after an early close: pause alerts from now until tomorrow 10 AM
-  // (or 10 AM today if it's already past midnight).
+  // One tap after an early close: pause alerts until the next gate opening
+  // (the server knows the fair schedule).
   const closedNow = async () => {
-    const now = new Date();
-    const end = new Date(now);
-    if (now.getHours() >= 6) end.setDate(end.getDate() + 1);
-    end.setHours(10, 0, 0, 0);
-    const when = end.toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
-    if (!window.confirm(`We're closed: pause all alerts now until ${when}?`)) return;
+    if (!window.confirm("We're closed: pause all alerts now until the gates open next?")) return;
     setBusy(true); setErr("");
     try {
-      await api.setClosure(now.toISOString(), end.toISOString(), "Closed early");
+      await api.closeTonight();
       onChange();
     } catch (e) { window.alert(e instanceof Error ? e.message : String(e)); }
     setBusy(false);

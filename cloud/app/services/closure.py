@@ -28,6 +28,7 @@ from app.core.config import get_settings
 from app.models import Account, Device
 
 _window: tuple[datetime, datetime] | None = None
+_grace_min: int | None = None
 
 
 def _now() -> datetime:
@@ -35,13 +36,20 @@ def _now() -> datetime:
 
 
 async def refresh(db: AsyncSession) -> tuple[datetime, datetime] | None:
-    global _window
+    global _window, _grace_min
     acc = (await db.execute(select(Account).limit(1))).scalar_one_or_none()
+    _grace_min = acc.closure_grace_min if acc is not None else None
     if acc is not None and acc.closure_start and acc.closure_end and acc.closure_end > acc.closure_start:
         _window = (acc.closure_start, acc.closure_end)
     else:
         _window = None
     return _window
+
+
+def _grace() -> timedelta:
+    if _grace_min is not None:
+        return timedelta(minutes=_grace_min)
+    return timedelta(hours=get_settings().closure_reopen_grace_hours)
 
 
 def window() -> tuple[datetime, datetime] | None:
@@ -59,7 +67,7 @@ def phase(now: datetime | None = None) -> str | None:
         return None
     now = now or _now()
     start, end = _window
-    grace = timedelta(hours=get_settings().closure_reopen_grace_hours)
+    grace = _grace()
     if now < start:
         return "scheduled"
     if now < end:
@@ -76,7 +84,7 @@ def alerts_paused(now: datetime | None = None) -> bool:
 def reopen_until() -> datetime | None:
     if _window is None:
         return None
-    return _window[1] + timedelta(hours=get_settings().closure_reopen_grace_hours)
+    return _window[1] + _grace()
 
 
 def effective_offline_seconds(since: datetime | None, now: datetime) -> float | None:

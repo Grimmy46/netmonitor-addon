@@ -240,7 +240,7 @@ function MorningReport() {
           </select>
         </label>
         <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <input type="checkbox" checked={cfg.speedtest} onChange={(e) => save({ speedtest: e.target.checked })} /> Speed test at {cfg.time ? "10 min before" : ""}
+          <input type="checkbox" checked={cfg.speedtest} onChange={(e) => save({ speedtest: e.target.checked })} /> Speed test 10 min before
         </label>
         {cfg.speedtest ? (
           <span className="sub" style={{ display: "flex", gap: 6, alignItems: "center" }}>

@@ -273,8 +273,8 @@ function ClosingEarly() {
       <h4 style={{ margin: "16px 0 6px" }}>Closing early</h4>
       <ul style={{ marginTop: 0, paddingLeft: 18, fontSize: 13 }}>
         <li>Anyone in the alert group can send <b>closed</b> (or “closing early”) — alerts pause until the gates open next. <b>open</b> undoes it, <b>status</b> posts the report now.</li>
-        <li>From 5 PM, if 40%+ of kiosks drop at once, NETBOT pauses alerts and asks the group. Reply <b>closed</b> to confirm or <b>no</b> if it's an outage.</li>
-        <li>Weather heads-up: NETBOT posts National Weather Service wind, dust, storm and flood alerts for the fairgrounds on fair days.</li>
+        <li>From 5 PM, if 40%+ of kiosks drop at once, NETBOT pauses alerts and notifies admins (app push). Send <b>closed</b> in the group to confirm or <b>no</b> if it's an outage.</li>
+        <li>Weather heads-up: National Weather Service wind, dust, storm and flood alerts for the fairgrounds go to admins as app pushes — never to the group.</li>
         <li>After 10:30 PM, a mass kiosk drop is treated as normal closing (no question asked).</li>
       </ul>
       <b style={{ fontSize: 13 }}>Phone shortcut / NFC tag</b>

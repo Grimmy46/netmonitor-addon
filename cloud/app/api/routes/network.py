@@ -173,7 +173,7 @@ async def closure_shortcut(token: str, action: str, db: AsyncSession = Depends(g
         msg = await netbot.open_now(db, now, "phone shortcut")
     else:
         raise HTTPException(status_code=404, detail="Not found")
-    await netbot.say(db, msg)
+    await netbot.dm(db, msg, "netbot-shortcut")
     return {"ok": True, "message": msg.replace("NETBOT: ", "")}
 
 

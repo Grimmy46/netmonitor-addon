@@ -67,6 +67,19 @@ async def say(db: AsyncSession, text: str) -> None:
         logger.warning("netbot say failed: %s", exc)
 
 
+async def dm(db: AsyncSession, text: str, tag: str = "netbot") -> None:
+    """Non-network notices go to admins' phones (app push), never the group.
+    The RCS-IT group only gets: switch/gateway down, kiosk stopped reporting,
+    printer paper out, the opening report and replies to commands typed there."""
+    from app.services.fastalert import _push_admins
+    title, _, body = text.partition("\n")
+    title = title.replace("NETBOT: ", "").replace("NETBOT ", "")
+    try:
+        await _push_admins(db, title[:120], (body or title)[:400], tag)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("netbot dm failed: %s", exc)
+
+
 def _local(now: datetime) -> datetime:
     return now.astimezone(route.tz_now(now))
 
@@ -186,9 +199,9 @@ async def maybe_early_close(db: AsyncSession, now: datetime) -> None:
     st["pending"] = now.isoformat()
     acc.autoclose_last = _night_key(now)
     await _save(db, acc, st)
-    await say(db, (f"🌙 NETBOT: looks like we're closing early — {len(off)}/{len(kiosks)} kiosks off at "
+    await dm(db, (f"🌙 NETBOT: looks like we're closing early — {len(off)}/{len(kiosks)} kiosks off at "
                    f"{loc.strftime('%-I:%M %p')}. I've paused alerts until {_when(end, now)}.\n"
-                   "Reply \"closed\" to confirm, or \"no\" if this is an outage and I'll turn alerts back on."))
+                   "Send \"closed\" in RCS-IT to confirm, or \"no\" if this is an outage and I'll turn alerts back on."), "netbot-early")
 
 
 # ── 3. weather heads-up ─────────────────────────────────────────────────────
@@ -236,8 +249,8 @@ async def maybe_weather(db: AsyncSession, now: datetime) -> None:
             except ValueError:
                 pass
         head = (p.get("headline") or "").strip()
-        await say(db, (f"⛈️ NETBOT weather heads-up for {ev['name']}: {event}{until_s}.\n"
-                       f"{head[:220]}\nAn early close is possible — if we shut down, just send \"closed\"."))
+        await dm(db, (f"⛈️ NETBOT weather heads-up for {ev['name']}: {event}{until_s}.\n"
+                       f"{head[:220]} An early close is possible — if we shut down, send \"closed\"."), "netbot-wx")
     st["wx_sent"] = sent
     await _save(db, acc, st)
 

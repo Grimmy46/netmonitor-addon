@@ -79,7 +79,7 @@ async def maybe_autoclose(db: AsyncSession, now: datetime) -> None:
             "If that's wrong, tap Reopen on the NetMonitor Live tab.")
     logger.info("Auto-close: %s", text)
     try:
-        from app.services import morning
-        await morning.send(db, text)
+        from app.services import netbot
+        await netbot.dm(db, text, "netbot-night")
     except Exception as exc:  # noqa: BLE001
         logger.warning("auto-close notice failed: %s", exc)

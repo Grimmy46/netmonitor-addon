@@ -1283,7 +1283,7 @@ async def probe_report(
 # run them crash-isolated (bootstrap ≥ 2.5); older exes get them cancelled.
 # printer-test sends a small ESC/POS test ticket to the KPM180H and reports whether
 # the printer accepted it and is healthy afterwards.
-ALLOWED_COMMAND_KINDS = {"cam-diag", "printer-status", "printer-probe", "printer-raw", "printer-test",
+ALLOWED_COMMAND_KINDS = {"cam-diag", "inventory", "printer-status", "printer-probe", "printer-raw", "printer-test",
                          "power-off", "power-cancel"}
 _CRASH_ISOLATED_KINDS = {"printer-probe", "printer-raw", "printer-test"}
 

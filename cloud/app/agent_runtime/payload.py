@@ -14,6 +14,7 @@ Rules for this file:
 `cfg`  = the kiosk's config file (server_url, token, target, gateway, intervals…).
 `ctx`  = {"server_url", "token", "running_version"} supplied by the bootstrapper.
 """
+import glob
 import hashlib
 import shutil
 import json
@@ -34,7 +35,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.10.04.5"
+PAYLOAD_VERSION = "2026.10.09.1"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -848,8 +849,130 @@ def _cmd_cam_diag(_args):
     return out
 
 
+# ── inventory (read-only): how this PC is set up — for the workstation installer
+_SECRET_KEY_RE = re.compile(r"(pass|pwd|secret|token|apikey|api_key|api-key|private|credential|auth|pin\b|signature|license|licence)", re.I)
+_LONG_RE = re.compile(r"[A-Za-z0-9+/=_\-]{28,}")
+_INV_EXT = (".json", ".config", ".ini", ".xml", ".cfg", ".conf", ".properties", ".yaml", ".yml", ".env", ".txt", ".settings")
+_INV_WORDS = ("kiosk", "funpos", "fun pos", "chipdna", "creditcall", "anydesk", "rcs", "funcard", "ticket", "pos", "cardapp", "nmi")
+
+
+def _mask_text(text):
+    """Mask values whose key looks secret, plus any long key-like string."""
+    out = []
+    for line in text.splitlines():
+        if _SECRET_KEY_RE.search(line):
+            m = re.match(r'^(\s*["<]?[\w.\- :]+?["\]>]?\s*[:=>]\s*)(.*)$', line)
+            if m:
+                val = m.group(2)
+                line = m.group(1) + (f"<masked {len(val)} chars>" if val.strip() else "")
+            else:
+                line = re.sub(r'(value\s*=\s*")[^"]*(")', r"\1<masked>\2", line)
+        line = _LONG_RE.sub(lambda mm: mm.group(0) if mm.group(0).startswith(("http", "C:", "c:")) else f"<masked {len(mm.group(0))}>", line)
+        out.append(line)
+    return "\n".join(out)
+
+
+def _reg_query(key, recurse=False):
+    try:
+        args = ["reg", "query", key] + (["/s"] if recurse else [])
+        r = subprocess.run(args, capture_output=True, text=True, timeout=40, errors="ignore", **_no_window_kwargs())
+        return r.stdout or ""
+    except Exception as e:  # noqa: BLE001
+        return f"ERR {e}"
+
+
+def _parse_uninstall(txt):
+    apps, cur = [], {}
+    for line in txt.splitlines():
+        if line.startswith("HKEY_"):
+            if cur.get("DisplayName"):
+                apps.append(cur)
+            cur = {}
+            continue
+        parts = line.strip().split(None, 2)
+        if len(parts) == 3 and parts[0] in ("DisplayName", "DisplayVersion", "Publisher", "InstallLocation", "UninstallString", "QuietUninstallString"):
+            cur[parts[0]] = parts[2]
+    if cur.get("DisplayName"):
+        apps.append(cur)
+    return apps
+
+
+def _cmd_inventory(args):
+    out = {"host": socket.gethostname(), "os": platform.platform()}
+    if SYSTEM != "Windows":
+        return out
+    apps = []
+    for k in (r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+              r"HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+              r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"):
+        apps += _parse_uninstall(_reg_query(k, True))
+    seen, uniq = set(), []
+    for a in apps:
+        key = (a.get("DisplayName"), a.get("DisplayVersion"))
+        if key not in seen and not re.search(r"(?i)^(microsoft visual c\+\+|update for|security update|hotfix)", a.get("DisplayName", "")):
+            seen.add(key)
+            uniq.append({k: v for k, v in a.items() if k != "UninstallString" or "msiexec" in v.lower()})
+    out["apps"] = uniq[:150]
+    out["run_keys"] = _mask_text(_reg_query(r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run") +
+                                 _reg_query(r"HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run") +
+                                 _reg_query(r"HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"))[:4000]
+    out["winlogon"] = _mask_text("\n".join(l for l in _reg_query(r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon").splitlines()
+                                           if re.search(r"(?i)autoadmin|defaultuser|defaultdomain|defaultpassword|shell\b|autologon", l)))[:2000]
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-Command",
+                            "Get-Printer | Select-Object Name,DriverName,PortName,Shared | ConvertTo-Json -Compress"],
+                           capture_output=True, text=True, timeout=60, errors="ignore", **_no_window_kwargs())
+        out["printers"] = json.loads(r.stdout or "[]")
+    except Exception as e:  # noqa: BLE001
+        out["printers"] = f"ERR {e}"
+    startup = []
+    for g in (r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\*",
+              r"C:\Users\*\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\*",
+              r"C:\Users\Public\Desktop\*", r"C:\Users\*\Desktop\*"):
+        startup += glob.glob(g)
+    out["startup_and_desktop"] = startup[:80]
+    # Config files in folders that look like our apps.
+    roots = [r"C:\Program Files", r"C:\Program Files (x86)", r"C:\ProgramData", "C:\\"]
+    roots += glob.glob(r"C:\Users\*\AppData\Roaming") + glob.glob(r"C:\Users\*\AppData\Local")
+    dirs = []
+    for r0 in roots:
+        try:
+            for name in os.listdir(r0):
+                pth = os.path.join(r0, name)
+                if os.path.isdir(pth) and any(w in name.lower() for w in _INV_WORDS) and "netmon" not in name.lower():
+                    dirs.append(pth)
+        except Exception:  # noqa: BLE001
+            pass
+    out["app_dirs"] = dirs[:60]
+    files, total = [], 0
+    for d in dirs[:40]:
+        for root, subdirs, names in os.walk(d):
+            if root.count(os.sep) - d.count(os.sep) > 3:
+                subdirs[:] = []
+                continue
+            subdirs[:] = [x for x in subdirs if x.lower() not in ("cache", "code cache", "gpucache", "logs", "log", "node_modules", "locales", "resources")]
+            for n in names:
+                if not n.lower().endswith(_INV_EXT):
+                    continue
+                fp = os.path.join(root, n)
+                try:
+                    sz = os.path.getsize(fp)
+                    if sz > 64000 or total > 300000 or len(files) >= 60:
+                        files.append({"path": fp, "size": sz, "skipped": True})
+                        continue
+                    with open(fp, "r", encoding="utf-8", errors="ignore") as fh:
+                        txt = fh.read()
+                    total += len(txt)
+                    files.append({"path": fp, "size": sz, "text": _mask_text(txt)[:16000]})
+                except Exception as e:  # noqa: BLE001
+                    files.append({"path": fp, "error": str(e)[:100]})
+    out["config_files"] = files[:90]
+    return out
+
+
 _COMMAND_HANDLERS = {
     "cam-diag": _cmd_cam_diag,
+    "inventory": _cmd_inventory,
     "power-off": _cmd_power_off,
     "power-cancel": _cmd_power_cancel,
     "printer-status": _cmd_printer_status,

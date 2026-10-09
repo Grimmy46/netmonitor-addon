@@ -9,6 +9,7 @@ import { Sparkline } from "./Sparkline";
 import { StationsPanel } from "./StationsPanel";
 import { AgentUpdatePanel } from "./AgentUpdatePanel";
 import { PrinterLogPanel } from "./PrinterLogPanel";
+import { PaperPanel } from "./PaperPanel";
 import { WanPanel } from "./WanPanel";
 import { TeardownPlanner } from "./TeardownPlanner";
 import { StatusPill } from "./StatusPill";
@@ -181,6 +182,7 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
   const [manage, setManage] = useState(false);
   const [showUpdate, setShowUpdate] = useState(false);
   const [showPrinterLog, setShowPrinterLog] = useState(false);
+  const [showPaper, setShowPaper] = useState(false);
   const [showWan, setShowWan] = useState(false);
   const [showTeardown, setShowTeardown] = useState(false);
   const [wan, setWan] = useState<WanStatus | null>(null);
@@ -276,6 +278,8 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
     <AgentUpdatePanel onClose={() => setShowUpdate(false)} onChanged={load} />
   ) : showPrinterLog ? (
     <PrinterLogPanel onClose={() => setShowPrinterLog(false)} />
+  ) : showPaper ? (
+    <PaperPanel onClose={() => setShowPaper(false)} />
   ) : showWan ? (
     <WanPanel onClose={() => setShowWan(false)} />
   ) : showTeardown ? (
@@ -354,6 +358,7 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
             <div className="more-menu" onClick={() => setMoreOpen(false)}>
               <button onClick={makePdf} disabled={pdfBusy || live.length === 0}>{pdfBusy ? "Building PDF…" : "⤓ 24 h PDF report"}</button>
               <button onClick={() => setShowPrinterLog(true)}>🖨 Printer log</button>
+              <button onClick={() => setShowPaper(true)}>🧻 Paper usage</button>
               <button onClick={() => setShowWan(true)}>🌐 WAN health</button>
               {isAdmin() ? <button onClick={toggleTeardown}>🧰 {teardown?.active ? "End teardown" : "Teardown mode"}</button> : null}
               {isAdmin() ? <button onClick={() => setShowTeardown(true)}>🗓 Teardown planner</button> : null}

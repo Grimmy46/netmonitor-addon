@@ -35,7 +35,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.10.09.2"
+PAYLOAD_VERSION = "2026.10.09.3"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -660,17 +660,33 @@ def _cmd_printer_monitor(args):
     # cut count (that mistake parked the gauge at 0).
     if (args or {}).get("cuts") is False:
         return result
+    # KPM180H counters (Custom commands): GS E2 → "<N>cuts" (lifetime cuts ≈
+    # tickets), GS E3 → "<N>cm" (lifetime printed paper). The printer may answer
+    # both into one buffer ("2581cuts34770cm"), so collect everything, then parse.
+    # (GS E1 is the virtual paper-end gauge — reads "0cm" on ours; never used.)
+    txt = ""
     try:
-        cc = _usb_txn(path, b"\x1d\xe1", 800, 64)
-        txt = bytes.fromhex((cc or {}).get("read_hex") or "").decode("ascii", "ignore")
+        for cmd in (b"\x1d\xe2", b"\x1d\xe3"):
+            r = _usb_txn(path, cmd, 800, 64) or {}
+            txt += bytes.fromhex(r.get("read_hex") or "").decode("ascii", "ignore")
+        for _ in range(3):  # soak up any tail so the NEXT status read is clean
+            t = _usb_txn(path, b"", 300, 64) or {}
+            if not t.get("read_hex"):
+                break
+            txt += bytes.fromhex(t.get("read_hex") or "").decode("ascii", "ignore")
         mcuts = re.search(r"(\d+)\s*cuts", txt)
         if mcuts:
             result["cut_count"] = int(mcuts.group(1))
         mcm = re.search(r"(\d+)\s*cm", txt)
-        if mcm:
-            result["paper_remaining_cm"] = int(mcm.group(1))
-        # Soak up any tail of that string so the NEXT status read is clean.
-        for _ in range(3):
+        if mcm and int(mcm.group(1)) > 0:
+            result["paper_cm"] = int(mcm.group(1))
+        # Full status (DLE EOT 20): 10 0F <paper> <user> <rec> <unrec>; paper bit2 = near end.
+        fs = _usb_txn(path, b"\x10\x04\x14", 800, 16) or {}
+        fb = bytes.fromhex(fs.get("read_hex") or "")
+        k = fb.find(b"\x10\x0f")
+        if k >= 0 and len(fb) >= k + 6:
+            result["near_end"] = bool(fb[k + 2] & 0x04)
+        for _ in range(2):
             t = _usb_txn(path, b"", 300, 64) or {}
             if not t.get("read_hex"):
                 break
@@ -1527,8 +1543,9 @@ def _printer_monitor_worker(ctx, stop):
             if not (isinstance(again, dict) and again.get("state") == res.get("state")):
                 res = None  # not confirmed — keep the previous reading
         if isinstance(res, dict) and "present" in res:
-            if "cut_count" not in res and _PRINTER_STATUS and "cut_count" in _PRINTER_STATUS:
-                res["cut_count"] = _PRINTER_STATUS["cut_count"]  # carry the last known count
+            for _k in ("cut_count", "paper_cm", "near_end"):  # carry last known counters
+                if _k not in res and _PRINTER_STATUS and _k in _PRINTER_STATUS:
+                    res[_k] = _PRINTER_STATUS[_k]
             _PRINTER_STATUS = res
         present = isinstance(res, dict) and res.get("present")
         if stop.wait(60.0 if present else 600.0):

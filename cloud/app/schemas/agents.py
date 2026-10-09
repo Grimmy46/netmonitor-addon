@@ -42,6 +42,11 @@ class AgentOut(BaseModel):
     printer_cuts_per_roll: float | None = None    # effective yield (learned or seed)
     printer_roll_learned: bool = False            # yield measured from a real run-out?
     printer_roll_partial: bool = False            # anchor set mid-roll (estimate only)
+    printer_paper_cm: int | None = None           # lifetime printed paper (cm)
+    printer_roll_used_cm: int | None = None       # used on the current roll
+    printer_roll_cm: int | None = None            # roll length (learned or 500 ft)
+    printer_tickets_this_roll: int | None = None
+    printer_near_end: bool | None = None          # near-end sensor
     # Where it's plugged in + fleet state.
     lan_ip: str | None = None
     switch_name: str | None = None
@@ -109,7 +114,9 @@ class PrinterStatusIn(BaseModel):
     raw: str | None = None               # raw status byte(s) as hex
     detail: str | None = None            # human-readable decode
     cut_count: int | None = None         # lifetime cut count (≈ tickets), for paper tracking
-    paper_remaining_cm: int | None = None  # printer's own paper-remaining gauge (cm), if programmed
+    paper_remaining_cm: int | None = None  # GS E1 (virtual paper-end gauge; unused, reads 0)
+    paper_cm: int | None = None          # GS E3: lifetime printed paper (cm)
+    near_end: bool | None = None         # DLE EOT 20 paper byte bit2: near paper end
 
 
 class TeardownIn(BaseModel):

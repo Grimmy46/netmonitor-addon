@@ -690,11 +690,10 @@ async def sweep(db: AsyncSession) -> dict:
 
         # ── Predictive paper: the current roll is nearly used up ──────────
         # Only on a fresh reading from a live agent with a known roll anchor.
-        if (not down and p_fresh and a.printer_cut_count is not None
-                and a.printer_roll_start_cut is not None):
-            eff = a.printer_cuts_per_roll or st.paper_seed_cuts_per_roll
-            used = max(0, a.printer_cut_count - a.printer_roll_start_cut)
-            frac = (used / eff) if eff else 0.0
+        from app.services import paper as _paper
+        _u = _paper.roll_usage(a) if (not down and p_fresh) else None
+        if _u is not None:
+            frac = _u["frac"]
             if frac >= st.paper_low_pct:
                 if a.printer_low_alert_state is None:
                     a.printer_low_alert_state, a.printer_low_alert_at = "pending", now
@@ -703,8 +702,8 @@ async def sweep(db: AsyncSession) -> dict:
                     and a.printer_low_alert_at is not None
                     and (now - a.printer_low_alert_at).total_seconds() >= st.paper_low_confirm_seconds
                 ):
-                    remaining = max(0, int(round(eff - used)))
-                    est = "estimate" if a.printer_roll_partial else "learned roll"
+                    remaining = _u["tickets_left"] if _u["tickets_left"] is not None else "?"
+                    est = "estimate" if a.printer_roll_partial else "measured roll"
                     paper_low_faults.append(_Fault(
                         entity=a,
                         title=f"🧻 {a.name} paper low — swap soon",

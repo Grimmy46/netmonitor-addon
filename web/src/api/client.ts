@@ -103,6 +103,19 @@ export interface Agent {
   stale?: boolean;
 }
 
+export interface PaperUsage {
+  days: { day: string; tickets: number; cm: number }[];
+  stations: {
+    agent_id: string; name: string; tickets: number; cm: number; today_tickets: number;
+    roll_changes: number; counting: boolean; roll_percent: number | null; tickets_left: number | null;
+    tickets_this_roll: number | null; roll_estimate: boolean | null; near_end: boolean | null;
+    lifetime_tickets: number | null;
+  }[];
+  rolls: { at: string; agent_id: string; name: string | null; how: string; out_seconds: number | null;
+    tickets: number | null; cm: number | null; partial: boolean }[];
+  roll_cm_default: number;
+}
+
 export interface PrinterEvent {
   id: string;
   agent_id: string;
@@ -567,6 +580,7 @@ export const api = {
     req<PrinterEvent[]>(`/agents/${id}/printer-log?limit=${limit}`),
   markNewRoll: (id: string) =>
     req<Agent>(`/agents/${id}/printer/new-roll`, { method: "POST" }),
+  paperUsage: (days = 7) => req<PaperUsage>(`/agents/paper?days=${days}`),
   fleetPrinterLog: (hours = 168, limit = 5000) =>
     req<PrinterEvent[]>(`/agents/printer-log?hours=${hours}&limit=${limit}`),
   agentPings: (id: string) => req<PingPoint[]>(`/agents/${id}/pings`),

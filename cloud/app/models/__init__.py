@@ -12,6 +12,7 @@ from app.models.notification_log import NotificationLog
 from app.models.ping_rollup import PingRollup1h, PingRollup1m
 from app.models.ping_sample import PingSample
 from app.models.printer_event import PrinterEvent
+from app.models.printer_roll import PrinterDaily, PrinterRoll
 from app.models.probe import ProbeSample, ProbeTarget
 from app.models.push_subscription import PushSubscription
 from app.models.scan_batch import ScanBatch
@@ -41,6 +42,8 @@ __all__ = [
     "PingRollup1m",
     "PingSample",
     "PrinterEvent",
+    "PrinterRoll",
+    "PrinterDaily",
     "ProbeSample",
     "ProbeTarget",
     "PushSubscription",

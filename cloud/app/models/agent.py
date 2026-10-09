@@ -89,6 +89,13 @@ class Agent(Base, UUIDPk, Timestamps):
     )
     printer_roll_partial: Mapped[bool] = mapped_column(default=True)
     printer_cuts_per_roll: Mapped[float | None] = mapped_column(default=None)  # learned yield
+    # Printed-paper counter (GS E3, lifetime cm) — the roll gauge's main input.
+    printer_paper_cm: Mapped[int | None] = mapped_column(default=None)
+    printer_roll_start_cm: Mapped[int | None] = mapped_column(default=None)
+    printer_cm_per_roll: Mapped[float | None] = mapped_column(default=None)   # learned roll length
+    printer_near_end: Mapped[bool | None] = mapped_column(default=None)       # near-end sensor
+    printer_near_end_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    printer_out_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     printer_low_alert_state: Mapped[str | None] = mapped_column(default=None)  # None|pending|notified
     printer_low_alert_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None

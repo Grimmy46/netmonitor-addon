@@ -161,61 +161,24 @@ def _is_online(last_seen_at: str | None) -> bool:
 
 
 def _paper_fields(a: Agent) -> dict:
-    """Derived predictive-paper view for the dashboard: how much of the current
-    roll is used, tickets left, and whether the yield is learned or still seeded."""
-    cc, start = a.printer_cut_count, a.printer_roll_start_cut
-    # A real lifetime cut counter is a large positive number; 0/None means we
-    # haven't actually read the counter yet — show no gauge rather than a false 0%.
-    if cc is None or start is None or cc <= 0:
+    """Current-roll gauge for the dashboard (printed-cm based when available)."""
+    from app.services import paper as _paper
+    u = _paper.roll_usage(a)
+    if u is None:
         return {}
-    eff = a.printer_cuts_per_roll or get_settings().paper_seed_cuts_per_roll
-    used = max(0, cc - start)
     return {
-        "printer_cut_count": cc,
-        "printer_roll_percent": (min(100.0, round(100.0 * used / eff, 1)) if eff else None),
-        "printer_cuts_remaining": max(0, int(round(eff - used))),
-        "printer_cuts_per_roll": round(float(eff), 1),
-        "printer_roll_learned": a.printer_cuts_per_roll is not None,
-        "printer_roll_partial": bool(a.printer_roll_partial),
+        "printer_cut_count": a.printer_cut_count,
+        "printer_roll_percent": min(100.0, round(100.0 * u["frac"], 1)),
+        "printer_cuts_remaining": u["tickets_left"],
+        "printer_cuts_per_roll": (round(float(a.printer_cuts_per_roll or 0), 1) or None),
+        "printer_roll_learned": u["learned"],
+        "printer_roll_partial": u["partial"],
+        "printer_paper_cm": a.printer_paper_cm,
+        "printer_roll_used_cm": u["used_cm"],
+        "printer_roll_cm": round(u["roll_cm"]) if u["roll_cm"] else None,
+        "printer_tickets_this_roll": u["tickets_this_roll"],
+        "printer_near_end": a.printer_near_end,
     }
-
-
-def _apply_paper_tracking(a: Agent, cut_count: int | None, prev: str | None,
-                          new_state: str | None, now: datetime) -> None:
-    """Update the roll model from this poll's cut count. Anchors the roll on first
-    sighting and on each reload, LEARNS the roll's true yield when one runs empty,
-    and self-heals if a roll was swapped before running out."""
-    if cut_count is None or cut_count <= 0:  # 0 = counter not actually read yet
-        return
-    st = get_settings()
-    a.printer_cut_count = cut_count
-    a.printer_cut_count_at = now
-    if a.printer_roll_start_cut is None:  # first sighting — anchor mid-roll (estimate)
-        a.printer_roll_start_cut = cut_count
-        a.printer_roll_start_at = now
-        a.printer_roll_partial = True
-    # Ran to empty → learn the yield, but only from a roll anchored at a real change.
-    if new_state == "paper_out" and prev != "paper_out" and not a.printer_roll_partial:
-        observed = cut_count - (a.printer_roll_start_cut or cut_count)
-        if observed >= st.paper_min_learn_cuts:
-            cur = a.printer_cuts_per_roll
-            a.printer_cuts_per_roll = (
-                float(observed) if cur is None else round(0.5 * cur + 0.5 * observed, 1)
-            )
-    # Reload (paper restored) → fresh roll anchored here; clear any low warning.
-    if new_state == "ok" and prev == "paper_out":
-        a.printer_roll_start_cut = cut_count
-        a.printer_roll_start_at = now
-        a.printer_roll_partial = False
-        a.printer_low_alert_state = a.printer_low_alert_at = None
-    # Missed reload (swapped before empty): used far more than a roll holds → re-anchor.
-    eff = a.printer_cuts_per_roll or st.paper_seed_cuts_per_roll
-    if a.printer_roll_start_cut is not None and \
-            cut_count - a.printer_roll_start_cut > eff * st.paper_overrun_factor:
-        a.printer_roll_start_cut = cut_count
-        a.printer_roll_start_at = now
-        a.printer_roll_partial = True
-        a.printer_low_alert_state = a.printer_low_alert_at = None
 
 
 def _agent_out(a: Agent, site_name: str | None, latest_rtt: float | None) -> AgentOut:
@@ -633,7 +596,9 @@ async def agent_report(
             ))
         # Predictive paper: fold in the lifetime cut count (uses prev/new_state
         # to detect run-outs and reloads).
-        _apply_paper_tracking(agent, p.cut_count if p.present else None, prev, new_state, now)
+        if p.present:
+            from app.services import paper as _paper
+            await _paper.track(db, agent, p.cut_count, p.paper_cm, p.near_end, prev, new_state, now)
     client_ip = _client_ip(request)
     if client_ip:
         agent.last_ip = client_ip
@@ -1110,6 +1075,78 @@ async def fleet_printer_log(
     return [_printer_event_out(e, name) for e, name in rows]
 
 
+@router.get("/paper")
+async def paper_usage(
+    days: int = Query(7, ge=1, le=90),
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(current_user),
+) -> dict:
+    """Tickets printed (per day + per kiosk), paper used, and every real roll
+    change in the window — the Paper usage report."""
+    from app.models import PrinterDaily, PrinterRoll
+    from app.services import paper as _paper
+    today = datetime.now(_paper.SHOW_TZ).date()
+    first_day = today - timedelta(days=days - 1)
+    agents = {a.id: a for a in (await db.execute(select(Agent).where(Agent.claimed_at.is_not(None)))).scalars()}
+    rows = (await db.execute(select(PrinterDaily).where(PrinterDaily.day >= first_day))).scalars().all()
+
+    def _delta(last, prev, first):
+        if last is None:
+            return 0
+        base = prev if prev is not None and prev <= last else first
+        return max(0, last - (base if base is not None else last))
+
+    per_day: dict = {}
+    per_agent: dict = {}
+    for r in rows:
+        t = _delta(r.last_cuts, r.prev_last_cuts, r.first_cuts)
+        cm = _delta(r.last_cm, r.prev_last_cm, r.first_cm)
+        d = per_day.setdefault(r.day.isoformat(), {"day": r.day.isoformat(), "tickets": 0, "cm": 0})
+        d["tickets"] += t
+        d["cm"] += cm
+        pa = per_agent.setdefault(r.agent_id, {"tickets": 0, "cm": 0, "today_tickets": 0})
+        pa["tickets"] += t
+        pa["cm"] += cm
+        if r.day == today:
+            pa["today_tickets"] = t
+    since = datetime.combine(first_day, datetime.min.time(), tzinfo=_paper.SHOW_TZ)
+    rolls = (await db.execute(
+        select(PrinterRoll).where(PrinterRoll.created_at >= since).order_by(desc(PrinterRoll.created_at))
+    )).scalars().all()
+    roll_count: dict = {}
+    for r in rolls:
+        roll_count[r.agent_id] = roll_count.get(r.agent_id, 0) + 1
+    stations = []
+    for aid, a in agents.items():
+        u = _paper.roll_usage(a)
+        pa = per_agent.get(aid, {})
+        stations.append({
+            "agent_id": str(aid), "name": a.name,
+            "tickets": pa.get("tickets", 0), "cm": pa.get("cm", 0),
+            "today_tickets": pa.get("today_tickets", 0),
+            "roll_changes": roll_count.get(aid, 0),
+            "counting": bool(a.printer_cut_count),
+            "roll_percent": round(100 * u["frac"], 1) if u else None,
+            "tickets_left": u["tickets_left"] if u else None,
+            "tickets_this_roll": u["tickets_this_roll"] if u else None,
+            "roll_estimate": bool(u["partial"]) if u else None,
+            "near_end": a.printer_near_end,
+            "lifetime_tickets": a.printer_cut_count,
+        })
+    stations.sort(key=lambda x: x["name"])
+    return {
+        "days": sorted(per_day.values(), key=lambda d: d["day"]),
+        "stations": stations,
+        "rolls": [{
+            "at": r.created_at.isoformat(), "agent_id": str(r.agent_id),
+            "name": agents[r.agent_id].name if r.agent_id in agents else None,
+            "how": r.how, "out_seconds": r.out_seconds,
+            "tickets": r.prev_roll_tickets, "cm": r.prev_roll_cm, "partial": r.prev_roll_partial,
+        } for r in rolls],
+        "roll_cm_default": round(_paper.seed_roll_cm()),
+    }
+
+
 @router.get("/{agent_id}/printer-log", response_model=list[PrinterEventOut])
 async def agent_printer_log(
     agent_id: uuid.UUID,
@@ -1137,11 +1174,10 @@ async def mark_new_roll(
     agent = await db.get(Agent, agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail="Station not found")
-    if agent.printer_cut_count is not None:
-        agent.printer_roll_start_cut = agent.printer_cut_count
-        agent.printer_roll_start_at = datetime.now(tz=timezone.utc)
+    if agent.printer_cut_count or agent.printer_paper_cm:
+        from app.services import paper as _paper
+        await _paper.log_change(db, agent, "manual", datetime.now(tz=timezone.utc))
         agent.printer_roll_partial = False
-        agent.printer_low_alert_state = agent.printer_low_alert_at = None
         await db.commit()
         await db.refresh(agent)
     return _agent_out(agent, None, None)

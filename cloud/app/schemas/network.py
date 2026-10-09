@@ -23,6 +23,7 @@ class DeviceOut(BaseModel):
     dormant: bool = False  # effective: manually parked OR past the age threshold
     manual_dormant: bool = False  # operator explicitly parked this device
     keep_monitored: bool = False  # critical: keeps alerting through teardown
+    muted_until: datetime | None = None  # notifications held (being worked on)
 
     # Local reachability from an on-site agent's LAN ping (independent of UniFi).
     # None = never probed. Powers the "unreachable" 5-state.

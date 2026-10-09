@@ -45,6 +45,10 @@ class Device(Base, UUIDPk, Timestamps):
     # the global one) — e.g. a safety/comms box. Status comes from UniFi's API,
     # so it's monitored even after the local agents go offline during a move.
     keep_monitored: Mapped[bool] = mapped_column(default=False)
+    # Notifications muted until this time (being worked on). Status, maps and
+    # counts keep updating; only pushes / Signal / fast alerts are held — for
+    # this device AND everything behind it (incl. kiosks on its ports).
+    muted_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     # Local reachability from an on-site agent actively pinging this device on the
     # LAN (by its current IP). This is independent of UniFi's `is_online`: a device

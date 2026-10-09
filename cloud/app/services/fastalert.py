@@ -60,6 +60,13 @@ async def notify(db: AsyncSession, site: Site, went_down: list[Device], came_up:
         return
     if await _quiet(db, site, now):
         return
+    from app.services import mute
+    muted, _ = await mute.muted_sets(db, now)
+    if muted:
+        went_down = [d for d in went_down if d.id not in muted]
+        came_up = [d for d in came_up if d.id not in muted]
+        if not (went_down or came_up or wan_down or wan_up):
+            return
     # Down: one push for the whole batch (a dead parent takes its children with it).
     fresh = [d for d in went_down
              if now - _sent_down.get(str(d.id), now - _COOLDOWN * 2) >= _COOLDOWN]

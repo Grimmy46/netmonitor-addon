@@ -893,9 +893,14 @@ async def sweep(db: AsyncSession) -> dict:
 
     # A closure ("We're closed") silences EVERYTHING, critical sites included:
     # the whole show is dark, so a down Main switch is expected, not news.
+    from app.services import mute as _mute
+    muted_devs, muted_agents = await _mute.muted_sets(db, now)
+
     def _entity_suppressed(entity) -> bool:
         if closed:
             return True
+        if getattr(entity, "id", None) in muted_devs or getattr(entity, "id", None) in muted_agents:
+            return True  # being worked on: no notifications (maps still update)
         if getattr(entity, "keep_monitored", False):
             return False
         s = sites_by_id.get(getattr(entity, "site_id", None))

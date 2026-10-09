@@ -122,6 +122,7 @@ def _device_out(dev: Device, now: datetime, cutoff: datetime) -> DeviceOut:
         dormant=dormant,
         manual_dormant=dev.manual_dormant,
         keep_monitored=bool(dev.keep_monitored),
+        muted_until=dev.muted_until,
         local_reachable=dev.local_reachable,
         local_rtt_ms=dev.local_rtt_ms,
         local_checked_at=dev.local_checked_at,
@@ -306,6 +307,32 @@ async def set_device_keep_monitored(
     if dev is None or dev.site_id != site_id:
         raise HTTPException(status_code=404, detail="Device not found")
     dev.keep_monitored = body.keep
+    await db.commit()
+    await db.refresh(dev)
+    return _device_out(dev, _now(), _dormant_cutoff())
+
+
+class SetMuteIn(BaseModel):
+    until: datetime | None = None   # explicit end; null + end_of_day=false = unmute
+    end_of_day: bool = False        # mute until 11:59 PM show-local (America/Los_Angeles)
+
+
+@router.post("/{site_id}/devices/{device_id}/mute", response_model=DeviceOut)
+async def set_device_mute(
+    site_id: uuid.UUID, device_id: uuid.UUID, body: SetMuteIn,
+    db: AsyncSession = Depends(get_db), _admin=Depends(require_admin),
+) -> DeviceOut:
+    """Hold notifications for a device (and everything behind it) while it's
+    being worked on. Status and maps keep updating."""
+    from zoneinfo import ZoneInfo
+    dev = await db.get(Device, device_id)
+    if dev is None or dev.site_id != site_id:
+        raise HTTPException(status_code=404, detail="Device not found")
+    if body.end_of_day:
+        tz = ZoneInfo("America/Los_Angeles")
+        dev.muted_until = datetime.now(tz).replace(hour=23, minute=59, second=0, microsecond=0)
+    else:
+        dev.muted_until = body.until
     await db.commit()
     await db.refresh(dev)
     return _device_out(dev, _now(), _dormant_cutoff())

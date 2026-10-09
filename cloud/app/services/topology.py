@@ -208,10 +208,15 @@ async def refresh_site_topology(db: AsyncSession, console: UnifiConsole, site: S
     ).scalars().all()
 
     updated = 0
+    went_down: list[Device] = []
+    came_up: list[Device] = []
+    wan_down: list[str] = []
+    wan_up: list[str] = []
     for dev in devices:
         rd = by_mac.get(_norm_mac(dev.mac))
         if rd is None:
             continue
+        was_online = dev.is_online
         # Faster up/down than the 5-minute inventory sync: 1 = connected,
         # 0 = disconnected; transitional states (upgrading, provisioning…) are
         # left alone.
@@ -246,6 +251,10 @@ async def refresh_site_topology(db: AsyncSession, console: UnifiConsole, site: S
             dev.unifi_last_seen = datetime.fromtimestamp(ls, tz=timezone.utc)
         dev.topology_at = now
         updated += 1
+        if was_online is True and dev.is_online is False:
+            went_down.append(dev)
+        elif was_online is False and dev.is_online is True:
+            came_up.append(dev)
 
     # WAN links from the (active) gateway, with up/down transitions logged.
     gw = _pick_gateway(raw)
@@ -255,6 +264,7 @@ async def refresh_site_topology(db: AsyncSession, console: UnifiConsole, site: S
         for link in links:
             was = prev.get(link["key"])
             if was is not None and was != link["up"]:
+                (wan_up if link["up"] else wan_down).append(link["key"])
                 db.add(StatusEvent(
                     account_id=site.account_id, site_id=site.id,
                     name=f"{site.name} {link['key']}", kind="wan",
@@ -268,6 +278,12 @@ async def refresh_site_topology(db: AsyncSession, console: UnifiConsole, site: S
         }
         site.wan_status_at = now
     await db.commit()
+    # Super-fast heads-up push to admins (no confirm wait).
+    try:
+        from app.services import fastalert
+        await fastalert.notify(db, site, went_down, came_up, wan_down, wan_up, now)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("fast alert failed: %s", exc)
     try:
         await refresh_kiosk_locations(db, console, site, now)
         await db.commit()

@@ -77,7 +77,7 @@ export function PaperPanel({ onClose }: { onClose: () => void }) {
         </div>
         <p className="sub" style={{ marginTop: 6, marginBottom: 10, fontSize: 12 }}>
           Read from each printer's own counters (tickets cut and paper printed). A roll change is logged only when
-          the printer sat empty for at least a minute, or its low-paper sensor cleared, or someone marked a new roll.
+          the printer sat empty for at least a minute, its paper door was opened and closed with a good part of the roll used, or someone marked a new roll.
         </p>
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
@@ -113,7 +113,7 @@ export function PaperPanel({ onClose }: { onClose: () => void }) {
               <tbody>
                 {data.stations.filter((s) => filt(s.name)).map((s) => (
                   <tr key={s.agent_id} style={{ borderBottom: "1px solid var(--border)" }}>
-                    <td style={cell}><strong>{s.name}</strong>{s.near_end ? <span title="Low-paper sensor is on"> 🧻</span> : null}</td>
+                    <td style={cell}><strong>{s.name}</strong></td>
                     {s.counting ? (<>
                       <td style={num}>{n(s.tickets)}</td><td style={num}>{m(s.cm)}</td>
                       <td style={num}>{n(s.today_tickets)}</td><td style={num}>{s.roll_changes}</td>

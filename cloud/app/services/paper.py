@@ -8,14 +8,14 @@ roll change, and the current-roll gauge.
 A roll change is logged when:
   ran_out  — the printer sat in paper_out (possibly via cover_open) for ≥ 60 s
              and then came back ok (blips shorter than that are sensor noise)
-  swapped  — the near-end sensor had been on ≥ 15 min, a meaningful part (≥10%) of the
-             roll was used, and it cleared (fresh roll put in before it ran out)
+  swapped  — the paper door was open ≥ 30 s (no run-out) and closed with ≥ 30%
+             of the roll used (fresh roll put in before it ran out)
   manual   — someone pressed "New roll" in the dashboard
   inferred — far more paper used than a roll holds (a change we missed)
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -23,11 +23,11 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.models import Agent, PrinterDaily, PrinterRoll
+from app.models import Agent, PrinterDaily, PrinterEvent, PrinterRoll
 
 SHOW_TZ = ZoneInfo("America/Los_Angeles")
 MIN_OUT_S = 60
-NEAR_END_MIN = timedelta(minutes=15)
+MIN_OPEN_S = 30
 
 
 def seed_roll_cm() -> float:
@@ -144,20 +144,22 @@ async def track(db: AsyncSession, a: Agent, cut_count: int | None, paper_cm: int
         if out_s >= MIN_OUT_S:
             await log_change(db, a, "ran_out", now, out_seconds=out_s)
             changed = True
-    # Swapped before empty: near-end sensor cleared after a real stretch on.
-    if not changed and near_end is not None:
-        if near_end and not a.printer_near_end:
-            a.printer_near_end_since = now
-        if a.printer_near_end and near_end is False and a.printer_near_end_since \
-                and now - a.printer_near_end_since >= NEAR_END_MIN:
-            u = roll_usage(a)
-            if u is None or u["frac"] >= 0.1:
-                await log_change(db, a, "swapped", now)
-                changed = True
-        if not changed:
-            a.printer_near_end = near_end
-            if not near_end:
-                a.printer_near_end_since = None
+    # Swapped before empty: the paper door was opened ≥ 30 s (no run-out) and
+    # closed again with a real part of the roll used. (The KPM180H near-end
+    # bit reads "on" on nearly every kiosk — no sensor fitted — so it's only
+    # stored, never trusted.)
+    if not changed and prev == "cover_open" and new_state == "ok":
+        opened = (await db.execute(
+            select(PrinterEvent.created_at).where(
+                PrinterEvent.agent_id == a.id, PrinterEvent.state == "cover_open")
+            .order_by(PrinterEvent.created_at.desc()).limit(1)
+        )).scalar_one_or_none()
+        u = roll_usage(a)
+        if opened and (now - opened).total_seconds() >= MIN_OPEN_S and (u is None or u["frac"] >= 0.3):
+            await log_change(db, a, "swapped", now, out_seconds=int((now - opened).total_seconds()))
+            changed = True
+    if near_end is not None and not changed:
+        a.printer_near_end = near_end
     # Missed change: used far more than a roll holds.
     if not changed:
         u = roll_usage(a)

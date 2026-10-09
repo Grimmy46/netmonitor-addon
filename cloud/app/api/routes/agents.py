@@ -1,6 +1,7 @@
 """Site agents: registration (token issuance), the push-ingest endpoint the
 agents report to, the self-update payload endpoints, and read views."""
 import hashlib
+import logging
 import re
 import secrets
 import uuid
@@ -51,6 +52,8 @@ from app.schemas import (
 )
 from app.core.auth import current_user, require_admin
 from app.services.sync import get_or_create_account
+
+logger = logging.getLogger("netmonitor.agents")
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -701,11 +704,16 @@ async def agent_targets(
             )
         )
     ).scalars()
-    targets = [
-        ProbeTarget(id=d.id, name=d.name, ip=d.ip, mac=d.mac)
-        for d in rows
-        if d.ip
-    ]
+    devs = [d for d in rows if d.ip]
+    # Spread the work: each device goes to K online kiosks at this site
+    # (app/services/pingwatch.py), so every device is pinged every few seconds
+    # from several vantage points without every kiosk pinging everything.
+    from app.services import pingwatch
+    peers = (await db.execute(select(Agent.id).where(
+        Agent.site_id == agent.site_id, Agent.status == "online"))).scalars().all()
+    mine = pingwatch.assign([d.id for d in devs], peers, agent.id)
+    targets = [ProbeTarget(id=d.id, name=d.name, ip=d.ip, mac=d.mac)
+               for d in devs if str(d.id) in mine]
     return ProbeTargetsOut(
         site_id=agent.site_id,
         site_name=site.name if site else None,
@@ -733,7 +741,6 @@ async def agent_device_report(
     if agent.site_id is None:
         return DeviceProbeResult(ok=True, updated=0)
     now = datetime.now(tz=timezone.utc)
-    grace = get_settings().probe_positive_grace_seconds
     updated = 0
     # Lock every device row this report touches in ONE query, in primary-key
     # order. ~50 kiosks at a site report on the same rows concurrently; locking
@@ -752,26 +759,42 @@ async def agent_device_report(
             )
         ).scalars()
         devices = {d.id: d for d in rows}
+    # Kiosk pings decide up/down (pingwatch): any reply = up; 2+ healthy
+    # kiosks failing with no reply for 40 s = down — minutes ahead of UniFi.
+    from app.services import pingwatch
+    from app.services.sync import _apply_online_state
+    agent_ok = any(r.reachable for r in report.results)
+    went_down, came_up = [], []
     for r in report.results:
         dev = devices.get(r.id)
         if dev is None:
             continue
+        change = pingwatch.record(dev.id, agent.id, r.reachable, agent_ok, now)
         if r.reachable:
             dev.local_reachable = True
             dev.local_rtt_ms = r.rtt_ms
             dev.local_checked_at = now
-        else:
-            recently_seen_up = (
-                dev.local_reachable is True
-                and dev.local_checked_at is not None
-                and (now - dev.local_checked_at).total_seconds() < grace
-            )
-            if not recently_seen_up:
-                dev.local_reachable = False
-                dev.local_rtt_ms = None
-                dev.local_checked_at = now
+        elif change == "down" or pingwatch.verdict(dev.id, now) is False:
+            dev.local_reachable = False
+            dev.local_rtt_ms = None
+            dev.local_checked_at = now
+        if change == "down" and dev.is_online is not False:
+            _apply_online_state(dev, False, pingwatch.first_fail(dev.id) or now)
+            went_down.append(dev)
+        elif change == "up" and dev.is_online is False:
+            _apply_online_state(dev, True, now)
+            came_up.append(dev)
         updated += 1
     await db.commit()
+    if went_down or came_up:
+        logger.info("Ping verdict: down %s, up %s", [d.name for d in went_down], [d.name for d in came_up])
+        try:
+            from app.services import fastalert
+            site = await db.get(Site, agent.site_id)
+            if site is not None:
+                await fastalert.notify(db, site, went_down, came_up, [], [], now)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("fast alert (ping) failed: %s", exc)
     return DeviceProbeResult(ok=True, updated=updated)
 
 

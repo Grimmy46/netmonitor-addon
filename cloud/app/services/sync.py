@@ -200,7 +200,9 @@ async def sync_unifi(db: AsyncSession) -> dict:
         dev.device_type = _device_type(rd.get("model"), rd.get("productLine")) or dev.device_type
         status = rd.get("status") or rd.get("state")
         is_online = (str(status).lower() == "online") if status is not None else None
-        _apply_online_state(dev, is_online, datetime.now(tz=timezone.utc))
+        from app.services import pingwatch
+        _now_ = datetime.now(tz=timezone.utc)
+        _apply_online_state(dev, pingwatch.adjust(dev.id, is_online, _now_) if is_online is not None else None, _now_)
         db.add(dev)
         device_count += 1
 
@@ -308,7 +310,9 @@ async def sync_unifi_console(db: AsyncSession, console: UnifiConsole) -> dict:
             dev.mac = rd.get("macAddress") or rd.get("mac") or dev.mac
             dev.ip = rd.get("ipAddress") or rd.get("ip") or dev.ip
             dev.device_type = _device_type(rd.get("model"), None) or dev.device_type
-            _apply_online_state(dev, _online_from_state(rd.get("state")), now)
+            from app.services import pingwatch
+            _st = _online_from_state(rd.get("state"))
+            _apply_online_state(dev, pingwatch.adjust(dev.id, _st, now) if _st is not None else None, now)
             if dev.is_online:
                 online += 1
             db.add(dev)

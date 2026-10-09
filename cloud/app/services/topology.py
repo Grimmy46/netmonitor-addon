@@ -221,10 +221,10 @@ async def refresh_site_topology(db: AsyncSession, console: UnifiConsole, site: S
         # 0 = disconnected; transitional states (upgrading, provisioning…) are
         # left alone.
         state = rd.get("state")
-        if state == 1:
-            _apply_online_state(dev, True, now)
-        elif state == 0:
-            _apply_online_state(dev, False, now)
+        # Fresh kiosk pings win over UniFi's (laggy) state — pingwatch.py.
+        from app.services import pingwatch
+        if state in (0, 1):
+            _apply_online_state(dev, pingwatch.adjust(dev.id, state == 1, now), now)
 
         up = rd.get("uplink") if isinstance(rd.get("uplink"), dict) else {}
         if (not up.get("uplink_mac") and state != 1 and rd.get("type") not in GATEWAY_TYPES

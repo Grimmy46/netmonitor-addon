@@ -35,7 +35,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.10.09.1"
+PAYLOAD_VERSION = "2026.10.09.2"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -960,8 +960,13 @@ def _cmd_inventory(args):
                     if sz > 64000 or total > 300000 or len(files) >= 60:
                         files.append({"path": fp, "size": sz, "skipped": True})
                         continue
-                    with open(fp, "r", encoding="utf-8", errors="ignore") as fh:
-                        txt = fh.read()
+                    with open(fp, "rb") as fh:
+                        raw = fh.read()
+                    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+                        txt = raw.decode("utf-16", "ignore")
+                    else:
+                        txt = raw.decode("utf-8", "ignore")
+                    txt = txt.replace("\x00", "")
                     total += len(txt)
                     files.append({"path": fp, "size": sz, "text": _mask_text(txt)[:16000]})
                 except Exception as e:  # noqa: BLE001

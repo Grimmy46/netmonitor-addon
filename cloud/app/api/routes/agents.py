@@ -1363,6 +1363,16 @@ async def list_commands(
     return [_command_out(c) for c in rows]
 
 
+def _strip_nul(v):
+    if isinstance(v, str):
+        return v.replace("\x00", "")
+    if isinstance(v, dict):
+        return {_strip_nul(k): _strip_nul(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_strip_nul(x) for x in v]
+    return v
+
+
 @router.post("/command-result")
 async def command_result(
     body: dict,
@@ -1378,7 +1388,7 @@ async def command_result(
     cmd = await db.get(AgentCommand, cmd_id)
     if cmd is None or cmd.agent_id != agent.id:
         raise HTTPException(status_code=404, detail="Command not found")
-    result = body.get("result")
+    result = _strip_nul(body.get("result"))  # Postgres JSONB rejects \u0000
     cmd.result = result if isinstance(result, dict) else {"raw": result}
     cmd.status = "done" if body.get("ok") else "error"
     cmd.completed_at = datetime.now(tz=timezone.utc)

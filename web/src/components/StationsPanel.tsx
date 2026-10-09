@@ -200,11 +200,17 @@ export function StationsPanel({ onClose, onChanged }: { onClose: () => void; onC
                   ))}
                 </select>
                 {s.claimed ? (
-                  <button className="btn" onClick={() => run(async () => { await api.releaseAgent(s.id); })} disabled={busy} title="Un-claim so another kiosk can enroll as this station">
-                    Release
+                  <button className="btn" onClick={() => {
+                    if (!window.confirm(`Replace the PC for ${s.name}?\n\nThe old PC is signed out right away. The new PC takes over ${s.name} with its history and settings.`)) return;
+                    run(async () => {
+                      await api.releaseAgent(s.id);
+                      window.alert(`${s.name} is ready for its new PC.\n\nOn the new PC: run the install kit, enter PIN ${pin || "(see top of this panel)"}, pick ${s.name} from the list, then Save & start.`);
+                    });
+                  }} disabled={busy} title="Swap in a new PC: the old one is signed out, the new one keeps this station's name and history">
+                    Replace PC
                   </button>
                 ) : null}
-                <button className="btn" onClick={() => run(async () => { await api.deleteAgent(s.id); })} disabled={busy}>
+                <button className="btn" onClick={() => { if (window.confirm(`Remove ${s.name} for good? Its history is deleted. To swap in a new PC, use Replace PC instead.`)) run(async () => { await api.deleteAgent(s.id); }); }} disabled={busy}>
                   Remove
                 </button>
               </div>

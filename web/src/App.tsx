@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, session, type AuthUser } from "./api/client";
 import { Dashboard } from "./pages/Dashboard";
+import { EmployeeApp } from "./pages/EmployeeApp";
 import { LoginPage } from "./pages/LoginPage";
 import { SharedMapPage } from "./components/GeoMap";
 
@@ -54,6 +55,16 @@ function AuthedApp() {
         onSignedIn={(u) => {
           session.user = u;
           setGate({ s: "ready", user: u });
+        }}
+      />
+    );
+  }
+  if (gate.user.role === "employee") {
+    return (
+      <EmployeeApp
+        onSignOut={async () => {
+          try { await api.logout(); } catch { /* ignore */ }
+          window.dispatchEvent(new Event("nm-unauthorized"));
         }}
       />
     );

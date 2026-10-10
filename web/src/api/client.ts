@@ -522,6 +522,7 @@ export const api = {
 
   // Site agents / stations (Kiosks tab + enrollment).
   agents: () => req<Agent[]>("/agents"),
+  stationOutages: (days = 7) => req<StationOutage[]>(`/agents/outages?days=${days}`),
   cams: (share?: string) => req<CamList>(`/cams${share ? `?share=${encodeURIComponent(share)}` : ""}`),
   camUpdate: (id: string, body: { name?: string; enabled?: boolean }) =>
     req<{ ok: boolean }>(`/cams/${id}`, { method: "PUT", body: JSON.stringify(body) }),
@@ -704,7 +705,7 @@ export interface AgentCommand {
 export interface AuthUser {
   id: string;
   email: string;
-  role: "admin" | "viewer";
+  role: "admin" | "viewer" | "employee";
   is_active: boolean;
 }
 
@@ -718,3 +719,9 @@ export interface AuthStatus {
  * (The SERVER enforces permissions regardless — this only shapes the UI.) */
 export const session: { user: AuthUser | null } = { user: null };
 export const isAdmin = () => session.user?.role === "admin";
+export const isEmployee = () => session.user?.role === "employee";
+
+export interface StationOutage {
+  agent_id: string; name: string; group: "kiosk" | "ticketbox"; kind: "offline" | "off";
+  started_at: string; ended_at: string | null; seconds: number;
+}

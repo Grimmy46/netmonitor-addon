@@ -82,6 +82,12 @@ async def current_user(request: Request, db: AsyncSession = Depends(get_db)) -> 
     user = await _user_from_request(request, db)
     if user is None:
         raise HTTPException(status_code=401, detail="Sign in required.")
+    # Employee accounts are strictly view-only, enforced server-side for every
+    # signed-in route: no edits, adds, deletes, imports, notification settings
+    # or device control. Only signing out is allowed besides reads.
+    if user.role == "employee" and request.method not in ("GET", "HEAD", "OPTIONS") \
+            and not request.url.path.rstrip("/").endswith("/auth/logout"):
+        raise HTTPException(status_code=403, detail="View-only account.")
     return user
 
 

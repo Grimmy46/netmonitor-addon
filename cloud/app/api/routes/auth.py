@@ -29,7 +29,7 @@ from app.services.sync import get_or_create_account
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-ROLES = ("admin", "viewer")
+ROLES = ("admin", "viewer", "employee")
 
 
 class UserOut(BaseModel):
@@ -145,7 +145,7 @@ async def create_user(
     body: UserCreateIn, db: AsyncSession = Depends(get_db), admin: User = Depends(require_admin)
 ) -> UserOut:
     if body.role not in ROLES:
-        raise HTTPException(status_code=400, detail="Role must be admin or viewer.")
+        raise HTTPException(status_code=400, detail="Role must be admin, viewer or employee.")
     email = _norm_email(body.email)
     exists = (await db.execute(select(User).where(User.email == email))).scalars().first()
     if exists:
@@ -210,7 +210,7 @@ async def set_user_role(
     admin: User = Depends(require_admin),
 ) -> UserOut:
     if body.role not in ROLES:
-        raise HTTPException(status_code=400, detail="Role must be admin or viewer.")
+        raise HTTPException(status_code=400, detail="Role must be admin, viewer or employee.")
     user = await db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="No such user.")

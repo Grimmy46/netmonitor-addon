@@ -555,8 +555,27 @@ async def _refresh_agent_status(db: AsyncSession, now: datetime) -> None:
         want = "online" if (now - seen).total_seconds() <= st.agent_offline_after_seconds else (
             "off" if a.powered_off_at else "offline")
         if a.status != want:
+            await _log_outage(db, a, a.status, want, seen, now)
             a.status = want
     await db.commit()
+
+
+async def _log_outage(db: AsyncSession, a, old: str | None, new: str, seen, now: datetime) -> None:
+    """Station offline/recovery history for the employee view. An outage starts
+    at the last report (not when we noticed) and ends when it reports again."""
+    from sqlalchemy import text as _t
+    try:
+        if new in ("offline", "off") and old == "online":
+            await db.execute(_t("INSERT INTO agent_outages (agent_id, kind, started_at) VALUES (:a, :k, :t)"),
+                             {"a": a.id, "k": new, "t": seen or now})
+        elif new == "online" and old in ("offline", "off"):
+            await db.execute(_t("UPDATE agent_outages SET ended_at = :t WHERE agent_id = :a AND ended_at IS NULL"),
+                             {"a": a.id, "t": now})
+        elif new in ("offline", "off") and old in ("offline", "off"):
+            await db.execute(_t("UPDATE agent_outages SET kind = :k WHERE agent_id = :a AND ended_at IS NULL"),
+                             {"a": a.id, "k": new})
+    except Exception:  # noqa: BLE001 — history must never break the sweep
+        logger.exception("outage log failed")
 
 
 async def _maybe_fire_kiosk_shutdown(db: AsyncSession, now: datetime) -> None:

@@ -1087,6 +1087,28 @@ async def fleet_printer_log(
     return [_printer_event_out(e, name) for e, name in rows]
 
 
+@router.get("/outages")
+async def station_outages(
+    days: int = Query(7, ge=1, le=60),
+    db: AsyncSession = Depends(get_db),
+    _user=Depends(current_user),
+) -> list[dict]:
+    """Station offline / back-online history (newest first) for the status views."""
+    from sqlalchemy import text as _t
+    rows = (await db.execute(_t(
+        "SELECT o.agent_id, a.name, coalesce(a.station_group, 'kiosk') grp, o.kind, o.started_at, o.ended_at "
+        "FROM agent_outages o JOIN agents a ON a.id = o.agent_id "
+        "WHERE o.started_at > now() - make_interval(days => :d) OR o.ended_at IS NULL "
+        "ORDER BY o.started_at DESC LIMIT 2000"), {"d": days})).all()
+    out = []
+    for r in rows:
+        end = r.ended_at
+        out.append({"agent_id": str(r.agent_id), "name": r.name, "group": r.grp, "kind": r.kind,
+                    "started_at": r.started_at.isoformat(), "ended_at": end.isoformat() if end else None,
+                    "seconds": int(((end or datetime.now(timezone.utc)) - r.started_at).total_seconds())})
+    return out
+
+
 @router.get("/paper")
 async def paper_usage(
     days: int = Query(7, ge=1, le=90),

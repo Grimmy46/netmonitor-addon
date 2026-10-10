@@ -273,7 +273,8 @@ export function SettingsModal({
         <h3 style={{ margin: "4px 0 6px", fontSize: 15 }}>Users</h3>
         <p style={{ marginTop: 0 }}>
           <strong>Admins</strong> can change anything; <strong>viewers</strong> can watch
-          everything but touch nothing. Server-enforced.
+          everything but touch nothing; <strong>employees</strong> get the simple RCS Station Monitor
+          (kiosk &amp; ticket box status, view only). Server-enforced.
         </p>
         <div style={{ marginBottom: 10 }}>
           {users.map((u) => (
@@ -288,6 +289,7 @@ export function SettingsModal({
               >
                 <option value="admin">admin</option>
                 <option value="viewer">viewer</option>
+                <option value="employee">employee</option>
               </select>
               <button className="btn" onClick={() => resetPassword(u.id, u.email)} disabled={uBusy}>Password</button>
               <button className="btn" onClick={() => removeUser(u.id)} disabled={uBusy}>Remove</button>
@@ -301,6 +303,7 @@ export function SettingsModal({
             onChange={(e) => setUPass(e.target.value)} style={{ width: 140 }} />
           <select value={uRole} onChange={(e) => setURole(e.target.value)} style={{ padding: "6px" }}>
             <option value="viewer">viewer</option>
+            <option value="employee">employee</option>
             <option value="admin">admin</option>
           </select>
           <button className="btn btn-primary" onClick={addUser} disabled={uBusy}>Add user</button>

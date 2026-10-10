@@ -35,7 +35,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.10.09.4"
+PAYLOAD_VERSION = "2026.10.10.1"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -1690,9 +1690,59 @@ def _camera_relay_worker(ctx, stop):
     _g2r_kill()
 
 
+def _relocate_if_removable():
+    """If the agent was started straight from a USB stick (not via install.bat),
+    move it to C:\\NetMonAgent — exe, payload AND the config holding this
+    station's sign-in — point autostart there, launch the C:\\ copy and exit.
+    Otherwise pulling the stick kills the agent (and its watchdog). Only runs
+    on a REMOVABLE drive (GetDriveType == 2); every normal install is a no-op.
+    Returns True when this process should exit."""
+    if not _frozen():
+        return False
+    try:
+        import ctypes
+        import winreg
+        src = _install_dir() or ""
+        drive = os.path.splitdrive(src)[0]
+        if not drive or drive.upper() == "C:":
+            return False
+        if ctypes.windll.kernel32.GetDriveTypeW(drive + "\\") != 2:
+            return False
+        dest = r"C:\NetMonAgent"
+        exe_name = os.path.basename(sys.executable)
+        dest_exe = os.path.join(dest, exe_name)
+        dest_hb = os.path.join(dest, _HB_NAME)
+        alive = os.path.exists(dest_hb) and time.time() - os.path.getmtime(dest_hb) < 120
+        if not alive:
+            os.makedirs(dest, exist_ok=True)
+            shutil.copy2(sys.executable, dest_exe)
+            for n in ("agent_payload.py", "netmon_agent.config.json"):
+                p = os.path.join(src, n)
+                if os.path.exists(p):
+                    shutil.copy2(p, os.path.join(dest, n))
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                 r"Software\Microsoft\Windows\CurrentVersion\Run",
+                                 0, winreg.KEY_SET_VALUE)
+            winreg.SetValueEx(key, "NetMonAgent", 0, winreg.REG_SZ, f'"{dest_exe}"')
+            winreg.CloseKey(key)
+            subprocess.Popen([dest_exe], cwd=dest, env=_clean_env(), **_no_window_kwargs())
+        # Stop a USB-side watchdog from relaunching this copy (it checks the exe exists).
+        try:
+            os.replace(sys.executable, sys.executable + ".moved")
+        except Exception:  # noqa: BLE001
+            pass
+        print(f"[relocate] started from removable {drive}; moved to {dest}", flush=True)
+        return True
+    except Exception as e:  # noqa: BLE001 — never block the agent over this
+        print(f"[relocate] skipped: {e}", flush=True)
+        return False
+
+
 def main(cfg, ctx):
     global _CTX
     _CTX = ctx  # carries bootstrap_version + worker_exe for reporting/spawning
+    if _relocate_if_removable():  # started from a USB stick → moved to C:\\NetMonAgent
+        os._exit(0)
     _touch_heartbeat()   # earliest possible, so the watchdog never double-launches us
     _install_watchdog()  # resilience first — a bad self-update swap can still recover
     if _self_update(ctx):  # opted-in kiosks swap their exe here, then hard-exit

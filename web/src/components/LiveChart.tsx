@@ -55,7 +55,7 @@ export function LiveChart({
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
       g.clearRect(0, 0, w, h);
 
-      const accent = css("--accent") || "#2a78d6";
+      const accent = css("--chart-line") || css("--accent") || "#2a78d6";
       const grid = css("--grid") || "#e1e0d9";
       const muted = css("--ink-muted") || "#898781";
       const critical = css("--critical") || "#d03b3b";

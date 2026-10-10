@@ -84,6 +84,12 @@ async def send_group(number: str, internal_id: str, text: str) -> None:
         r.raise_for_status()
 
 
+async def send_direct(number: str, to: str, text: str) -> None:
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.post(_url("/v2/send"), json={"message": text, "number": number, "recipients": [to]})
+        r.raise_for_status()
+
+
 def _dedupe(group_id: str, ts_ms: int, sender: str, body: str) -> str:
     return hashlib.sha1(f"{group_id}|{ts_ms}|{sender}|{body[:200]}".encode()).hexdigest()
 

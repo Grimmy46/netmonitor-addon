@@ -146,6 +146,28 @@ async def _mirror_to_signal(db: AsyncSession, payload: dict) -> None:
             return
         if payload.get("body"):
             text += "\n" + str(payload["body"]).strip()
-        await asyncio.wait_for(sig.send_group(cfg.number, cfg.alert_group_id, text), timeout=20)
     except Exception as exc:  # noqa: BLE001 — Signal must never block a push
         logger.warning("Signal mirror failed: %s", exc)
+        return
+    await post_group(db, text)
+
+
+async def post_group(db: AsyncSession, text: str) -> bool:
+    """Post to the RCS-IT alert group. If the group send fails (or no group is
+    set), fall back to a direct Signal message to the bot's account owner
+    (Dawid). Returns True if the group got it. Never raises."""
+    try:
+        from app.services import signal as sig
+        cfg = await sig.get_config(db)
+        if not cfg.number:
+            return False
+        if cfg.alert_group_id:
+            try:
+                await asyncio.wait_for(sig.send_group(cfg.number, cfg.alert_group_id, text), timeout=20)
+                return True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Signal group send failed, DMing instead: %s", exc)
+        await asyncio.wait_for(sig.send_direct(cfg.number, cfg.number, "⚠️ (group send failed) " + text), timeout=20)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Signal fallback DM failed: %s", exc)
+    return False

@@ -468,6 +468,18 @@ async def _deliver_faults(db: AsyncSession, faults: list, now: datetime) -> int:
 async def _deliver_recoveries(db: AsyncSession, recs: list) -> int:
     if not recs:
         return 0
+    # The RCS-IT group gets recoveries for what it was told went down:
+    # kiosks / ticket boxes and switches / gateways (not APs). One message per sweep.
+    grp = [r for r in recs if isinstance(r.entity, Agent)
+           or (isinstance(r.entity, Device) and r.entity.device_type in ("switch", "gateway"))]
+    if grp:
+        from app.services.notify import post_group
+        names = [(r.entity.name if isinstance(r.entity, Agent) else _lbl(r.entity)) for r in grp]
+        noun = "kiosk" if all(isinstance(r.entity, Agent) for r in grp) else "device"
+        title = (f"🟢 {noun.capitalize()} back online: {names[0]}" if len(names) == 1
+                 else f"🟢 {len(names)} {noun}s back online")
+        body = ", ".join(names[:12]) + (f" +{len(names) - 12} more" if len(names) > 12 else "")
+        await post_group(db, title if len(names) == 1 else f"{title}\n{body}")
     if len(recs) <= 2:
         sent = 0
         for r in recs:

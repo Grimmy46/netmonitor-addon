@@ -142,6 +142,7 @@ class AgentReport(BaseModel):
     bootstrap_version: str | None = None
     printer: PrinterStatusIn | None = None
     samples: list[PingSampleIn] = []
+    station_group: str | None = None   # from the install kit's config (kiosk | ticketbox)
 
 
 class AgentReportResult(BaseModel):

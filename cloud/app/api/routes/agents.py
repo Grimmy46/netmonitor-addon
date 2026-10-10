@@ -566,6 +566,10 @@ async def agent_report(
     agent.last_seen_at = now.isoformat()
     agent.status = "online"
     agent.powered_off_at = None
+    # A ticket-box install kit tags its PC: applied on the agent's FIRST report
+    # (a fresh install), so an admin's later regroup in the dashboard sticks.
+    if report.station_group in ("kiosk", "ticketbox") and agent.version is None:
+        agent.station_group = report.station_group
     if report.agent_version:
         agent.version = report.agent_version
     if report.bootstrap_version:
@@ -883,7 +887,10 @@ async def download_agent_exe(
 
 
 @router.get("/install-kit")
-async def download_install_kit(db: AsyncSession = Depends(get_db), _admin=Depends(require_admin)):
+async def download_install_kit(
+    group: str = Query("kiosk", pattern="^(kiosk|ticketbox)$"),
+    db: AsyncSession = Depends(get_db), _admin=Depends(require_admin),
+):
     """Admin download: a zip with everything a NEW kiosk needs — the active exe,
     the current payload, a token-less config and install.bat. The kiosk picks
     its station (PIN + dropdown) on first run."""
@@ -895,9 +902,14 @@ async def download_install_kit(db: AsyncSession = Depends(get_db), _admin=Depend
     cfg = {"server_url": str(getattr(st, "public_base_url", "") or "https://rcs-fleet-mon.duckdns.org").rstrip("/"),
            "token": "", "enroll_pin": "", "enroll_auto": True, "target": "rcs.funcardapp.com",
            "gateway": "auto", "interval": 1.0, "post_interval": 30.0, "timeout": 2.0,
-           "max_buffer": 5000, "version_check_interval": 600, "autostart": True}
+           "max_buffer": 5000, "version_check_interval": 600, "autostart": True,
+           "station_group": group}
+    tb = group == "ticketbox"
+    noun = "ticket box" if tb else "kiosk"
+    prefix = "TB-" if tb else ""
+    tab = "Ticket Boxes" if tb else "Kiosks"
     bat = (
-        "@echo off\r\nrem NetMonitor kiosk agent - one-shot installer\r\nset DEST=C:\\NetMonAgent\r\n"
+        f"@echo off\r\nrem NetMonitor {noun} agent - one-shot installer\r\nset DEST=C:\\NetMonAgent\r\n"
         "if not exist \"%DEST%\" mkdir \"%DEST%\"\r\n"
         "copy /Y \"%~dp0NetMonAgent.exe\" \"%DEST%\" >nul\r\n"
         "copy /Y \"%~dp0agent_payload.py\" \"%DEST%\" >nul\r\n"
@@ -908,12 +920,12 @@ async def download_install_kit(db: AsyncSession = Depends(get_db), _admin=Depend
         "timeout /t 8 >nul\r\n"
     )
     readme = (
-        "NetMonitor kiosk agent - install kit\r\n\r\n"
-        "1. Copy this folder to the kiosk (USB stick is fine).\r\n"
+        f"NetMonitor {noun} agent - install kit\r\n\r\n"
+        f"1. Copy this folder to the {noun} PC (USB stick is fine).\r\n"
         "2. Double-click install.bat.\r\n"
         "3. In the setup window type the enrollment PIN (Settings > Kiosks & stations),\r\n"
         "   pick the station or 'Add a new station', click Save & start.\r\n"
-        "The kiosk shows up on the Kiosks tab within a minute and updates itself after that.\r\n"
+        f"The PC shows up on the {tab} tab within a minute and updates itself after that.\r\n"
     )
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
@@ -923,7 +935,7 @@ async def download_install_kit(db: AsyncSession = Depends(get_db), _admin=Depend
         z.writestr("NetMonAgent/install.bat", bat)
         z.writestr("NetMonAgent/README.txt", readme)
     return Response(content=buf.getvalue(), media_type="application/zip",
-                    headers={"Content-Disposition": f'attachment; filename="NetMonAgent-kit-{row.version}.zip"'})
+                    headers={"Content-Disposition": f'attachment; filename="NetMonAgent-{prefix}kit-{row.version}.zip"'})
 
 
 @router.get("/agent-update", response_model=AgentUpdateOut)

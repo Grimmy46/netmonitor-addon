@@ -22,7 +22,7 @@ const VIEWS: { key: View; label: string; icon: string; mobile: boolean; kiosk?: 
   { key: "kiosks", label: "Kiosks", icon: "🖥", mobile: true, kiosk: true },
   { key: "cameras", label: "Cameras", icon: "📷", mobile: true },
   { key: "fleet", label: "Fleet", icon: "🌐", mobile: true },
-  { key: "ticketboxes", label: "Ticket Boxes", icon: "🎟", mobile: false, kiosk: true },
+  { key: "ticketboxes", label: "Ticket Boxes", icon: "🎟", mobile: true, kiosk: true },
   { key: "dormant", label: "Dormant", icon: "💤", mobile: false },
 ];
 

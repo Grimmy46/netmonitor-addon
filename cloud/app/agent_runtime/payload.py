@@ -35,7 +35,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.10.09.3"
+PAYLOAD_VERSION = "2026.10.09.4"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -194,6 +194,7 @@ def _post(ctx, cfg, gw_ip, hostname, os_str, samples):
         "bootstrap_version": _CTX.get("bootstrap_version") if _CTX else None,
         "printer": _PRINTER_STATUS,
         "samples": samples,
+        "station_group": cfg.get("station_group") or None,
     }).encode("utf-8")
     req = urllib.request.Request(
         ctx["server_url"].rstrip("/") + "/agents/report",

@@ -364,7 +364,7 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
               {isAdmin() ? <button onClick={() => setShowTeardown(true)}>🗓 Teardown planner</button> : null}
               {isAdmin() ? <button onClick={() => setManage(true)}>⚙ Manage stations</button> : null}
               {isAdmin() ? <button onClick={() => setShowUpdate(true)}>⬆ Agent update</button> : null}
-              {isAdmin() ? <button onClick={() => { window.location.href = `${API_BASE}/agents/install-kit`; }}>⤓ Install kit (new kiosk)</button> : null}
+              {isAdmin() ? <button onClick={() => { window.location.href = `${API_BASE}/agents/install-kit?group=${group}`; }}>⤓ Install kit (new {noun})</button> : null}
             </div>
           ) : null}
         </div>

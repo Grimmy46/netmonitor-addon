@@ -68,8 +68,8 @@ export function NetworkMap({ siteId }: { siteId: string }) {
   const [topo, setTopo] = useState<SiteTopology | null>(null);
   const [err, setErr] = useState("");
   const [mode, setMode] = useState<"map" | "list">(focusFromHash() ? "list" : "map");
-  const [skin, setSkinState] = useState<MapSkin>(getSkin());
-  useEffect(() => onSkinChange(setSkinState), []);
+  const [skin, setSkinState] = useState<MapSkin>(getSkin() === "holo" ? "holo" : "pro");
+  useEffect(() => onSkinChange((s) => setSkinState(s === "holo" ? "holo" : "pro")), []);
   const setSkin = (v: MapSkin) => setGlobalSkin(v);
   const [q, setQ] = useState("");
   const [showDormant, setShowDormant] = useState(false);

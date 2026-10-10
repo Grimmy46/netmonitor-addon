@@ -3,13 +3,14 @@
  * (CSS under :root[data-skin="holo"]); "pro" is the normal light/dark look.
  * Shared by the header theme button and the network map's Pro/Holo switch.
  */
-export type Skin = "pro" | "holo";
+export type Skin = "pro" | "holo" | "rcs";
 const KEY = "nm-map-skin";
 const EVT = "nm-skin";
 
 export function getSkin(): Skin {
   try {
-    return localStorage.getItem(KEY) === "holo" ? "holo" : "pro";
+    const v = localStorage.getItem(KEY);
+    return v === "holo" || v === "rcs" ? v : "pro";
   } catch {
     return "pro";
   }
@@ -17,7 +18,7 @@ export function getSkin(): Skin {
 
 export function applySkin(s: Skin = getSkin()): void {
   const el = document.documentElement;
-  if (s === "holo") el.setAttribute("data-skin", "holo");
+  if (s === "holo" || s === "rcs") el.setAttribute("data-skin", s);
   else el.removeAttribute("data-skin");
 }
 

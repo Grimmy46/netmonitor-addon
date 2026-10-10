@@ -1040,3 +1040,95 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
 }
 .cams .muted { color: var(--ink-muted); }
 .cams .error-box { padding: 10px 12px; border-radius: 10px; background: rgba(220, 38, 38, .12); color: #dc2626; margin-bottom: 12px; }
+
+/* ══ Skin 3: "RCS" — matches the RCS Device Inventory site (rcs-inventory):
+   near-black sidebar, RCS red #E00618 accents, white workspace, Inter, 6–10px
+   radii, hairline #E5E7EB borders. Light by default; dark keeps the red. ══ */
+:root[data-skin="rcs"] {
+  color-scheme: light;
+  --page: #f9fafb;
+  --surface-1: #ffffff;
+  --ink-primary: #1a1c23;
+  --ink-secondary: #4b5563;
+  --ink-muted: #6b7280;
+  --grid: #e5e7eb;
+  --baseline: #d1d5db;
+  --border: #e5e7eb;
+  --accent: #e00618;
+  --good: #16a34a;
+  --warning: #d97706;
+  --critical: #dc2626;
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --font: Inter, "Inter Fallback", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --rcs-side: #111214;
+  --rcs-side-ink: #d4d4d8;
+}
+:root[data-skin="rcs"][data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0c0d10;
+  --surface-1: #16181d;
+  --ink-primary: #f4f4f5;
+  --ink-secondary: #c4c4cc;
+  --ink-muted: #8b8b94;
+  --grid: #2a2c33;
+  --baseline: #3a3c44;
+  --border: #2a2c33;
+  --accent: #ef2b3a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --rcs-side: #08090b;
+}
+:root[data-skin="rcs"] body { font-family: var(--font); }
+:root[data-skin="rcs"] .side-nav { background: var(--rcs-side); border-right-color: #1f2025; color: var(--rcs-side-ink); }
+:root[data-skin="rcs"] .side-item { color: var(--rcs-side-ink); border-radius: 6px; }
+:root[data-skin="rcs"] .side-item:hover { background: rgba(255,255,255,0.07); color: #fff; }
+:root[data-skin="rcs"] .side-item.active { background: var(--accent); color: #fff; }
+:root[data-skin="rcs"] .side-brand { color: #fff; }
+:root[data-skin="rcs"] .side-user { border-top-color: #26272c; }
+:root[data-skin="rcs"] .side-user > .sub { color: #9ca3af; }
+:root[data-skin="rcs"] .side-nav .btn { background: #1c1d21; color: #e5e7eb; border-color: #2c2d33; }
+:root[data-skin="rcs"] .btn { border-radius: 6px; }
+:root[data-skin="rcs"] .btn-primary { background: var(--accent); }
+:root[data-skin="rcs"] .card, :root[data-skin="rcs"] .panel { border-radius: 10px; box-shadow: var(--shadow); }
+
+/* RCS Station Monitor (employee, view-only) */
+.rcs-logo-tile { background: #fff; border-radius: 10px; padding: 8px 10px; display: flex; justify-content: center; margin: 0 2px 10px; }
+.rcs-logo-tile img { width: 100%; max-width: 150px; height: auto; display: block; }
+.rcs-brand-name { color: #fff; font-weight: 700; font-size: 15px; padding: 0 8px; line-height: 1.2; }
+.rcs-brand-sub { color: #9ca3af; font-size: 12px; padding: 2px 8px 14px; }
+.rcs-viewonly { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); white-space: nowrap; }
+.rcs-icon-btn { width: 34px; height: 34px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-1); color: var(--ink-primary); cursor: pointer; font-size: 15px; display: inline-flex; align-items: center; justify-content: center; }
+.rcs-acct { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-secondary); }
+.rcs-avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; flex: 0 0 30px; }
+.rcs-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.rcs-stat { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; box-shadow: var(--shadow); text-align: left; font: inherit; color: inherit; cursor: pointer; }
+.rcs-stat.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.rcs-stat .v { font-size: 26px; font-weight: 700; color: var(--ink-primary); line-height: 1.1; }
+.rcs-stat .l { font-size: 13px; color: var(--ink-muted); margin-top: 4px; }
+.rcs-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.rcs-search { flex: 1; min-width: 180px; max-width: 360px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-1); color: var(--ink-primary); font: inherit; font-size: 14px; }
+.rcs-select { padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-1); color: var(--ink-primary); font: inherit; font-size: 14px; }
+.rcs-table-wrap { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; overflow: auto; box-shadow: var(--shadow); }
+.rcs-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.rcs-table th { text-align: left; font-size: 12px; font-weight: 600; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.03em; padding: 10px 14px; border-bottom: 1px solid var(--border); white-space: nowrap; background: color-mix(in srgb, var(--page) 60%, var(--surface-1)); }
+.rcs-table td { padding: 10px 14px; border-bottom: 1px solid var(--border); color: var(--ink-primary); white-space: nowrap; }
+.rcs-table tr:last-child td { border-bottom: 0; }
+.rcs-table .muted { color: var(--ink-muted); }
+.rcs-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; border: 1px solid transparent; }
+.rcs-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.rcs-badge.ok { color: #15803d; background: #dcfce7; }
+.rcs-badge.bad { color: #b91c1c; background: #fee2e2; }
+.rcs-badge.warn { color: #b45309; background: #fef3c7; }
+.rcs-badge.off { color: #4b5563; background: #f3f4f6; }
+:root[data-theme="dark"] .rcs-badge.ok { color: #4ade80; background: rgba(34,197,94,0.14); }
+:root[data-theme="dark"] .rcs-badge.bad { color: #f87171; background: rgba(239,68,68,0.16); }
+:root[data-theme="dark"] .rcs-badge.warn { color: #fbbf24; background: rgba(245,158,11,0.16); }
+:root[data-theme="dark"] .rcs-badge.off { color: #a1a1aa; background: rgba(161,161,170,0.14); }
+.rcs-section-title { font-size: 15px; font-weight: 600; margin: 22px 0 10px; color: var(--ink-primary); }
+.rcs-empty { padding: 28px; text-align: center; color: var(--ink-muted); }
+@media (max-width: 760px) {
+  .rcs-table th:nth-child(n+4), .rcs-table td:nth-child(n+4) { display: none; }
+  .rcs-table th, .rcs-table td { padding: 10px 10px; }
+  .rcs-acct .rcs-email { display: none; }
+}

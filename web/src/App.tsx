@@ -86,6 +86,8 @@ function AuthedApp() {
         guest={gate.user.role === "guest"}
         onSignOut={async () => {
           try { await api.logout(); } catch { /* ignore */ }
+          // Leave the guest link so the staff login page shows (not "link inactive").
+          if (/^#\/guest\//.test(window.location.hash)) history.replaceState(null, "", window.location.pathname);
           window.dispatchEvent(new Event("nm-unauthorized"));
         }}
       />

@@ -109,7 +109,12 @@ export function EmployeeApp({ onSignOut, guest = false }: { onSignOut: () => voi
         </nav>
         <div className="spacer" />
         {guest ? (
-          <div className="side-user"><span className="sub">Guest view · view only</span></div>
+          <div className="side-user">
+            <span className="sub">Guest view · view only</span>
+            <div style={{ marginTop: 6 }}>
+              <button className="btn btn-xs" onClick={onSignOut}>🔑 Staff sign in</button>
+            </div>
+          </div>
         ) : (
           <div className="side-user">
             <span className="sub" title={email}>{email}</span>
@@ -158,7 +163,7 @@ export function EmployeeApp({ onSignOut, guest = false }: { onSignOut: () => voi
             <span className="bn-ico">{v.icon}</span><span>{v.label === "Offline history" ? "History" : v.label === "Ticket Boxes" && guest ? "TBs" : v.label}</span>
           </button>
         ))}
-        {guest ? null : <button onClick={onSignOut}><span className="bn-ico">⎋</span><span>Sign out</span></button>}
+        <button onClick={onSignOut}><span className="bn-ico">{guest ? "🔑" : "⎋"}</span><span>{guest ? "Staff" : "Sign out"}</span></button>
       </nav>
     </div>
   );

@@ -101,7 +101,16 @@ class Settings(BaseSettings):
     brownout_gateway_max_latency_ms: float = 250.0
     # An external target counts as DEGRADED at/above either of these.
     brownout_ext_loss_pct: float = 30.0
-    brownout_ext_latency_ms: float = 1500.0
+    brownout_ext_latency_ms: float = 1500.0       # ping targets — judged on the MEDIAN
+    # Web (http) checks time a full HTTPS page load, so 1–5 s is normal; only a
+    # sustained median this slow counts. (Single slow loads used to open dozens
+    # of false "brownouts" a day with 0% loss.)
+    brownout_http_latency_ms: float = 8000.0
+    # Latency-only degradation (no loss) must show on at least this many targets
+    # at once — one slow website isn't the ISP.
+    brownout_latency_min_targets: int = 2
+    # After a brownout closes, don't push another for this long (still logged).
+    brownout_push_cooldown_seconds: int = 1800
     # How many external targets must be degraded at once to call it a brownout.
     brownout_min_degraded_targets: int = 1
     # Degradation must persist this long before an incident opens (debounce).

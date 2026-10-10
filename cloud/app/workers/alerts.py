@@ -186,14 +186,19 @@ def _wan_signal(st, now: datetime, targets, by_target: dict) -> tuple[str, dict]
         return "unknown", {}  # the LAN/gateway itself is bad — not a WAN brownout
 
     degraded, peak_loss, peak_latency, worst = [], 0.0, 0.0, None
+    lossy = 0
     for t in ext:
         ss = by_target.get(t.id, [])
         if len(ss) < st.brownout_min_samples:
             continue
         answered = [s.ms for s in ss if s.ms is not None]
         loss = 100.0 * (len(ss) - len(answered)) / len(ss)
-        mx = max(answered) if answered else 0.0
-        if loss >= st.brownout_ext_loss_pct or mx >= st.brownout_ext_latency_ms:
+        med = _median(answered) or 0.0
+        lat_limit = st.brownout_http_latency_ms if (getattr(t, "kind", "") or "") == "http" else st.brownout_ext_latency_ms
+        is_lossy = loss >= st.brownout_ext_loss_pct
+        if is_lossy or med >= lat_limit:
+            lossy += 1 if is_lossy else 0
+            mx = med
             degraded.append(t)
             if loss > peak_loss or (loss == peak_loss and mx > peak_latency):
                 worst = t.label
@@ -210,7 +215,9 @@ def _wan_signal(st, now: datetime, targets, by_target: dict) -> tuple[str, dict]
             if worst else g_ref
         ),
     }
-    if len(degraded) >= st.brownout_min_degraded_targets:
+    # Real loss on any target counts; latency alone needs several targets slow.
+    if len(degraded) >= st.brownout_min_degraded_targets and (
+            lossy > 0 or len(degraded) >= st.brownout_latency_min_targets):
         return "brownout", info
     return "clear", info
 
@@ -285,6 +292,16 @@ async def _maybe_fire_wan_brownout(db: AsyncSession, now: datetime) -> int:
                 opened = 1
                 await db.commit()
                 logger.info("WAN brownout opened: %s", info.get("detail"))
+                last_end = (await db.execute(
+                    select(WanIncident.ended_at)
+                    .where(WanIncident.account_id == account.id, WanIncident.ended_at.is_not(None))
+                    .order_by(WanIncident.ended_at.desc()).limit(1)
+                )).scalars().first()
+                if last_end is not None and (now - last_end).total_seconds() < st.brownout_push_cooldown_seconds:
+                    inc.kind = "brownout-quiet"  # logged, no push now or at recovery
+                    await db.commit()
+                    logger.info("WAN brownout push suppressed (cooldown)")
+                    return opened
                 try:
                     await send_push(db, {
                         "title": "🌐 WAN brownout — internet degraded",
@@ -310,6 +327,8 @@ async def _maybe_fire_wan_brownout(db: AsyncSession, now: datetime) -> int:
                 open_inc.clearing_since = None
                 await db.commit()
                 logger.info("WAN brownout closed after %s", _fmt_dur(dur))
+                if open_inc.kind == "brownout-quiet":
+                    return 0
                 try:
                     await send_push(db, {
                         "title": "🟢 WAN recovered",

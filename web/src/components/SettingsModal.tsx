@@ -1,3 +1,4 @@
+import { GuestLinkSection } from "./GuestLinkSection";
 import { useEffect, useState } from "react";
 import { SignalPanel } from "./SignalPanel";
 import { api, type Agent, type AuthUser, type LiveTarget, type UnifiConsole, type UnifiStatus } from "../api/client";
@@ -308,6 +309,7 @@ export function SettingsModal({
           </select>
           <button className="btn btn-primary" onClick={addUser} disabled={uBusy}>Add user</button>
         </div>
+        <GuestLinkSection />
         {uMsg ? <div className="banner" style={{ marginBottom: 12 }}>{uMsg}</div> : null}
 
               </>

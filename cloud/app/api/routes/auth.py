@@ -136,7 +136,7 @@ async def me(user: User = Depends(current_user)) -> UserOut:
 async def list_users(
     db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)
 ) -> list[UserOut]:
-    users = (await db.execute(select(User).order_by(User.email))).scalars().all()
+    users = (await db.execute(select(User).where(User.role != "guest").order_by(User.email))).scalars().all()
     return [_out(u) for u in users]
 
 
@@ -219,4 +219,71 @@ async def set_user_role(
     user.role = body.role
     await db.commit()
     await db.refresh(user)
+    return _out(user)
+
+
+# ── guest view link ─────────────────────────────────────────────────────────
+# A secret link (#/guest/<token>) that opens a view-only, reduced-detail
+# dashboard with no sign-in: the landing page plus kiosk / ticket box status.
+# Visitors share one built-in "guest" user; core/auth limits what it can read.
+GUEST_EMAIL = "guest@guest-link"
+
+
+class GuestLinkOut(BaseModel):
+    enabled: bool
+    token: str | None = None
+    created_at: str | None = None
+
+
+class GuestIn(BaseModel):
+    token: str = Field(min_length=10, max_length=64)
+
+
+def _guest_out(acc) -> GuestLinkOut:
+    return GuestLinkOut(enabled=bool(acc.guest_token), token=acc.guest_token,
+                        created_at=acc.guest_token_at.isoformat() if acc.guest_token_at else None)
+
+
+@router.get("/guest-link", response_model=GuestLinkOut)
+async def get_guest_link(db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)) -> GuestLinkOut:
+    return _guest_out(await get_or_create_account(db))
+
+
+@router.post("/guest-link", response_model=GuestLinkOut)
+async def make_guest_link(db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)) -> GuestLinkOut:
+    """Create (or replace) the guest link. Replacing signs out every guest."""
+    import secrets
+    from datetime import datetime, timezone
+    acc = await get_or_create_account(db)
+    acc.guest_token = secrets.token_urlsafe(18)
+    acc.guest_token_at = datetime.now(timezone.utc)
+    await db.commit()
+    return _guest_out(acc)
+
+
+@router.delete("/guest-link", response_model=GuestLinkOut)
+async def disable_guest_link(db: AsyncSession = Depends(get_db), _: User = Depends(require_admin)) -> GuestLinkOut:
+    acc = await get_or_create_account(db)
+    acc.guest_token = None
+    acc.guest_token_at = None
+    await db.commit()
+    return _guest_out(acc)
+
+
+@router.post("/guest", response_model=UserOut)
+async def guest_sign_in(body: GuestIn, response: Response, db: AsyncSession = Depends(get_db)) -> UserOut:
+    """PUBLIC: exchange the guest-link token for a view-only guest session."""
+    import secrets
+    from app.core.auth import guest_tag
+    acc = await get_or_create_account(db)
+    if not acc.guest_token or not secrets.compare_digest(acc.guest_token, body.token):
+        raise HTTPException(status_code=404, detail="This guest link is no longer active.")
+    user = (await db.execute(select(User).where(User.email == GUEST_EMAIL))).scalars().first()
+    if user is None:
+        user = User(account_id=acc.id, email=GUEST_EMAIL, role="guest", is_active=True,
+                    hashed_password=hash_password(secrets.token_urlsafe(32)))
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+    set_session_cookie(response, make_session_token(user.id, gt=guest_tag(acc.guest_token)))
     return _out(user)

@@ -366,6 +366,12 @@ async def list_agents(db: AsyncSession = Depends(get_db), _user=Depends(current_
             )
         ).scalars().first()
         out.append(_agent_out(a, sites.get(a.site_id) if a.site_id else None, latest))
+    if getattr(_user, "role", None) == "guest":
+        # Guest link: status only — no addresses, machine ids, ports or raw printer data.
+        hide = {"machine_id": None, "hostname": None, "os": None, "last_ip": None, "last_target": None,
+                "lan_ip": None, "switch_port": None, "switch_mac": None, "printer_raw": None,
+                "printer_detail": None, "version": None, "bootstrap_version": None}
+        out = [o.model_copy(update=hide) for o in out]
     return out
 
 

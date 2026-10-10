@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, session, type Agent, type StationOutage } from "../api/client";
+import { LiveView } from "../components/LiveView";
+import { MainHealth } from "../components/MainHealth";
 import { applySkin } from "../lib/skin";
 
 /**
@@ -9,10 +11,11 @@ import { applySkin } from "../lib/skin";
  * every write from an employee account regardless (core/auth.current_user).
  */
 
-type View = "kiosk" | "ticketbox" | "history";
+type View = "overview" | "kiosk" | "ticketbox" | "history";
 type Filter = "all" | "online" | "offline" | "printer";
 
-const VIEWS: { key: View; label: string; icon: string }[] = [
+const VIEWS: { key: View; label: string; icon: string; guestOnly?: boolean }[] = [
+  { key: "overview", label: "Dashboard", icon: "📈", guestOnly: true },
   { key: "kiosk", label: "Kiosks", icon: "🖥" },
   { key: "ticketbox", label: "Ticket Boxes", icon: "🎟" },
   { key: "history", label: "Offline history", icon: "🕘" },
@@ -58,8 +61,9 @@ function printerState(a: Agent): St | null {
 }
 const printerBad = (a: Agent) => a.status === "online" && ["paper_out", "cover_open", "error"].includes(a.printer_status ?? "");
 
-export function EmployeeApp({ onSignOut }: { onSignOut: () => void }) {
-  const [view, setView] = useState<View>("kiosk");
+export function EmployeeApp({ onSignOut, guest = false }: { onSignOut: () => void; guest?: boolean }) {
+  const views = VIEWS.filter((v) => guest || !v.guestOnly);
+  const [view, setView] = useState<View>(guest ? "overview" : "kiosk");
   const [agents, setAgents] = useState<Agent[]>([]);
   const [outages, setOutages] = useState<StationOutage[]>([]);
   const [days, setDays] = useState(7);
@@ -87,8 +91,8 @@ export function EmployeeApp({ onSignOut }: { onSignOut: () => void }) {
     return () => { alive = false; window.clearInterval(t); };
   }, [days]);
 
-  const email = session.user?.email ?? "";
-  const title = VIEWS.find((v) => v.key === view)?.label ?? "";
+  const email = guest ? "" : session.user?.email ?? "";
+  const title = views.find((v) => v.key === view)?.label ?? "";
 
   return (
     <div className="shell">
@@ -97,60 +101,71 @@ export function EmployeeApp({ onSignOut }: { onSignOut: () => void }) {
         <div className="rcs-brand-name">RCS Station Monitor</div>
         <div className="rcs-brand-sub">Ray Cammack Shows</div>
         <nav className="side-items">
-          {VIEWS.map((v) => (
+          {views.map((v) => (
             <button key={v.key} className={`side-item${view === v.key ? " active" : ""}`} onClick={() => setView(v.key)}>
               <span className="side-ico">{v.icon}</span>{v.label}
             </button>
           ))}
         </nav>
         <div className="spacer" />
-        <div className="side-user">
-          <span className="sub" title={email}>{email}</span>
-          <div style={{ marginTop: 6 }}>
-            <button className="btn btn-xs" onClick={onSignOut}>⎋ Sign out</button>
+        {guest ? (
+          <div className="side-user"><span className="sub">Guest view · view only</span></div>
+        ) : (
+          <div className="side-user">
+            <span className="sub" title={email}>{email}</span>
+            <div style={{ marginTop: 6 }}>
+              <button className="btn btn-xs" onClick={onSignOut}>⎋ Sign out</button>
+            </div>
           </div>
-        </div>
+        )}
       </aside>
 
       <div className="main-col">
         <header className="app-header">
           <span className="mobile-only"><img src="/rcs-logo.png" alt="RCS" style={{ height: 26, width: "auto" }} /></span>
           <h1>{title}</h1>
-          <span className="rcs-viewonly" title="This account can view status only">👁 View only</span>
+          <span className="rcs-viewonly" title="This account can view status only">👁 {guest ? "Guest · view only" : "View only"}</span>
           <div className="spacer" />
           <button className="rcs-icon-btn" onClick={() => setDark((d) => !d)} title={dark ? "Light theme" : "Dark theme"} aria-label="Toggle theme">
             {dark ? "☀︎" : "☾"}
           </button>
-          <div className="rcs-acct">
-            <span className="rcs-avatar">{(email[0] ?? "?").toUpperCase()}</span>
-            <span className="rcs-email">{email}</span>
-          </div>
+          {guest ? null : (
+            <div className="rcs-acct">
+              <span className="rcs-avatar">{(email[0] ?? "?").toUpperCase()}</span>
+              <span className="rcs-email">{email}</span>
+            </div>
+          )}
         </header>
 
         <div className="container">
           {err ? <div className="banner err">Couldn't refresh: {err}</div> : null}
-          {view === "history" ? (
+          {view === "overview" ? (
+            <>
+              <MainHealth />
+              <LiveView />
+            </>
+          ) : view === "history" ? (
             <HistoryView outages={outages} days={days} setDays={setDays} />
           ) : (
-            <StationsView key={view} group={view} agents={agents} outages={outages} onAllHistory={() => setView("history")} />
+            <StationsView key={view} guest={guest} group={view} agents={agents} outages={outages} onAllHistory={() => setView("history")} />
           )}
         </div>
       </div>
 
       <nav className="bottom-nav">
-        {VIEWS.map((v) => (
+        {views.map((v) => (
           <button key={v.key} className={view === v.key ? "active" : ""} onClick={() => setView(v.key)}>
-            <span className="bn-ico">{v.icon}</span><span>{v.label === "Offline history" ? "History" : v.label}</span>
+            <span className="bn-ico">{v.icon}</span><span>{v.label === "Offline history" ? "History" : v.label === "Ticket Boxes" && guest ? "TBs" : v.label}</span>
           </button>
         ))}
-        <button onClick={onSignOut}><span className="bn-ico">⎋</span><span>Sign out</span></button>
+        {guest ? null : <button onClick={onSignOut}><span className="bn-ico">⎋</span><span>Sign out</span></button>}
       </nav>
     </div>
   );
 }
 
-function StationsView({ group, agents, outages, onAllHistory }: {
-  group: "kiosk" | "ticketbox"; agents: Agent[]; outages: StationOutage[]; onAllHistory: () => void;
+function StationsView({ group, agents, outages, onAllHistory, guest = false }: {
+  guest?: boolean; group: "kiosk" | "ticketbox"; agents: Agent[]; outages: StationOutage[]; onAllHistory: () => void;
 }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -204,7 +219,11 @@ function StationsView({ group, agents, outages, onAllHistory }: {
       <div className="rcs-table-wrap">
         <table className="rcs-table">
           <thead>
-            <tr><th>Station</th><th>Status</th><th>Printer</th><th>Last report</th><th>Paper</th><th>Location</th><th>Last offline</th></tr>
+            {guest ? (
+              <tr><th>Station</th><th>Status</th><th>Printer</th><th>Last report</th><th>Last offline</th></tr>
+            ) : (
+              <tr><th>Station</th><th>Status</th><th>Printer</th><th>Last report</th><th>Paper</th><th>Location</th><th>Last offline</th></tr>
+            )}
           </thead>
           <tbody>
             {shown.length === 0 ? (
@@ -219,8 +238,8 @@ function StationsView({ group, agents, outages, onAllHistory }: {
                   <td><span className={`rcs-badge ${st.cls}`}>{st.label}</span></td>
                   <td>{pr ? <span className={`rcs-badge ${pr.cls}`}>{pr.label}</span> : <span className="muted">—</span>}</td>
                   <td className="muted">{ago(a.last_seen_at)}</td>
-                  <td className="muted">{a.printer_roll_percent != null ? `${Math.max(0, 100 - Math.round(a.printer_roll_percent))}% left` : "—"}</td>
-                  <td className="muted">{a.switch_name ? `${a.switch_name.replace(/^\[([^\]]+)\].*$/, "$1")}${a.switch_port ? ` · port ${a.switch_port}` : ""}` : "—"}</td>
+                  {guest ? null : <td className="muted">{a.printer_roll_percent != null ? `${Math.max(0, 100 - Math.round(a.printer_roll_percent))}% left` : "—"}</td>}
+                  {guest ? null : <td className="muted">{a.switch_name ? `${a.switch_name.replace(/^\[([^\]]+)\].*$/, "$1")}${a.switch_port ? ` · port ${a.switch_port}` : ""}` : "—"}</td>}
                   <td className="muted">{lo ? (lo.ended_at ? `${when(lo.started_at)} · ${dur(lo.seconds)}` : `Since ${when(lo.started_at)}`) : "—"}</td>
                 </tr>
               );

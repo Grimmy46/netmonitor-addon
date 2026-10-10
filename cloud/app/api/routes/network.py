@@ -201,6 +201,17 @@ async def clear_closure(db: AsyncSession = Depends(get_db), _admin=Depends(requi
     return {"closure": await _closure_out(db)}
 
 
+def _scrub_addresses(v):
+    """Drop every IP / MAC / hostname field, recursively (guest view)."""
+    if isinstance(v, dict):
+        return {k: _scrub_addresses(x) for k, x in v.items()
+                if not (k in ("ip", "mac", "hostname", "gateway_mac", "uplink_mac", "wan_ip", "lan_ip", "public_ip")
+                        or k.endswith("_ip") or k.endswith("_mac"))}
+    if isinstance(v, list):
+        return [_scrub_addresses(x) for x in v]
+    return v
+
+
 @router.get("/overview")
 async def overview(db: AsyncSession = Depends(get_db), _user=Depends(current_user)) -> dict:
     st = get_settings()
@@ -210,6 +221,8 @@ async def overview(db: AsyncSession = Depends(get_db), _user=Depends(current_use
         raise HTTPException(status_code=404, detail=f"Site {name!r} not found")
     view = await _site_view(db, site)
     view.pop("nodes")   # the landing strip doesn't need the whole tree
+    if getattr(_user, "role", None) == "guest":
+        view = _scrub_addresses(view)  # guest link: no IPs / MACs
     return view
 
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, isAdmin, type Closure, type NetworkOverview, type WanLink } from "../api/client";
+import { api, isAdmin, session, type Closure, type NetworkOverview, type WanLink } from "../api/client";
 import { humanizeDuration } from "../lib/duration";
 
 /**
@@ -178,6 +178,7 @@ export function MainHealth() {
   if (!ov) return <div className="panel mh-panel"><span className="hint">Checking Main…</span></div>;
 
   const open = (id?: string) => {
+    if (session.user?.role === "guest") return; // guest link: no drill-down pages
     window.location.hash = `#/site/${ov.site_id}${id ? `?focus=${id}` : ""}`;
   };
   const links = ov.wan?.links ?? [];
@@ -203,7 +204,7 @@ export function MainHealth() {
             {stale ? "⚠ stale · " : ""}updated {humanizeDuration(ov.wan.age_seconds)}{ov.wan.age_seconds >= 60 ? " ago" : ""}
           </span>
         ) : null}
-        <button className="btn" style={{ fontSize: 12, padding: "3px 10px" }} onClick={() => open()}>Network map →</button>
+        {session.user?.role === "guest" ? null : <button className="btn" style={{ fontSize: 12, padding: "3px 10px" }} onClick={() => open()}>Network map →</button>}
       </div>
 
       <div className="mh-tiles">

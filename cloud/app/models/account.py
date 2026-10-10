@@ -20,6 +20,11 @@ class Account(Base, UUIDPk, Timestamps):
     # management, keys) so shared dashboard access can't change things. None =
     # not set yet (bootstrap: everything open until the owner creates one).
     admin_pin: Mapped[str | None] = mapped_column(default=None)
+    # Guest view link (#/guest/<token>): opens a view-only, reduced-detail
+    # dashboard with no sign-in. None = link disabled. Rotating it kicks out
+    # every existing guest session (their cookie carries a hash of the token).
+    guest_token: Mapped[str | None] = mapped_column(default=None)
+    guest_token_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     # The kiosk agent designated as the Live page's on-lot probe vantage.
     probe_agent_id: Mapped[uuid.UUID | None] = mapped_column(

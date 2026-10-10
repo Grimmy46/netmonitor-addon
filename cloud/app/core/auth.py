@@ -37,10 +37,18 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def make_session_token(user_id: uuid.UUID) -> str:
+def guest_tag(token: str) -> str:
+    import hashlib
+    return hashlib.sha256(token.encode()).hexdigest()[:20]
+
+
+def make_session_token(user_id: uuid.UUID, gt: str | None = None) -> str:
     now = datetime.now(tz=timezone.utc)
+    claims = {"sub": str(user_id), "iat": now, "exp": now + timedelta(days=SESSION_DAYS)}
+    if gt:
+        claims["gt"] = gt
     return jwt.encode(
-        {"sub": str(user_id), "iat": now, "exp": now + timedelta(days=SESSION_DAYS)},
+        claims,
         get_settings().secret_key,
         algorithm=_ALG,
     )
@@ -74,7 +82,18 @@ async def _user_from_request(request: Request, db: AsyncSession) -> User | None:
     user = await db.get(User, user_id)
     if user is None or not user.is_active:
         return None
+    if user.role == "guest":
+        # Guest sessions die the moment the link is disabled or rotated.
+        from app.models import Account
+        acc = await db.get(Account, user.account_id)
+        if acc is None or not acc.guest_token or payload.get("gt") != guest_tag(acc.guest_token):
+            return None
     return user
+
+
+# What a guest-link visitor may read (everything else 403s, all writes too).
+GUEST_GET_PATHS = ("/auth/me", "/live/feed", "/network/overview", "/agents", "/agents/outages",
+                   "/agents/teardown")
 
 
 async def current_user(request: Request, db: AsyncSession = Depends(get_db)) -> User:
@@ -85,9 +104,14 @@ async def current_user(request: Request, db: AsyncSession = Depends(get_db)) -> 
     # Employee accounts are strictly view-only, enforced server-side for every
     # signed-in route: no edits, adds, deletes, imports, notification settings
     # or device control. Only signing out is allowed besides reads.
-    if user.role == "employee" and request.method not in ("GET", "HEAD", "OPTIONS") \
-            and not request.url.path.rstrip("/").endswith("/auth/logout"):
+    path = request.url.path.rstrip("/")
+    if path.startswith("/api/"):
+        path = path[4:]
+    if user.role in ("employee", "guest") and request.method not in ("GET", "HEAD", "OPTIONS") \
+            and path != "/auth/logout":
         raise HTTPException(status_code=403, detail="View-only account.")
+    if user.role == "guest" and request.method in ("GET", "HEAD") and path not in GUEST_GET_PATHS:
+        raise HTTPException(status_code=403, detail="Not available on the guest view.")
     return user
 
 

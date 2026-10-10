@@ -522,6 +522,10 @@ export const api = {
 
   // Site agents / stations (Kiosks tab + enrollment).
   agents: () => req<Agent[]>("/agents"),
+  guestLink: () => req<GuestLink>("/auth/guest-link"),
+  makeGuestLink: () => req<GuestLink>("/auth/guest-link", { method: "POST" }),
+  disableGuestLink: () => req<GuestLink>("/auth/guest-link", { method: "DELETE" }),
+  guestSignIn: (token: string) => req<AuthUser>("/auth/guest", { method: "POST", body: JSON.stringify({ token }) }),
   stationOutages: (days = 7) => req<StationOutage[]>(`/agents/outages?days=${days}`),
   cams: (share?: string) => req<CamList>(`/cams${share ? `?share=${encodeURIComponent(share)}` : ""}`),
   camUpdate: (id: string, body: { name?: string; enabled?: boolean }) =>
@@ -705,7 +709,7 @@ export interface AgentCommand {
 export interface AuthUser {
   id: string;
   email: string;
-  role: "admin" | "viewer" | "employee";
+  role: "admin" | "viewer" | "employee" | "guest";
   is_active: boolean;
 }
 
@@ -720,6 +724,8 @@ export interface AuthStatus {
 export const session: { user: AuthUser | null } = { user: null };
 export const isAdmin = () => session.user?.role === "admin";
 export const isEmployee = () => session.user?.role === "employee";
+
+export interface GuestLink { enabled: boolean; token: string | null; created_at: string | null }
 
 export interface StationOutage {
   agent_id: string; name: string; group: "kiosk" | "ticketbox"; kind: "offline" | "off";

@@ -109,12 +109,21 @@ async def _viewer_ok(db: AsyncSession, request_like, share: str | None) -> bool:
     return False
 
 
+def _display_key(c: Camera) -> tuple:
+    """Kiosk cameras first in kiosk-number order (Kiosk 1, 2 … 10), then the rest."""
+    import re
+    name = (c.name or "").strip()
+    parts = tuple(int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name) if t)
+    return (0 if name.lower().startswith("kiosk") else 1, parts, c.slot)
+
+
 # ── dashboard ──────────────────────────────────────────────────────────────
 @router.get("")
 async def list_cams(request: Request, share: str | None = None, db: AsyncSession = Depends(get_db)) -> dict:
     if not await _viewer_ok(db, request, share):
         raise HTTPException(status_code=401, detail="Sign in required.")
     cams = list((await db.execute(select(Camera).order_by(Camera.slot))).scalars())
+    cams.sort(key=_display_key)
     live = await _producers()
     cfg = await _config(db)
     relay = await _effective_relay(db, cfg)

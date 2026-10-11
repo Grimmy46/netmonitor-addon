@@ -35,7 +35,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.10.10.1"
+PAYLOAD_VERSION = "2026.10.10.2"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -992,9 +992,47 @@ def _cmd_inventory(args):
     return out
 
 
+def _cmd_rights(_args):
+    """Read-only: does this agent have (or could it get) Windows admin rights?"""
+    out = {"user": os.environ.get("USERNAME"), "host": socket.gethostname()}
+    if SYSTEM != "Windows":
+        out["note"] = f"not windows ({SYSTEM})"
+        return out
+    try:
+        import ctypes
+        out["elevated"] = bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception as e:  # noqa: BLE001
+        out["elevated"] = f"? {e}"[:120]
+    try:
+        g = subprocess.run(["whoami", "/groups", "/fo", "csv", "/nh"], capture_output=True,
+                           timeout=20, **_no_window_kwargs())
+        txt = (g.stdout or b"").decode("utf-8", "ignore")
+        line = next((l for l in txt.splitlines() if "S-1-5-32-544" in l), "")
+        out["in_admins"] = bool(line)
+        out["admins_deny_only"] = "deny only" in line.lower()
+        out["integrity"] = next((l.split('","')[0].strip('"') for l in txt.splitlines()
+                                 if "Mandatory Label" in l), None)
+    except Exception as e:  # noqa: BLE001
+        out["groups_error"] = str(e)[:120]
+    try:
+        import winreg
+        k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                           r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System")
+        for v in ("EnableLUA", "ConsentPromptBehaviorAdmin", "PromptOnSecureDesktop"):
+            try:
+                out[v] = winreg.QueryValueEx(k, v)[0]
+            except OSError:
+                out[v] = None
+        winreg.CloseKey(k)
+    except Exception as e:  # noqa: BLE001
+        out["uac_error"] = str(e)[:120]
+    return out
+
+
 _COMMAND_HANDLERS = {
     "cam-diag": _cmd_cam_diag,
     "inventory": _cmd_inventory,
+    "rights": _cmd_rights,
     "power-off": _cmd_power_off,
     "power-cancel": _cmd_power_cancel,
     "printer-status": _cmd_printer_status,

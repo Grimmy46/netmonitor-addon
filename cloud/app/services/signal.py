@@ -145,10 +145,17 @@ async def receive_once(db: AsyncSession) -> int:
         envs = resp.json() or []
     rows: list[dict] = []
     commands: list[dict] = []
+    teardown: list[dict] = []
+    from app.services import teardownbot
+    td = teardownbot.cfg_of(cfg)
+    td_on = teardownbot.active(td)
     for env in envs if isinstance(envs, list) else []:
         rows += _envelope_rows(env, cfg.watched or {})
         if cfg.alert_group_id:
             commands += _envelope_rows(env, _AnyGroup(cfg.alert_group_id))
+        if td_on:
+            teardown += [r for r in _envelope_rows(env, _AnyGroup(td["group_id"]))
+                         if r["group_id"] == td["group_id"]]
     n = await _store(db, rows)
     cfg.last_receive_at = datetime.now(timezone.utc)
     cfg.last_error = None
@@ -163,6 +170,13 @@ async def receive_once(db: AsyncSession) -> int:
                     await netbot.handle_message(db, r["body"], r["sender"], r["sent_at"])
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("netbot command failed: %s", exc)
+    for r in teardown:
+        try:
+            reply = await teardownbot.handle(td, r["body"], r["sender"], r["sent_at"], r["attachments"])
+            if reply:
+                await send_group(num, td["group_id"], reply)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("teardown bot failed: %s", exc)
     return n
 
 

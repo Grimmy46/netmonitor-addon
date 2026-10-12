@@ -22,6 +22,9 @@ class SignalConfig(UUIDPk, Timestamps, Base):
     alert_group_id: Mapped[str | None] = mapped_column(String, default=None)
     last_receive_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     last_error: Mapped[str | None] = mapped_column(String, default=None)
+    # Teardown bot: {"group_id", "group_name", "enabled", "dry_run", "owner",
+    # "until" (ISO), "token_enc" (Fernet)} — see app/services/teardownbot.py
+    teardown: Mapped[dict | None] = mapped_column(JSONB, default=None)
 
 
 class SignalMessage(UUIDPk, Timestamps, Base):

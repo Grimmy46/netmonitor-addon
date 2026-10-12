@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type SignalGroup, type SignalMsg, type SignalNameSuggestion, type SignalStatus } from "../api/client";
-import type { MorningCfg } from "../api/client";
+import type { MorningCfg, TeardownBot } from "../api/client";
 import { API_BASE } from "../api/client";
 
 /** Settings → Signal: link the bot, pick chats, import history, search, names. */
@@ -183,6 +183,7 @@ export function SignalPanel() {
 
       <MorningReport />
       <ClosingEarly />
+      <TeardownBotPanel watched={watched} />
 
       <h4 style={{ margin: "16px 0 6px" }}>Names from the equipment list</h4>
       <p style={{ marginTop: 0 }}>
@@ -290,6 +291,67 @@ function ClosingEarly() {
         </div>
       ) : <button className="btn" onClick={() => get()}>Show shortcut links</button>}
       <span className="sub">{msg}</span>
+    </>
+  );
+}
+
+function TeardownBotPanel({ watched }: { watched: SignalStatus["watched"] }) {
+  const [c, setC] = useState<TeardownBot | null>(null);
+  const [tok, setTok] = useState("");
+  const [q, setQ] = useState("");
+  const [msg, setMsg] = useState("");
+  const [preview, setPreview] = useState("");
+  const err = (e: unknown) => setMsg(String(e instanceof Error ? e.message : e));
+  useEffect(() => { api.teardownBot().then(setC).catch(err); }, []);
+  const save = async (patch: Partial<TeardownBot> & { token?: string }) => {
+    try { setC(await api.teardownBotSave(patch)); setMsg("Saved"); } catch (e) { err(e); }
+  };
+  const test = async () => {
+    setMsg("Testing…"); setPreview("");
+    try {
+      const r = await api.teardownBotTest(q);
+      setMsg(`API ${r.api_up ? "up" : "DOWN"} · token ${r.token_ok ? "OK" : "rejected"}${r.detail ? " · " + r.detail : ""}`);
+      if (r.preview) setPreview(r.preview);
+    } catch (e) { err(e); }
+  };
+  if (!c) return <><h4 style={{ margin: "16px 0 6px" }}>Teardown bot</h4><span className="sub">{msg || "Loading…"}</span></>;
+  const local = (iso?: string) => (iso ? new Date(new Date(iso).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : "");
+  return (
+    <>
+      <h4 style={{ margin: "16px 0 6px" }}>Teardown bot (equipment returns)</h4>
+      <p className="sub" style={{ marginTop: 0, fontSize: 12 }}>
+        While on, NETBOT reads the equipment group. When someone posts a 4-digit RCS tag (#0617) or a serial, it marks the device
+        returned in RCS Inventory (In Storage @ ARK) and on the Cases teardown checklist, then replies in the group.
+        Practice mode replies with what <i>would</i> change and saves nothing.
+      </p>
+      <div style={{ display: "grid", gap: 8, fontSize: 13, maxWidth: 520 }}>
+        <label>Group{" "}
+          <select value={c.group_id || ""} onChange={(e) => save({ group_id: e.target.value })}>
+            <option value="">— pick —</option>
+            {Object.entries(watched || {}).map(([id, g]) => <option key={id} value={id}>{g.name}</option>)}
+          </select>
+        </label>
+        <label>Inventory API token{" "}
+          <input type="password" autoComplete="off" placeholder={c.has_token ? "saved — paste to replace" : "paste token"} value={tok} onChange={(e) => setTok(e.target.value)} style={{ width: 220 }} />
+          {" "}<button className="btn" disabled={!tok.trim()} onClick={() => { save({ token: tok.trim() }); setTok(""); }}>Save token</button>
+          {c.has_token && <> <button className="btn" onClick={() => window.confirm("Remove the saved token?") && save({ token: "" })}>Remove</button></>}
+        </label>
+        <label>Your name for your own posts{" "}
+          <input defaultValue={c.owner || "Dawid"} onBlur={(e) => e.target.value !== (c.owner || "Dawid") && save({ owner: e.target.value })} style={{ width: 120 }} />
+        </label>
+        <label><input type="checkbox" checked={c.dry_run} onChange={(e) => save({ dry_run: e.target.checked })} /> Practice mode (nothing saved)</label>
+        <label><input type="checkbox" checked={c.enabled} onChange={(e) => save({ enabled: e.target.checked })} /> Bot on</label>
+        <label>Auto-off{" "}
+          <input type="datetime-local" defaultValue={local(c.until)} onBlur={(e) => save({ until: e.target.value ? new Date(e.target.value).toISOString() : "" })} />
+        </label>
+        <div><b>Status:</b> {c.active ? (c.dry_run ? "🧪 Listening (practice)" : "✅ Listening — live") : "Off"}{c.group_name ? ` · ${c.group_name}` : ""}</div>
+        <div>
+          <input placeholder="Try a post, e.g. grabbed #0617" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: 220 }} />{" "}
+          <button className="btn" onClick={test}>Test</button>
+        </div>
+        {preview && <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, margin: 0 }}>{preview}</pre>}
+        <span className="sub">{msg}</span>
+      </div>
     </>
   );
 }

@@ -182,3 +182,78 @@ async def morning_send_now(db: AsyncSession = Depends(get_db), _=Depends(require
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Signal send failed: {exc}")
     return {"sent": True, "text": text}
+
+
+# ── teardown bot (equipment group → RCS Inventory) ───────────────────────────
+class TeardownIn(BaseModel):
+    group_id: str | None = None
+    enabled: bool | None = None
+    dry_run: bool | None = None
+    owner: str | None = None
+    until: str | None = None      # ISO time, "" clears
+    token: str | None = None      # write-only; "" clears
+
+
+def _td_public(td: dict) -> dict:
+    from app.services import teardownbot
+    out = {k: v for k, v in td.items() if k != "token_enc"}
+    out["has_token"] = bool(td.get("token_enc"))
+    out.setdefault("dry_run", True)
+    out.setdefault("enabled", False)
+    out["active"] = teardownbot.active(td)
+    return out
+
+
+@router.get("/teardown")
+async def teardown_get(db: AsyncSession = Depends(get_db), _=Depends(require_admin)) -> dict:
+    cfg = await sig.get_config(db)
+    await db.commit()
+    return _td_public(dict(cfg.teardown or {}))
+
+
+@router.put("/teardown")
+async def teardown_put(body: TeardownIn, db: AsyncSession = Depends(get_db), _=Depends(require_admin)) -> dict:
+    from datetime import datetime as _dt
+    from app.core.security import encrypt
+    cfg = await sig.get_config(db)
+    td = dict(cfg.teardown or {})
+    upd = body.model_dump(exclude_none=True)
+    if "token" in upd:
+        tok = upd.pop("token").strip()
+        if tok:
+            td["token_enc"] = encrypt(tok)
+        else:
+            td.pop("token_enc", None)
+    if "until" in upd:
+        u = upd.pop("until").strip()
+        if u:
+            try:
+                td["until"] = _dt.fromisoformat(u).isoformat()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Bad auto-off time.")
+        else:
+            td.pop("until", None)
+    if "group_id" in upd:
+        gid = upd["group_id"]
+        td["group_name"] = ((cfg.watched or {}).get(gid) or {}).get("name") or td.get("group_name")
+    td.update(upd)
+    cfg.teardown = td
+    await db.commit()
+    return _td_public(td)
+
+
+@router.post("/teardown/test")
+async def teardown_test(q: str = Query("", max_length=60), db: AsyncSession = Depends(get_db),
+                        _=Depends(require_admin)) -> dict:
+    """Check the API is up and the token works; optionally preview what a post would do (always practice mode)."""
+    from app.services import teardownbot
+    cfg = await sig.get_config(db)
+    td = dict(cfg.teardown or {})
+    up = await teardownbot.health()
+    if not td.get("token_enc"):
+        return {"api_up": up, "token_ok": False, "detail": "No token saved."}
+    lk = await teardownbot.lookup(teardownbot._token(td), q or "0000")
+    out = {"api_up": up, "token_ok": lk.get("http") != 401}
+    if q:
+        out["preview"] = await teardownbot.handle({**td, "dry_run": True}, q, "me", datetime.now().astimezone())
+    return out

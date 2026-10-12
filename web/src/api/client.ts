@@ -451,6 +451,11 @@ export const api = {
     req<{ config: MorningCfg }>("/integrations/signal/morning", { method: "PUT", body: JSON.stringify(c) }),
   morningSendNow: () => req<{ sent: boolean; text: string }>("/integrations/signal/morning/send-now", { method: "POST" }),
   signalTest: () => req<{ ok: boolean }>("/integrations/signal/test", { method: "POST" }),
+  teardownBot: () => req<TeardownBot>("/integrations/signal/teardown"),
+  teardownBotSave: (c: Partial<TeardownBot> & { token?: string }) =>
+    req<TeardownBot>("/integrations/signal/teardown", { method: "PUT", body: JSON.stringify(c) }),
+  teardownBotTest: (q: string) =>
+    req<{ api_up: boolean; token_ok: boolean; detail?: string; preview?: string | null }>(`/integrations/signal/teardown/test?q=${encodeURIComponent(q)}`, { method: "POST" }),
   signalImport: (file: File, group_name: string) => {
     const fd = new FormData();
     fd.append("file", file);
@@ -745,4 +750,9 @@ export interface GuestLink { enabled: boolean; token: string | null; created_at:
 export interface StationOutage {
   agent_id: string; name: string; group: "kiosk" | "ticketbox"; kind: "offline" | "off";
   started_at: string; ended_at: string | null; seconds: number;
+}
+
+export interface TeardownBot {
+  group_id?: string; group_name?: string; enabled: boolean; dry_run: boolean;
+  owner?: string; until?: string; has_token: boolean; active: boolean;
 }

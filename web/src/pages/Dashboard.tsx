@@ -6,6 +6,7 @@ import { PulseLogo } from "../components/PulseLogo";
 import { AgentsView } from "../components/AgentsView";
 import { CamerasView } from "../components/CamerasView";
 import { DormantView } from "../components/DormantView";
+import { ServerView } from "../components/ServerView";
 import { MainHealth } from "../components/MainHealth";
 import { LiveView } from "../components/LiveView";
 import { NotifyBell } from "../components/NotifyBell";
@@ -15,7 +16,7 @@ import { MapTab } from "../components/GeoMap";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { SitePage } from "./SitePage";
 
-type View = "live" | "fleet" | "map" | "dormant" | "kiosks" | "cameras" | "ticketboxes" | "planner";
+type View = "live" | "fleet" | "map" | "dormant" | "kiosks" | "cameras" | "ticketboxes" | "planner" | "server";
 const VIEWS: { key: View; label: string; icon: string; mobile: boolean; kiosk?: boolean }[] = [
   { key: "live", label: "Live", icon: "📈", mobile: true },
   { key: "map", label: "MAP", icon: "🗺", mobile: true },
@@ -24,6 +25,7 @@ const VIEWS: { key: View; label: string; icon: string; mobile: boolean; kiosk?: 
   { key: "fleet", label: "Fleet", icon: "🌐", mobile: true },
   { key: "ticketboxes", label: "Ticket Boxes", icon: "🎟", mobile: true, kiosk: true },
   { key: "dormant", label: "Dormant", icon: "💤", mobile: false },
+  { key: "server", label: "Server", icon: "🖧", mobile: false },
 ];
 
 type FleetFilter = "all" | "online" | "attention" | "offline" | "dormant";
@@ -251,6 +253,8 @@ export function Dashboard() {
           <MapTab />
         ) : view === "dormant" ? (
           <DormantView />
+        ) : view === "server" ? (
+          <ServerView />
         ) : view === "kiosks" ? (
           <AgentsView group="kiosk" />
         ) : view === "cameras" ? (

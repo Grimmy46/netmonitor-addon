@@ -62,6 +62,7 @@ async def poller_lifespan(_app):
     from app.workers.retention import run_retention
     from app.workers.topology import run_topology
     from app.workers.signal import run_signal_receiver
+    from app.services.serverstats import run_server_sampler
 
     # Load any planned closure before the first request computes dormancy.
     try:
@@ -78,6 +79,7 @@ async def poller_lifespan(_app):
         asyncio.create_task(run_retention()),
         asyncio.create_task(run_topology()),
         asyncio.create_task(run_signal_receiver()),
+        asyncio.create_task(run_server_sampler()),
     ]
     try:
         yield

@@ -386,6 +386,20 @@ export interface MorningCfg {
   min_down: number; min_up: number; max_latency: number;
 }
 
+export type ServerService = { key: string; name: string; ok: boolean; ms: number | null; code?: number; error?: string };
+export type ServerStats = {
+  version: string; cpus: number | null; cpu_pct: number | null; load: number[];
+  memory: { total: number; available: number; used: number; used_pct: number | null; swap_total: number; swap_used: number };
+  disk: { total: number; used: number; free: number; used_pct: number };
+  host_uptime_s: number | null; app_uptime_s: number; app_memory: number | null;
+  history: { t: number; cpu: number | null; mem: number | null; load: number | null }[];
+  services: ServerService[];
+  database: { size: number; connections: number; tables: { name: string; bytes: number; rows: number }[] };
+  agents: { total: number; online: number };
+  relay: { name: string; status: string; version: string | null; last_seen_at: string | null; polling: boolean; last_poll_s: number | null; streams_live: number } | null;
+  now: string;
+};
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -460,6 +474,7 @@ export const api = {
   devices: (siteId: string, status: DeviceStatusFilter = "active") =>
     req<Device[]>(`/sites/${siteId}/devices?status=${status}`),
   dormantDevices: () => req<DormantDevice[]>("/sites/dormant-devices"),
+  serverStats: () => req<ServerStats>("/server/stats"),
   setDeviceDormant: (siteId: string, deviceId: string, dormant: boolean) =>
     req<Device>(`/sites/${siteId}/devices/${deviceId}/dormant`, {
       method: "POST",

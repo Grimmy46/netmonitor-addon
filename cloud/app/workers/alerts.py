@@ -58,7 +58,17 @@ def _parse_iso(value: str | None) -> datetime | None:
 
 
 def _fmt_time(ts: datetime | None) -> str:
-    return ts.astimezone(timezone.utc).strftime("%H:%M UTC") if ts else "?"
+    """Local fair time (Arizona by default), e.g. "5:51 PM MST"; adds the day if not today."""
+    if not ts:
+        return "?"
+    from app.services import route
+    now = datetime.now(timezone.utc)
+    tz = route.tz_now(now)
+    loc = ts.astimezone(tz)
+    out = loc.strftime("%-I:%M %p %Z")
+    if loc.date() != now.astimezone(tz).date():
+        out = loc.strftime("%a ") + out
+    return out
 
 
 def _median(vals: list[float]) -> float | None:

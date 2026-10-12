@@ -978,9 +978,14 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
   .mobile-only { display: inline-flex !important; }
   .app-header { flex-wrap: nowrap; }
   .app-header h1 { font-size: 18px; }
-  .main-col { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  /* Phones: the page itself never scrolls; only .main-col does, and the tab bar is a
+     normal flex row under it. iOS Safari can't drift a fixed bar mid-screen (seen
+     with several live <video>s on the Cameras page) because nothing is fixed. */
+  .shell { flex-direction: column; height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
+  .main-col { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; }
+  .main-col > * { flex-shrink: 0; }
   .bottom-nav {
-    display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 2500;
+    display: flex; position: relative; flex: 0 0 auto; z-index: 2500;
     background: var(--surface-1); border-top: 1px solid var(--border);
     padding: 4px 4px calc(4px + env(safe-area-inset-bottom));
   }

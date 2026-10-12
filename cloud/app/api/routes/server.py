@@ -17,7 +17,7 @@ from app.core.db import get_db
 from app.models import Agent
 from app.services import serverstats
 
-router = APIRouter(prefix="/server", tags=["server"])
+router = APIRouter(prefix="/network/server", tags=["server"])  # under /network: already routed by Caddy
 
 
 async def _http_check(url: str) -> dict:

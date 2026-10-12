@@ -474,7 +474,7 @@ export const api = {
   devices: (siteId: string, status: DeviceStatusFilter = "active") =>
     req<Device[]>(`/sites/${siteId}/devices?status=${status}`),
   dormantDevices: () => req<DormantDevice[]>("/sites/dormant-devices"),
-  serverStats: () => req<ServerStats>("/server/stats"),
+  serverStats: () => req<ServerStats>("/network/server/stats"),
   setDeviceDormant: (siteId: string, deviceId: string, dormant: boolean) =>
     req<Device>(`/sites/${siteId}/devices/${deviceId}/dormant`, {
       method: "POST",

@@ -100,8 +100,14 @@ async def _producers() -> dict[str, bool]:
     return {k: bool((v or {}).get("producers")) for k, v in data.items()}
 
 
+async def _staff(db: AsyncSession, request_like):
+    """A signed-in staff user — guest-link visitors don't count (no cameras on the guest view)."""
+    u = await _user_from_request(request_like, db)
+    return u if u is not None and getattr(u, "role", None) != "guest" else None
+
+
 async def _viewer_ok(db: AsyncSession, request_like, share: str | None) -> bool:
-    if await _user_from_request(request_like, db) is not None:
+    if await _staff(db, request_like) is not None:
         return True
     if share and len(share) >= 16:
         g = (await db.execute(select(GeoMap).where(GeoMap.share_token == share))).scalars().first()
@@ -127,7 +133,7 @@ async def list_cams(request: Request, share: str | None = None, db: AsyncSession
     live = await _producers()
     cfg = await _config(db)
     relay = await _effective_relay(db, cfg)
-    is_user = await _user_from_request(request, db) is not None
+    is_user = await _staff(db, request) is not None
     out = []
     for c in cams:
         if not is_user and not c.enabled:

@@ -301,7 +301,7 @@ function OutageTable({ rows, empty, closed = false }: { rows: StationOutage[]; e
               <td className="muted">{when(o.started_at)}</td>
               <td>{o.ended_at ? <span className="muted">{when(o.ended_at)}</span> : (closed ? <span className="rcs-badge off">Closed</span> : <span className="rcs-badge bad">Still offline</span>)}</td>
               <td className="muted">{dur(o.seconds)}</td>
-              <td className="muted">{closed && !o.ended_at ? "Closed for the night" : o.kind === "off" ? "Shut down" : "Stopped reporting"}</td>
+              <td className="muted">{closed && !o.ended_at ? "Switched off (closed)" : o.kind === "off" ? "Shut down" : "Stopped reporting"}</td>
             </tr>
           ))}
         </tbody>

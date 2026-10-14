@@ -22,6 +22,9 @@ from app.core.db import get_db
 from app.models import User
 
 COOKIE_NAME = "nm_session"
+# Guest-link sessions live in their own cookie so opening the guest link never
+# signs a staff member out of their own session (and vice versa).
+GUEST_COOKIE = "nm_guest"
 SESSION_DAYS = 7
 _ALG = "HS256"
 
@@ -70,10 +73,34 @@ def clear_session_cookie(response: Response) -> None:
     response.delete_cookie(COOKIE_NAME, path="/")
 
 
+def set_guest_cookie(response: Response, token: str) -> None:
+    response.set_cookie(GUEST_COOKIE, token, max_age=SESSION_DAYS * 86400,
+                        httponly=True, secure=True, samesite="lax", path="/")
+
+
+def clear_guest_cookie(response: Response) -> None:
+    response.delete_cookie(GUEST_COOKIE, path="/")
+
+
+def wants_guest(request: Request) -> bool:
+    """The guest page marks its API calls with X-NM-View: guest."""
+    return (request.headers.get("x-nm-view") or "").lower() == "guest"
+
+
 async def _user_from_request(request: Request, db: AsyncSession) -> User | None:
-    token = request.cookies.get(COOKIE_NAME)
-    if not token:
-        return None
+    # Guest page → guest cookie first; everything else → staff cookie first.
+    # The other one is a fallback (e.g. <img> requests can't send the header).
+    order = (GUEST_COOKIE, COOKIE_NAME) if wants_guest(request) else (COOKIE_NAME, GUEST_COOKIE)
+    for name in order:
+        token = request.cookies.get(name)
+        if token:
+            user = await _user_from_token(token, db)
+            if user is not None:
+                return user
+    return None
+
+
+async def _user_from_token(token: str, db: AsyncSession) -> User | None:
     try:
         payload = jwt.decode(token, get_settings().secret_key, algorithms=[_ALG])
         user_id = uuid.UUID(payload["sub"])

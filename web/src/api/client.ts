@@ -401,10 +401,15 @@ export type ServerStats = {
 };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  // Guest page: mark calls so the server uses the guest cookie, not a staff one.
+  const headers: Record<string, string> = init?.headers
+    ? { ...(init.headers as Record<string, string>) }
+    : { "Content-Type": "application/json" };
+  if (/^#\/guest\//.test(window.location.hash)) headers["X-NM-View"] = "guest";
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
     ...init,
+    headers,
   });
   if (res.status === 401 && !path.startsWith("/auth/")) {
     // Session gone (expired / signed out elsewhere) — bounce to the login page.

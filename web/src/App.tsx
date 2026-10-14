@@ -33,7 +33,7 @@ function AuthedApp() {
     statusCall
       .then((st) => {
         if (st === null) return;
-        if (st.authenticated && st.user) {
+        if (st.authenticated && st.user && st.user.role !== "guest") {
           session.user = st.user;
           setGate({ s: "ready", user: st.user });
         } else {
@@ -86,8 +86,9 @@ function AuthedApp() {
         guest={gate.user.role === "guest"}
         onSignOut={async () => {
           try { await api.logout(); } catch { /* ignore */ }
-          // Leave the guest link so the staff login page shows (not "link inactive").
-          if (/^#\/guest\//.test(window.location.hash)) history.replaceState(null, "", window.location.pathname);
+          // Leaving the guest page: reload without the link — staff who are already
+          // signed in land on their dashboard, everyone else on the sign-in page.
+          if (/^#\/guest\//.test(window.location.hash)) { window.location.replace(window.location.pathname); return; }
           window.dispatchEvent(new Event("nm-unauthorized"));
         }}
       />

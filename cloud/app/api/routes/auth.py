@@ -122,8 +122,12 @@ async def login(body: LoginIn, response: Response, db: AsyncSession = Depends(ge
 
 
 @router.post("/logout", status_code=204)
-async def logout(response: Response) -> None:
-    clear_session_cookie(response)
+async def logout(request: Request, response: Response) -> None:
+    from app.core.auth import clear_guest_cookie, wants_guest
+    if wants_guest(request):
+        clear_guest_cookie(response)   # leaving the guest page: keep any staff session
+    else:
+        clear_session_cookie(response)
 
 
 @router.get("/me", response_model=UserOut)
@@ -285,5 +289,6 @@ async def guest_sign_in(body: GuestIn, response: Response, db: AsyncSession = De
         db.add(user)
         await db.commit()
         await db.refresh(user)
-    set_session_cookie(response, make_session_token(user.id, gt=guest_tag(acc.guest_token)))
+    from app.core.auth import set_guest_cookie
+    set_guest_cookie(response, make_session_token(user.id, gt=guest_tag(acc.guest_token)))
     return _out(user)

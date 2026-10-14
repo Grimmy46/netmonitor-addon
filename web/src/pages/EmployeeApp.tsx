@@ -108,7 +108,7 @@ export function EmployeeApp({ onSignOut, guest = false }: { onSignOut: () => voi
 
   const closed = closure?.phase === "closed";
   const closedNote = closed ? (
-    <div className="banner" style={{ marginBottom: 12, background: "var(--surface-2, #f1f1f1)", color: "var(--ink-secondary)", border: "1px solid var(--border)" }}>
+    <div className="banner" style={{ marginBottom: 12, background: "color-mix(in srgb, var(--page) 60%, var(--surface-1))", color: "var(--ink-secondary)", border: "1px solid var(--border)" }}>
       ⏸ <strong>Closed until {fmtUntil(closure?.end)}.</strong> Stations are switched off until we open, so grey “Closed” is expected.
     </div>
   ) : null;
@@ -300,7 +300,7 @@ function StationsView({ group, agents, outages, onAllHistory, guest = false, clo
               const bad = b.list.filter((a) => a.status !== "online" && !closed && stationState(a).cls === "bad").length;
               const pBad = b.list.filter(printerBad).length;
               return [
-                <tr key={`h-${b.name}`} className="rcs-bank" onClick={() => toggleBank(b.name)} style={{ cursor: "pointer", background: "var(--surface-2, #f6f6f6)" }}>
+                <tr key={`h-${b.name}`} className="rcs-bank" onClick={() => toggleBank(b.name)} style={{ cursor: "pointer", background: "color-mix(in srgb, var(--page) 45%, var(--surface-1))" }}>
                   <td colSpan={guest ? 5 : 7} style={{ fontWeight: 700 }}>
                     <span style={{ display: "inline-block", width: 16 }}>{isOpen ? "▾" : "▸"}</span>{b.name}
                     <span className="muted" style={{ fontWeight: 400, marginLeft: 10, fontSize: 13 }}>

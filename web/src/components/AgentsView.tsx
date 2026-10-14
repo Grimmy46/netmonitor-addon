@@ -185,6 +185,12 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
   const [showPaper, setShowPaper] = useState(false);
   const [showWan, setShowWan] = useState(false);
   const [showTeardown, setShowTeardown] = useState(false);
+  // Kiosk banks fold up (Kiosk 1 ▸ K1-6001 …); remembered on this device.
+  const [openBanks, setOpenBanks] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem(`nm-banks-${group}`) || "[]")); } catch { return new Set(); }
+  });
+  const setBanks = (x: Set<string>) => { setOpenBanks(x); try { localStorage.setItem(`nm-banks-${group}`, JSON.stringify([...x])); } catch { /* private mode */ } };
+  const toggleBank = (n: string) => { const x = new Set(openBanks); if (x.has(n)) x.delete(n); else x.add(n); setBanks(x); };
   const [wan, setWan] = useState<WanStatus | null>(null);
   const [teardown, setTeardown] = useState<TeardownStatus | null>(null);
   const [notice, setNotice] = useState<{ notice: string | null; at: string | null } | null>(null);
@@ -234,7 +240,8 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
   const groups = (() => {
     const m = new Map<string, Agent[]>();
     for (const a of shown) {
-      const k = a.switch_name || "Not located yet";
+      const bank = group === "kiosk" ? a.name.match(/^K(\d+)-/i) : null;
+      const k = bank ? `Kiosk ${Number(bank[1])}` : a.switch_name || "Not located yet";
       if (!m.has(k)) m.set(k, []);
       m.get(k)!.push(a);
     }
@@ -349,6 +356,11 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
           ))}
         </div>
         <div className="spacer" />
+        {group === "kiosk" && groups.length > 1 ? (
+          <button className="btn" onClick={() => setBanks(groups.every((g) => openBanks.has(g.name)) ? new Set() : new Set(groups.map((g) => g.name)))}>
+            {groups.every((g) => openBanks.has(g.name)) ? "Collapse all" : "Expand all"}
+          </button>
+        ) : null}
         {filter === "stale" && isAdmin() ? (
           <button className="btn" onClick={retireStale}>🗑 Retire {counts.stale} stale</button>
         ) : null}
@@ -385,18 +397,24 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
           {groups.map((g) => {
             const up = g.list.filter((a) => a.online).length;
             const dead = up === 0 && g.list.length > 1;
+            const foldable = group === "kiosk";
+            const isOpen = !foldable || openBanks.has(g.name);
+            const sw = g.list.find((a) => a.switch_name)?.switch_name;
             return (
               <section key={g.name} className={`kgroup${dead ? " kgroup-dead" : ""}`}>
-                <div className="kgroup-head">
-                  <span className="kgroup-name" title={g.name}>{g.name.replace(/\s+US[WLX]\b.*$/, "")}</span>
+                <div className="kgroup-head" onClick={foldable ? () => toggleBank(g.name) : undefined} style={foldable ? { cursor: "pointer", userSelect: "none" } : undefined}>
+                  {foldable ? <span style={{ width: 14, display: "inline-block" }}>{isOpen ? "▾" : "▸"}</span> : null}
+                  <span className="kgroup-name" title={sw || g.name}>{g.name.replace(/\s+US[WLX]\b.*$/, "")}</span>
                   <span className={`kgroup-count${up < g.list.length ? " warn" : ""}`}>{up}/{g.list.length} online</span>
                   {dead ? <span className="kgroup-hint">whole bank silent — check this switch / its power</span> : null}
                 </div>
-                <div className="ktiles">
-                  {g.list.map((a) => (
-                    <KioskTile key={a.id} agent={a} spark={sparks[a.id] ?? []} onOpen={() => setOpenId(a.id)} />
-                  ))}
-                </div>
+                {isOpen ? (
+                  <div className="ktiles">
+                    {g.list.map((a) => (
+                      <KioskTile key={a.id} agent={a} spark={sparks[a.id] ?? []} onOpen={() => setOpenId(a.id)} />
+                    ))}
+                  </div>
+                ) : null}
               </section>
             );
           })}

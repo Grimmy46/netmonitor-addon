@@ -225,6 +225,34 @@ function StationsView({ group, agents, outages, onAllHistory, guest = false, clo
   const noun = group === "kiosk" ? "kiosks" : "ticket boxes";
   const recent = outages.filter((o) => o.group === group).slice(0, 8);
 
+  // Kiosks fold into banks by name: K1-6001 … → "Kiosk 1".
+  const [openBanks, setOpenBanks] = useState<Set<string>>(new Set());
+  const toggleBank = (n: string) => setOpenBanks((s) => { const x = new Set(s); if (x.has(n)) x.delete(n); else x.add(n); return x; });
+  const bankOf = (name: string) => { const m = name.match(/^K(\d+)-/i); return m ? `Kiosk ${Number(m[1])}` : "Other"; };
+  const banks = (() => {
+    const m = new Map<string, Agent[]>();
+    for (const a of shown) { const k = bankOf(a.name); if (!m.has(k)) m.set(k, []); m.get(k)!.push(a); }
+    return [...m.entries()].map(([name, list]) => ({ name, list }))
+      .sort((x, y) => (x.name === "Other" ? 1 : y.name === "Other" ? -1 : x.name.localeCompare(y.name, undefined, { numeric: true })));
+  })();
+  const row = (a: Agent) => {
+    const st = stationState(a, closed);
+    const pr = a.status === "online" ? printerState(a) : null;
+    const lo = lastOutage.get(a.id);
+    return (
+      <tr key={a.id}>
+        <td style={{ fontWeight: 600, paddingLeft: group === "kiosk" ? 30 : undefined }}>{a.name}</td>
+        <td><span className={`rcs-badge ${st.cls}`}>{st.label}</span></td>
+        <td>{pr ? <span className={`rcs-badge ${pr.cls}`}>{pr.label}</span> : <span className="muted">—</span>}</td>
+        <td className="muted">{ago(a.last_seen_at)}</td>
+        {guest ? null : <td className="muted">{a.printer_roll_percent != null ? `${Math.max(0, 100 - Math.round(a.printer_roll_percent))}% left` : "—"}</td>}
+        {guest ? null : <td className="muted">{a.switch_name ? `${a.switch_name.replace(/^\[([^\]]+)\].*$/, "$1")}${a.switch_port ? ` · port ${a.switch_port}` : ""}` : "—"}</td>}
+        <td className="muted">{lo ? (lo.ended_at ? `${when(lo.started_at)} · ${dur(lo.seconds)}` : `Since ${when(lo.started_at)}`) : "—"}</td>
+      </tr>
+    );
+  };
+  const allOpen = banks.length > 0 && banks.every((b) => openBanks.has(b.name));
+
   const stat = (f: Filter, v: number, l: string) => (
     <button className={`rcs-stat${filter === f ? " on" : ""}`} onClick={() => setFilter(filter === f && f !== "all" ? "all" : f)}>
       <div className="v">{v}</div><div className="l">{l}</div>
@@ -247,6 +275,11 @@ function StationsView({ group, agents, outages, onAllHistory, guest = false, clo
           <option value="offline">{closed ? "Closed / offline" : "Offline"}</option>
           <option value="printer">Printer issues</option>
         </select>
+        {group === "kiosk" && banks.length > 1 ? (
+          <button className="btn btn-xs" onClick={() => setOpenBanks(allOpen ? new Set() : new Set(banks.map((b) => b.name)))}>
+            {allOpen ? "Collapse all" : "Expand all"}
+          </button>
+        ) : null}
         <span className="sub" style={{ color: "var(--ink-muted)", fontSize: 13 }}>{shown.length} shown · updates every 15s</span>
       </div>
       <div className="rcs-table-wrap">
@@ -261,22 +294,25 @@ function StationsView({ group, agents, outages, onAllHistory, guest = false, clo
           <tbody>
             {shown.length === 0 ? (
               <tr><td colSpan={7} className="rcs-empty">No {noun} match.</td></tr>
-            ) : shown.map((a) => {
-              const st = stationState(a, closed);
-              const pr = a.status === "online" ? printerState(a) : null;
-              const lo = lastOutage.get(a.id);
-              return (
-                <tr key={a.id}>
-                  <td style={{ fontWeight: 600 }}>{a.name}</td>
-                  <td><span className={`rcs-badge ${st.cls}`}>{st.label}</span></td>
-                  <td>{pr ? <span className={`rcs-badge ${pr.cls}`}>{pr.label}</span> : <span className="muted">—</span>}</td>
-                  <td className="muted">{ago(a.last_seen_at)}</td>
-                  {guest ? null : <td className="muted">{a.printer_roll_percent != null ? `${Math.max(0, 100 - Math.round(a.printer_roll_percent))}% left` : "—"}</td>}
-                  {guest ? null : <td className="muted">{a.switch_name ? `${a.switch_name.replace(/^\[([^\]]+)\].*$/, "$1")}${a.switch_port ? ` · port ${a.switch_port}` : ""}` : "—"}</td>}
-                  <td className="muted">{lo ? (lo.ended_at ? `${when(lo.started_at)} · ${dur(lo.seconds)}` : `Since ${when(lo.started_at)}`) : "—"}</td>
-                </tr>
-              );
-            })}
+            ) : group === "kiosk" ? banks.map((b) => {
+              const isOpen = q !== "" || openBanks.has(b.name);
+              const up = b.list.filter((a) => a.status === "online").length;
+              const bad = b.list.filter((a) => a.status !== "online" && !closed && stationState(a).cls === "bad").length;
+              const pBad = b.list.filter(printerBad).length;
+              return [
+                <tr key={`h-${b.name}`} className="rcs-bank" onClick={() => toggleBank(b.name)} style={{ cursor: "pointer", background: "var(--surface-2, #f6f6f6)" }}>
+                  <td colSpan={guest ? 5 : 7} style={{ fontWeight: 700 }}>
+                    <span style={{ display: "inline-block", width: 16 }}>{isOpen ? "▾" : "▸"}</span>{b.name}
+                    <span className="muted" style={{ fontWeight: 400, marginLeft: 10, fontSize: 13 }}>
+                      {b.list.length} station{b.list.length === 1 ? "" : "s"} · {closed && up === 0 ? "closed" : `${up}/${b.list.length} online`}
+                    </span>
+                    {bad ? <span className="rcs-badge bad" style={{ marginLeft: 8 }}>{bad} offline</span> : null}
+                    {pBad ? <span className="rcs-badge warn" style={{ marginLeft: 8 }}>{pBad} printer</span> : null}
+                  </td>
+                </tr>,
+                ...(isOpen ? b.list.map(row) : []),
+              ];
+            }) : shown.map(row)}
           </tbody>
         </table>
       </div>

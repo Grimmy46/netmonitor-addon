@@ -973,6 +973,9 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
 .kdot-online { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 20%, transparent); }
 .kdot-offline { background: var(--critical); }
 .kdot-off { background: #7a7a7a; }
+.kdot-closed { background: #7a7a7a; }
+.ktile-closed { opacity: .7; }
+.kgroup-hint.kgroup-hint-closed { color: var(--ink-muted, #7a7a7a); }
 
 @media (max-width: 760px) {
   .side-nav { display: none; }

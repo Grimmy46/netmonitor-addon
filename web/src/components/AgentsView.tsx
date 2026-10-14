@@ -73,17 +73,19 @@ type Filter = "all" | "online" | "offline" | "printer" | "off" | "stale";
 function printerBad(a: Agent) {
   return a.printer_status === "paper_out" || a.printer_status === "cover_open" || a.printer_status === "error";
 }
-function stateOf(a: Agent): "online" | "off" | "offline" | "stale" {
+type KState = "online" | "off" | "offline" | "stale" | "closed";
+function stateOf(a: Agent, closed = false): KState {
   if (a.online) return "online";
   if (a.stale) return "stale";
+  if (closed) return "closed"; // planned closure: everything off is expected, not a fault
   if (a.powered_off_at) return "off";
   return "offline";
 }
-const STATE_LABEL = { online: "Online", off: "Shut down", offline: "Offline", stale: "Stale" };
+const STATE_LABEL: Record<KState, string> = { online: "Online", off: "Shut down", offline: "Offline", stale: "Stale", closed: "Closed" };
 
 /** Compact kiosk tile — one glance: status, printer, paper, latency, port. */
-function KioskTile({ agent, spark, onOpen }: { agent: Agent; spark: SparkPoint[]; onOpen: () => void }) {
-  const st = stateOf(agent);
+function KioskTile({ agent, spark, onOpen, closed = false }: { agent: Agent; spark: SparkPoint[]; onOpen: () => void; closed?: boolean }) {
+  const st = stateOf(agent, closed);
   return (
     <button className={`ktile ktile-${st}${printerBad(agent) ? " ktile-printer" : ""}`} onClick={onOpen}>
       <div className="ktile-top">
@@ -193,6 +195,7 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
   const toggleBank = (n: string) => { const x = new Set(openBanks); if (x.has(n)) x.delete(n); else x.add(n); setBanks(x); };
   const [wan, setWan] = useState<WanStatus | null>(null);
   const [teardown, setTeardown] = useState<TeardownStatus | null>(null);
+  const [closure, setClosure] = useState<{ phase?: string; end?: string | null } | null>(null);
   const [notice, setNotice] = useState<{ notice: string | null; at: string | null } | null>(null);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
@@ -210,6 +213,7 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
       api.getNotice().then((n) => alive && setNotice(n.notice ? n : null)).catch(() => {});
       api.wanStatus().then((w) => alive && setWan(w)).catch(() => {});
       api.getTeardown().then((t) => alive && setTeardown(t)).catch(() => {});
+      api.networkOverview().then((o) => alive && setClosure(o?.closure ?? null)).catch(() => {});
     };
     tick();
     const id = setInterval(tick, 15000);
@@ -221,20 +225,22 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
 
   const live = (agents ?? []).filter((a) => (a.claimed || a.last_seen_at) && a.station_group === group);
   const online = live.filter((a) => a.online).length;
+  const closed = closure?.phase === "closed";
 
   const counts: Record<Filter, number> = {
     all: live.filter((a) => !a.stale).length,
     online,
-    offline: live.filter((a) => stateOf(a) === "offline").length,
+    offline: live.filter((a) => stateOf(a, closed) === "offline").length,
     printer: live.filter((a) => a.online && printerBad(a)).length,
-    off: live.filter((a) => stateOf(a) === "off").length,
+    off: live.filter((a) => { const x = stateOf(a, closed); return x === "off" || x === "closed"; }).length,
     stale: live.filter((a) => a.stale).length,
   };
   const shown = live.filter((a) =>
     filter === "all" ? !a.stale :
     filter === "online" ? a.online :
     filter === "printer" ? a.online && printerBad(a) :
-    stateOf(a) === filter);
+    filter === "off" ? ["off", "closed"].includes(stateOf(a, closed)) :
+    stateOf(a, closed) === filter);
   // Group by the switch each kiosk is plugged into (from UniFi), so a dead
   // bank reads as one problem: "Kiosk 1 switch · 0/8 online".
   const groups = (() => {
@@ -317,6 +323,12 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
           ) : null}
         </div>
       ) : null}
+      {closed ? (
+        <div className="banner" style={{ marginBottom: 14, borderLeft: "3px solid var(--ink-muted, #7a7a7a)" }}>
+          ⏸ <strong>Closed{closure?.end ? ` until ${new Date(closure.end).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}.</strong>{" "}
+          Stations are switched off, so grey “Closed” is expected — no faults are flagged until we open.
+        </div>
+      ) : null}
       {wan?.state === "brownout" ? (
         <div className="banner" style={{ marginBottom: 14, display: "flex", alignItems: "center", gap: 10, borderLeft: "3px solid var(--critical)", cursor: "pointer" }}
           onClick={() => setShowWan(true)} title="Open WAN / ISP health">
@@ -396,7 +408,7 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
         <div className="kgroups">
           {groups.map((g) => {
             const up = g.list.filter((a) => a.online).length;
-            const dead = up === 0 && g.list.length > 1;
+            const dead = !closed && up === 0 && g.list.length > 1;
             const foldable = group === "kiosk";
             const isOpen = !foldable || openBanks.has(g.name);
             const sw = g.list.find((a) => a.switch_name)?.switch_name;
@@ -405,13 +417,14 @@ export function AgentsView({ group = "kiosk" }: { group?: "kiosk" | "ticketbox" 
                 <div className="kgroup-head" onClick={foldable ? () => toggleBank(g.name) : undefined} style={foldable ? { cursor: "pointer", userSelect: "none" } : undefined}>
                   {foldable ? <span style={{ width: 14, display: "inline-block" }}>{isOpen ? "▾" : "▸"}</span> : null}
                   <span className="kgroup-name" title={sw || g.name}>{g.name.replace(/\s+US[WLX]\b.*$/, "")}</span>
-                  <span className={`kgroup-count${up < g.list.length ? " warn" : ""}`}>{up}/{g.list.length} online</span>
+                  <span className={`kgroup-count${up < g.list.length && !closed ? " warn" : ""}`}>{up}/{g.list.length} online</span>
+                  {closed && up < g.list.length ? <span className="kgroup-hint kgroup-hint-closed">closed</span> : null}
                   {dead ? <span className="kgroup-hint">whole bank silent — check this switch / its power</span> : null}
                 </div>
                 {isOpen ? (
                   <div className="ktiles">
                     {g.list.map((a) => (
-                      <KioskTile key={a.id} agent={a} spark={sparks[a.id] ?? []} onOpen={() => setOpenId(a.id)} />
+                      <KioskTile key={a.id} agent={a} spark={sparks[a.id] ?? []} onOpen={() => setOpenId(a.id)} closed={closed} />
                     ))}
                   </div>
                 ) : null}

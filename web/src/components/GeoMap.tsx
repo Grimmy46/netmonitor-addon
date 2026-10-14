@@ -74,6 +74,7 @@ export function GuestMapView() {
   return <GeoMap guest />;
 }
 
+type Tally = { online: number; total: number };
 type Props = { siteId?: string; sites?: Site[]; onSite?: (id: string) => void; shareToken?: string; guest?: boolean };
 
 function GeoMap({ siteId, sites, onSite, shareToken, guest = false }: Props) {
@@ -98,6 +99,7 @@ function GeoMap({ siteId, sites, onSite, shareToken, guest = false }: Props) {
   const [labelSize, setLabelSize] = useState<number>(() => Math.min(2, Math.max(0, Number(localStorage.getItem("nm-geo-lbl") ?? 1))));
   const [bgAdjust, setBgAdjust] = useState(false);
   const [bgBusy, setBgBusy] = useState(false);
+  const [counts, setCounts] = useState<{ switch: Tally; ap: Tally } | null>(null);
 
   const boxRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -127,6 +129,7 @@ function GeoMap({ siteId, sites, onSite, shareToken, guest = false }: Props) {
           setGeo((g) => (g ? { ...g, placements: s.placements, bg: s.bg ?? null }
             : { center: s.center, zoom: s.zoom, placements: s.placements, share_token: null, bg: s.bg ?? null }));
           setNodes(s.nodes);
+          setCounts(s.counts ?? null);
         } else {
           const t = await api.siteTopology(siteId!);
           if (!alive) return;
@@ -581,8 +584,13 @@ function GeoMap({ siteId, sites, onSite, shareToken, guest = false }: Props) {
 
   // ── derived ──
   const live = nodes.filter((n) => !n.dormant);
-  const sw = live.filter(isSwitch);
+
   const aps = live.filter((n) => n.type === "ap");
+  // Header numbers match the dashboard: real switches/APs, closed ones count as off.
+  const tally = (l: TopoNode[]): Tally => ({ online: l.filter((n) => n.is_online).length, total: l.length });
+  const c = counts ?? { switch: tally(live.filter((n) => n.type === "switch")), ap: tally(aps) };
+  const closedNow = live.some((n) => n.closed_down);
+  const tone = (t: Tally, bad: string) => (t.online === t.total ? "ok" : closedNow ? "muted" : bad);
   const roots = live.filter((n) => n.outage_root_id === n.id && !n.closed_down)
     .map((r) => ({ r, behind: live.filter((x) => x.outage_root_id === r.id).length - 1 }))
     .sort((a, b) => Number(isSwitch(b.r)) - Number(isSwitch(a.r)) || b.behind - a.behind);
@@ -643,8 +651,9 @@ function GeoMap({ siteId, sites, onSite, shareToken, guest = false }: Props) {
           </select>
         ) : null}
         <span className="geo-stat">
-          <b className={sw.some((n) => health(n) === "down") ? "bad" : "ok"}>{sw.filter((n) => health(n) !== "down").length}/{sw.length}</b> switches
-          {" · "}<b className={aps.some((n) => health(n) === "down") ? "warn" : "ok"}>{aps.filter((n) => health(n) !== "down").length}/{aps.length}</b> APs
+          <b className={tone(c.switch, "bad")}>{c.switch.online}/{c.switch.total}</b> switches
+          {" · "}<b className={tone(c.ap, "warn")}>{c.ap.online}/{c.ap.total}</b> APs
+          {closedNow ? <> · closed</> : null}
           {!shared ? <> · {placedCount}/{live.length} on map</> : null}
         </span>
         <div className="spacer" />

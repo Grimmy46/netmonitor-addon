@@ -330,8 +330,12 @@ async def _sanitized_geo(db: AsyncSession, g: GeoMap) -> dict:
     for n in keep:
         k = alias[n["id"]]
         out_pins[k] = pins[mac_of[n["id"]]]
+        name = n["name"]
+        if n["type"] == "gateway":
+            # HA firewall pair shares one internal name — show plain roles instead.
+            name = "Firewall (backup)" if n["parent_id"] else "Firewall (main)"
         out_nodes.append({
-            "id": k, "name": n["name"], "model": n["model"], "type": n["type"], "mac": k, "ip": None,
+            "id": k, "name": name, "model": n["model"], "type": n["type"], "mac": k, "ip": None,
             "is_online": n["is_online"], "dormant": n["dormant"], "down_seconds": n["down_seconds"],
             "local_reachable": n["local_reachable"], "parent_id": alias.get(n["parent_id"]),
             "uplink_port": n["uplink_port"], "local_port": None, "uplink_type": n["uplink_type"],
@@ -346,6 +350,8 @@ async def _sanitized_geo(db: AsyncSession, g: GeoMap) -> dict:
         "zoom": g.zoom,
         "placements": out_pins,
         "nodes": out_nodes,
+        # Site-wide counts — the same numbers the dashboard shows.
+        "counts": {k: view["counts"][k] for k in ("switch", "ap")},
         "bg": _geo_out(g, with_share=False)["bg"],
         "wan": view["wan"] and {"links": [{k: l.get(k) for k in ("key", "up", "active", "latency_ms")}
                                            for l in view["wan"].get("links", [])]},

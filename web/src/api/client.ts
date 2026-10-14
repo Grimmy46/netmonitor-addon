@@ -353,6 +353,7 @@ export type GeoState = {
   bg?: GeoBg | null;
 };
 export type SharedMap = {
+  counts?: { switch: { online: number; total: number }; ap: { online: number; total: number } };
   site_name: string;
   center: [number, number] | null;
   zoom: number | null;

@@ -721,6 +721,7 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
 .geo-site { padding: 4px 8px; }
 .geo-stat { font-size: 13px; color: var(--ink-secondary); }
 .geo-stat b.ok { color: var(--good); } .geo-stat b.bad { color: var(--critical); } .geo-stat b.warn { color: var(--warning); }
+.geo-stat b.muted { color: var(--ink-secondary); }
 .geo-find .search { width: 210px; }
 .geo-alerts { display: flex; gap: 6px; flex-wrap: wrap; }
 .geo-alert { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--critical) 45%, transparent); background: color-mix(in srgb, var(--critical) 10%, var(--surface-1)); color: var(--ink-primary); font: inherit; font-size: 13px; cursor: pointer; }

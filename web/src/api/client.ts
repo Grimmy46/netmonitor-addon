@@ -466,6 +466,7 @@ export const api = {
     req<{ messages: SignalMsg[] }>(`/integrations/signal/messages?limit=60&q=${encodeURIComponent(q)}&group=${encodeURIComponent(group)}`),
   signalNames: () => req<SignalNameSuggestion[]>("/integrations/signal/name-suggestions"),
   sharedMap: (token: string) => req<SharedMap>(`/map/shared/${encodeURIComponent(token)}`),
+  guestMap: () => req<SharedMap>("/map/guest"),
   setClosure: (start: string, end: string, note: string) =>
     req<{ closure: Closure | null }>("/network/closure", {
       method: "PUT", headers: { "Content-Type": "application/json" },

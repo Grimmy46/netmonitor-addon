@@ -312,6 +312,12 @@ async def shared_geo(token: str, db: AsyncSession = Depends(get_db)) -> dict:
     g = (await db.execute(select(GeoMap).where(GeoMap.share_token == token))).scalars().first()
     if g is None:
         raise HTTPException(status_code=404, detail="This link was turned off or never existed.")
+    return await _sanitized_geo(db, g)
+
+
+async def _sanitized_geo(db: AsyncSession, g: GeoMap) -> dict:
+    """Names, types, status and links of the pinned devices only — no IPs or MACs."""
+    from app.api.routes.network import _site_view
     site = await db.get(Site, g.site_id)
     view = await _site_view(db, site)
     nodes = view["nodes"]
@@ -345,6 +351,33 @@ async def shared_geo(token: str, db: AsyncSession = Depends(get_db)) -> dict:
                                            for l in view["wan"].get("links", [])]},
         "generated_at": _dt.now(tz=_tz.utc).isoformat(),
     }
+
+
+# ── Guest view link: the same sanitized map for the Main site ────────────────
+async def _guest_geo(db: AsyncSession) -> GeoMap:
+    from app.core.config import get_settings
+    st = get_settings()
+    name = st.alert_site_name or st.default_probe_site_name
+    site = (await db.execute(select(Site).where(Site.name == name))).scalars().first()
+    g = (await db.execute(select(GeoMap).where(GeoMap.site_id == site.id))).scalars().first() if site else None
+    if g is None:
+        raise HTTPException(status_code=404, detail="No map yet.")
+    return g
+
+
+@router.get("/guest")
+async def guest_geo(db: AsyncSession = Depends(get_db), _user=Depends(current_user)) -> dict:
+    """View-only map for the guest link (and any signed-in user), sanitized like a share link."""
+    return await _sanitized_geo(db, await _guest_geo(db))
+
+
+@router.get("/guest/bg")
+async def guest_bg(db: AsyncSession = Depends(get_db), _user=Depends(current_user)) -> Response:
+    g = await _guest_geo(db)
+    if g.bg_image is None:
+        raise HTTPException(status_code=404, detail="No background image.")
+    return Response(content=g.bg_image, media_type=g.bg_mime or "image/jpeg",
+                    headers={"Cache-Control": "private, max-age=86400"})
 
 
 # ── Background image (instead of / over the satellite) ───────────────────────

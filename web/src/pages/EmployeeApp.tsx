@@ -3,6 +3,7 @@ import { api, session, type Agent, type Closure, type StationOutage } from "../a
 import { GuestServices } from "../components/GuestServices";
 import { LiveView } from "../components/LiveView";
 import { MainHealth } from "../components/MainHealth";
+import { GuestMapView } from "../components/GeoMap";
 import { applySkin } from "../lib/skin";
 
 /**
@@ -12,11 +13,12 @@ import { applySkin } from "../lib/skin";
  * every write from an employee account regardless (core/auth.current_user).
  */
 
-type View = "overview" | "kiosk" | "ticketbox" | "history";
+type View = "overview" | "map" | "kiosk" | "ticketbox" | "history";
 type Filter = "all" | "online" | "offline" | "printer";
 
 const VIEWS: { key: View; label: string; icon: string; guestOnly?: boolean }[] = [
   { key: "overview", label: "Dashboard", icon: "📈", guestOnly: true },
+  { key: "map", label: "Map", icon: "🗺", guestOnly: true },
   { key: "kiosk", label: "Kiosks", icon: "🖥" },
   { key: "ticketbox", label: "Ticket Boxes", icon: "🎟" },
   { key: "history", label: "Offline history", icon: "🕘" },
@@ -168,6 +170,8 @@ export function EmployeeApp({ onSignOut, guest = false }: { onSignOut: () => voi
               <MainHealth />
               {guest ? <GuestServices closed={closed} until={closure?.end} /> : <LiveView />}
             </>
+          ) : view === "map" ? (
+            <GuestMapView />
           ) : view === "history" ? (
             <>{closedNote}<HistoryView outages={outages} days={days} setDays={setDays} closed={closed} /></>
           ) : (

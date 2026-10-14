@@ -93,7 +93,7 @@ async def _user_from_request(request: Request, db: AsyncSession) -> User | None:
 
 # What a guest-link visitor may read (everything else 403s, all writes too).
 GUEST_GET_PATHS = ("/auth/me", "/live/feed", "/network/overview", "/agents", "/agents/outages",
-                   "/agents/teardown")
+                   "/agents/teardown", "/map/guest", "/map/guest/bg")
 
 
 async def current_user(request: Request, db: AsyncSession = Depends(get_db)) -> User:

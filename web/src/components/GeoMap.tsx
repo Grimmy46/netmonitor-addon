@@ -69,10 +69,15 @@ export function SharedMapPage({ token }: { token: string }) {
   );
 }
 
-type Props = { siteId?: string; sites?: Site[]; onSite?: (id: string) => void; shareToken?: string };
+// ── Guest view link: the same view-only map, for the Main site ───────────────
+export function GuestMapView() {
+  return <GeoMap guest />;
+}
 
-function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
-  const shared = !!shareToken;
+type Props = { siteId?: string; sites?: Site[]; onSite?: (id: string) => void; shareToken?: string; guest?: boolean };
+
+function GeoMap({ siteId, sites, onSite, shareToken, guest = false }: Props) {
+  const shared = !!shareToken || guest;
   const admin = !shared && isAdmin();
   const [skin, setSkin] = useState<Skin>(getSkin());
   useEffect(() => onSkinChange(setSkin), []);
@@ -116,7 +121,7 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
     const load = async () => {
       try {
         if (shared) {
-          const s = await api.sharedMap(shareToken!);
+          const s = guest ? await api.guestMap() : await api.sharedMap(shareToken!);
           if (!alive) return;
           setSiteName(s.site_name);
           setGeo((g) => (g ? { ...g, placements: s.placements, bg: s.bg ?? null }
@@ -321,7 +326,7 @@ function GeoMap({ siteId, sites, onSite, shareToken }: Props) {
 
   // ── background image (plan / drone photo instead of the satellite) ──
   const bgUrl = geo?.bg
-    ? shared ? `/map/shared/${encodeURIComponent(shareToken!)}/bg?v=${geo.bg.version}` : `/map/geo/${siteId}/bg?v=${geo.bg.version}`
+    ? guest ? `/map/guest/bg?v=${geo.bg.version}` : shared ? `/map/shared/${encodeURIComponent(shareToken!)}/bg?v=${geo.bg.version}` : `/map/geo/${siteId}/bg?v=${geo.bg.version}`
     : "";
   const toPx = (ll: [number, number]) => mapRef.current!.project(L.latLng(ll[0], ll[1]), BG_Z);
   const toLL = (p: Pt) => mapRef.current!.unproject(L.point(p.x, p.y), BG_Z);

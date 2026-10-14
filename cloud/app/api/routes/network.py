@@ -223,6 +223,10 @@ async def overview(db: AsyncSession = Depends(get_db), _user=Depends(current_use
     view.pop("nodes")   # the landing strip doesn't need the whole tree
     if getattr(_user, "role", None) == "guest":
         view = _scrub_addresses(view)  # guest link: no IPs / MACs
+        if isinstance(view.get("wan"), dict):
+            view["wan"]["gateway"] = None       # no internal device names
+        if isinstance(view.get("closure"), dict):
+            view["closure"]["note"] = None      # staff notes ("Auto: closing early?")
     return view
 
 

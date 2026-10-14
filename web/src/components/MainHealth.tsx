@@ -137,14 +137,16 @@ function ClosureBar({ c, onChange }: { c: Closure | null | undefined; onChange: 
   }
   const text =
     c.phase === "scheduled" ? <>Closure planned: <strong>{fmtWhen(c.start)}</strong> → <strong>{fmtWhen(c.end)}</strong>. Alerts will pause automatically.</>
-    : c.phase === "closed" ? <><strong>Closed until {fmtWhen(c.end)}.</strong> Alerts paused · dormant clock frozen · gear switched off shows grey.</>
+    : c.phase === "closed" ? (admin
+      ? <><strong>Closed until {fmtWhen(c.end)}.</strong> Alerts paused · dormant clock frozen · gear switched off shows grey.</>
+      : <><strong>Closed until {fmtWhen(c.end)}.</strong> Stations and network gear are switched off until we open — grey is expected.</>)
     : <><strong>Reopen check</strong>: waiting for gear to power up until {fmtWhen(c.reopen_until)}, then one summary push of anything still down. Anything red below hasn't come back yet.</>;
   return (
     <div className={`mh-closure ${c.phase}`}>
       <span className="mh-closure-icon">{c.phase === "reopening" ? "↻" : "⏸"}</span>
       <div style={{ flex: 1 }}>
         {text}
-        {c.note ? <div className="sub" style={{ fontSize: 12 }}>{c.note}</div> : null}
+        {c.note && admin ? <div className="sub" style={{ fontSize: 12 }}>{c.note}</div> : null}
       </div>
       {admin ? (
         <div style={{ display: "flex", gap: 6 }}>
@@ -197,7 +199,7 @@ export function MainHealth() {
     <section className="panel mh-panel">
       <div className="mh-head">
         <span className="panel-title" style={{ margin: 0 }}>{ov.site_name} network</span>
-        {ov.wan?.gateway ? <span className="sub">{ov.wan.gateway}{ov.wan.ha_units > 1 ? " (HA pair)" : ""}</span> : null}
+        {ov.wan?.gateway && session.user?.role !== "guest" ? <span className="sub">{ov.wan.gateway}{ov.wan.ha_units > 1 ? " (HA pair)" : ""}</span> : null}
         <div className="spacer" />
         {ov.wan?.age_seconds != null ? (
           <span className="sub" style={{ fontSize: 12 }}>
@@ -211,15 +213,15 @@ export function MainHealth() {
         {wanTile(links.find((l) => l.key === "WAN1"), "WAN1", stale)}
         {wanTile(links.find((l) => l.key === "WAN2"), "WAN2", stale)}
         <Tile color={swColor} label="Switches" value={`${sw.online}/${sw.total}`}
-          detail={sw.online === sw.total ? "all online" : `${sw.total - sw.online} down`} onClick={() => open()} />
+          detail={sw.online === sw.total ? "all online" : closed && !outages.length ? `${sw.total - sw.online} off · closed` : `${sw.total - sw.online} down`} onClick={() => open()} />
         <Tile color={apColor} label="Access points" value={`${ap.online}/${ap.total}`}
-          detail={ap.online === ap.total ? "all online" : `${ap.total - ap.online} down`} onClick={() => open()} />
+          detail={ap.online === ap.total ? "all online" : closed && !outages.length ? `${ap.total - ap.online} off · closed` : `${ap.total - ap.online} down`} onClick={() => open()} />
       </div>
 
       <ClosureBar c={ov.closure} onChange={() => setTick((t) => t + 1)} />
 
       {closed && closedCount ? (
-        <div className="mh-ok" style={{ color: MUTED }}>⏸ {closedCount} device{closedCount === 1 ? "" : "s"} switched off for the closure (not counted as faults).</div>
+        <div className="mh-ok" style={{ color: MUTED }}>⏸ {closedCount} device{closedCount === 1 ? "" : "s"} switched off for the closure{session.user?.role === "guest" ? "." : " (not counted as faults)."}</div>
       ) : null}
 
       {allGood ? (

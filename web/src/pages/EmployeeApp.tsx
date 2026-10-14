@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, session, type Agent, type StationOutage } from "../api/client";
+import { api, session, type Agent, type Closure, type StationOutage } from "../api/client";
+import { GuestServices } from "../components/GuestServices";
 import { LiveView } from "../components/LiveView";
 import { MainHealth } from "../components/MainHealth";
 import { applySkin } from "../lib/skin";
@@ -44,9 +45,10 @@ function when(iso: string): string {
 }
 
 type St = { cls: "ok" | "bad" | "off" | "warn"; label: string };
-function stationState(a: Agent): St {
+function stationState(a: Agent, closed = false): St {
   if (a.status === "online") return { cls: "ok", label: "Online" };
   if (a.status === "pending") return { cls: "off", label: "Not set up" };
+  if (closed) return { cls: "off", label: "Closed" };
   if (a.powered_off_at) return { cls: "off", label: "Shut down" };
   return { cls: "bad", label: "Offline" };
 }
@@ -59,6 +61,11 @@ function printerState(a: Agent): St | null {
     default: return null;
   }
 }
+// Retired / test PCs that haven't reported in a month stay out of the lists.
+const RETIRED_MS = 30 * 86400_000;
+const isRetired = (a: Agent) => a.status !== "online" && (!a.last_seen_at || Date.now() - new Date(a.last_seen_at).getTime() > RETIRED_MS);
+const fmtUntil = (iso?: string | null) => iso ? new Date(iso).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
+
 const printerBad = (a: Agent) => a.status === "online" && ["paper_out", "cover_open", "error"].includes(a.printer_status ?? "");
 
 export function EmployeeApp({ onSignOut, guest = false }: { onSignOut: () => void; guest?: boolean }) {
@@ -68,8 +75,14 @@ export function EmployeeApp({ onSignOut, guest = false }: { onSignOut: () => voi
   const [outages, setOutages] = useState<StationOutage[]>([]);
   const [days, setDays] = useState(7);
   const [err, setErr] = useState<string | null>(null);
+  const [closure, setClosure] = useState<Closure | null>(null);
   const [dark, setDark] = useState(() => localStorage.getItem("rcs-dark") === "1");
 
+  useEffect(() => {
+    const prev = document.title;
+    document.title = "RCS Station Monitor";
+    return () => { document.title = prev; };
+  }, []);
   useEffect(() => {
     applySkin("rcs");
     return () => applySkin();
@@ -82,8 +95,8 @@ export function EmployeeApp({ onSignOut, guest = false }: { onSignOut: () => voi
   useEffect(() => {
     let alive = true;
     const load = () => {
-      Promise.all([api.agents(), api.stationOutages(days)])
-        .then(([a, o]) => { if (!alive) return; setAgents(a); setOutages(o); setErr(null); })
+      Promise.all([api.agents(), api.stationOutages(days), api.networkOverview().catch(() => null)])
+        .then(([a, o, ov]) => { if (!alive) return; setAgents(a.filter((x) => !isRetired(x))); setOutages(o); setClosure(ov?.closure ?? null); setErr(null); })
         .catch((e) => alive && setErr(String(e?.message ?? e)));
     };
     load();
@@ -91,6 +104,12 @@ export function EmployeeApp({ onSignOut, guest = false }: { onSignOut: () => voi
     return () => { alive = false; window.clearInterval(t); };
   }, [days]);
 
+  const closed = closure?.phase === "closed";
+  const closedNote = closed ? (
+    <div className="banner" style={{ marginBottom: 12, background: "var(--surface-2, #f1f1f1)", color: "var(--ink-secondary)", border: "1px solid var(--border)" }}>
+      ⏸ <strong>Closed until {fmtUntil(closure?.end)}.</strong> Stations are switched off until we open, so grey “Closed” is expected.
+    </div>
+  ) : null;
   const email = guest ? "" : session.user?.email ?? "";
   const title = views.find((v) => v.key === view)?.label ?? "";
 
@@ -147,13 +166,18 @@ export function EmployeeApp({ onSignOut, guest = false }: { onSignOut: () => voi
           {view === "overview" ? (
             <>
               <MainHealth />
-              <LiveView />
+              {guest ? <GuestServices closed={closed} until={closure?.end} /> : <LiveView />}
             </>
           ) : view === "history" ? (
-            <HistoryView outages={outages} days={days} setDays={setDays} />
+            <>{closedNote}<HistoryView outages={outages} days={days} setDays={setDays} closed={closed} /></>
           ) : (
-            <StationsView key={view} guest={guest} group={view} agents={agents} outages={outages} onAllHistory={() => setView("history")} />
+            <>{closedNote}<StationsView key={view} guest={guest} closed={closed} group={view} agents={agents} outages={outages} onAllHistory={() => setView("history")} /></>
           )}
+          {guest ? (
+            <div className="mobile-only" style={{ textAlign: "center", margin: "18px 0 6px", fontSize: 12, color: "var(--ink-muted)" }}>
+              RCS staff? <a href="#" onClick={(e) => { e.preventDefault(); onSignOut(); }}>Sign in</a>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -163,14 +187,14 @@ export function EmployeeApp({ onSignOut, guest = false }: { onSignOut: () => voi
             <span className="bn-ico">{v.icon}</span><span>{v.label === "Offline history" ? "History" : v.label === "Ticket Boxes" && guest ? "TBs" : v.label}</span>
           </button>
         ))}
-        <button onClick={onSignOut}><span className="bn-ico">{guest ? "🔑" : "⎋"}</span><span>{guest ? "Staff" : "Sign out"}</span></button>
+        {guest ? null : <button onClick={onSignOut}><span className="bn-ico">⎋</span><span>Sign out</span></button>}
       </nav>
     </div>
   );
 }
 
-function StationsView({ group, agents, outages, onAllHistory, guest = false }: {
-  guest?: boolean; group: "kiosk" | "ticketbox"; agents: Agent[]; outages: StationOutage[]; onAllHistory: () => void;
+function StationsView({ group, agents, outages, onAllHistory, guest = false, closed = false }: {
+  guest?: boolean; closed?: boolean; group: "kiosk" | "ticketbox"; agents: Agent[]; outages: StationOutage[]; onAllHistory: () => void;
 }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -208,7 +232,7 @@ function StationsView({ group, agents, outages, onAllHistory, guest = false }: {
       <div className="rcs-stats">
         {stat("all", list.length, `All ${noun}`)}
         {stat("online", online, "Online")}
-        {stat("offline", offline, "Offline")}
+        {stat("offline", offline, closed ? "Closed" : "Offline")}
         {stat("printer", pIssues, "Printer issues")}
       </div>
       <div className="rcs-toolbar">
@@ -216,7 +240,7 @@ function StationsView({ group, agents, outages, onAllHistory, guest = false }: {
         <select className="rcs-select" value={filter} onChange={(e) => setFilter(e.target.value as Filter)}>
           <option value="all">All statuses</option>
           <option value="online">Online</option>
-          <option value="offline">Offline</option>
+          <option value="offline">{closed ? "Closed / offline" : "Offline"}</option>
           <option value="printer">Printer issues</option>
         </select>
         <span className="sub" style={{ color: "var(--ink-muted)", fontSize: 13 }}>{shown.length} shown · updates every 15s</span>
@@ -234,7 +258,7 @@ function StationsView({ group, agents, outages, onAllHistory, guest = false }: {
             {shown.length === 0 ? (
               <tr><td colSpan={7} className="rcs-empty">No {noun} match.</td></tr>
             ) : shown.map((a) => {
-              const st = stationState(a);
+              const st = stationState(a, closed);
               const pr = a.status === "online" ? printerState(a) : null;
               const lo = lastOutage.get(a.id);
               return (
@@ -258,12 +282,12 @@ function StationsView({ group, agents, outages, onAllHistory, guest = false }: {
         <span className="spacer" style={{ flex: 1 }} />
         <button className="btn btn-xs" onClick={onAllHistory}>Full history →</button>
       </div>
-      <OutageTable rows={recent} empty={`No ${noun} went offline in this period.`} />
+      <OutageTable rows={recent} closed={closed} empty={`No ${noun} went offline in this period.`} />
     </>
   );
 }
 
-function OutageTable({ rows, empty }: { rows: StationOutage[]; empty: string }) {
+function OutageTable({ rows, empty, closed = false }: { rows: StationOutage[]; empty: string; closed?: boolean }) {
   return (
     <div className="rcs-table-wrap">
       <table className="rcs-table">
@@ -275,9 +299,9 @@ function OutageTable({ rows, empty }: { rows: StationOutage[]; empty: string }) 
             <tr key={`${o.agent_id}-${o.started_at}-${i}`}>
               <td style={{ fontWeight: 600 }}>{o.name}</td>
               <td className="muted">{when(o.started_at)}</td>
-              <td>{o.ended_at ? <span className="muted">{when(o.ended_at)}</span> : <span className="rcs-badge bad">Still offline</span>}</td>
+              <td>{o.ended_at ? <span className="muted">{when(o.ended_at)}</span> : (closed ? <span className="rcs-badge off">Closed</span> : <span className="rcs-badge bad">Still offline</span>)}</td>
               <td className="muted">{dur(o.seconds)}</td>
-              <td className="muted">{o.kind === "off" ? "Shut down" : "Stopped reporting"}</td>
+              <td className="muted">{closed && !o.ended_at ? "Closed for the night" : o.kind === "off" ? "Shut down" : "Stopped reporting"}</td>
             </tr>
           ))}
         </tbody>
@@ -286,7 +310,7 @@ function OutageTable({ rows, empty }: { rows: StationOutage[]; empty: string }) 
   );
 }
 
-function HistoryView({ outages, days, setDays }: { outages: StationOutage[]; days: number; setDays: (d: number) => void }) {
+function HistoryView({ outages, days, setDays, closed = false }: { outages: StationOutage[]; days: number; setDays: (d: number) => void; closed?: boolean }) {
   const [q, setQ] = useState("");
   const [grp, setGrp] = useState<"all" | "kiosk" | "ticketbox">("all");
   const rows = outages.filter((o) => (grp === "all" || o.group === grp) && (!q || o.name.toLowerCase().includes(q.toLowerCase())));
@@ -306,10 +330,10 @@ function HistoryView({ outages, days, setDays }: { outages: StationOutage[]; day
           <option value={30}>Last 30 days</option>
         </select>
         <span className="sub" style={{ color: "var(--ink-muted)", fontSize: 13 }}>
-          {rows.length} event{rows.length === 1 ? "" : "s"}{open ? ` · ${open} still offline` : ""}
+          {rows.length} event{rows.length === 1 ? "" : "s"}{open ? ` · ${open} ${closed ? "off for the closure" : "still offline"}` : ""}
         </span>
       </div>
-      <OutageTable rows={rows} empty="No stations went offline in this period." />
+      <OutageTable rows={rows} closed={closed} empty="No stations went offline in this period." />
     </>
   );
 }

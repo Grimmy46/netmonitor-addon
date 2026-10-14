@@ -96,7 +96,11 @@ async def list_targets(
             .order_by(ProbeTarget.sort, ProbeTarget.created_at)
         )
     ).scalars()
-    return [_target_out(t) for t in rows]
+    out = [_target_out(t) for t in rows]
+    if getattr(_user, "role", None) == "guest":
+        for t in out:
+            t.target = "gateway" if t.target == "gateway" else ""
+    return out
 
 
 @router.post("/targets", response_model=TargetOut)
@@ -261,6 +265,11 @@ async def feed(
             loss_pct=round(100.0 * lost / n, 2) if n else 0.0,
             samples=[FeedSample(ts=s.ts.timestamp(), ms=s.ms) for s in picked],
         ))
+    if getattr(_user, "role", None) == "guest":
+        # Guest link: service names and status only — no addresses, URLs or station names.
+        for t in out:
+            t.target = "gateway" if t.target == "gateway" else ""
+        probe_agent = None
     return FeedOut(generated_at=now, window_minutes=minutes,
                    probe_agent=probe_agent, targets=out)
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, session, type Agent, type Closure, type StationOutage } from "../api/client";
 import { GuestServices } from "../components/GuestServices";
+import { FerrisWheel } from "../components/FerrisWheel";
 import { LiveView } from "../components/LiveView";
 import { MainHealth } from "../components/MainHealth";
 import { GuestMapView } from "../components/GeoMap";
@@ -116,7 +117,8 @@ export function EmployeeApp({ onSignOut, guest = false }: { onSignOut: () => voi
   const title = views.find((v) => v.key === view)?.label ?? "";
 
   return (
-    <div className="shell">
+    <div className="shell rcs-shell">
+      <FerrisWheel />
       <aside className="side-nav">
         <div className="rcs-logo-tile"><img src="/rcs-logo.png" alt="RCS — Ray Cammack Shows" /></div>
         <div className="rcs-brand-name">RCS Station Monitor</div>
@@ -168,6 +170,7 @@ export function EmployeeApp({ onSignOut, guest = false }: { onSignOut: () => voi
           {view === "overview" ? (
             <>
               <MainHealth />
+              <StationsGlance agents={agents} outages={outages} closed={closed} go={setView} />
               {guest ? <GuestServices closed={closed} until={closure?.end} /> : <LiveView />}
             </>
           ) : view === "map" ? (
@@ -375,5 +378,36 @@ function HistoryView({ outages, days, setDays, closed = false }: { outages: Stat
       </div>
       <OutageTable rows={rows} closed={closed} empty="No stations went offline in this period." />
     </>
+  );
+}
+
+/** Landing page: one-line station summary with jump-offs to the tabs. */
+function StationsGlance({ agents, outages, closed, go }: {
+  agents: Agent[]; outages: StationOutage[]; closed: boolean; go: (v: View) => void;
+}) {
+  const of = (g: "kiosk" | "ticketbox") => agents.filter((a) => (a.station_group ?? "kiosk") === g && a.status !== "pending");
+  const k = of("kiosk"), t = of("ticketbox");
+  const up = (l: Agent[]) => l.filter((a) => a.status === "online").length;
+  const printers = agents.filter(printerBad).length;
+  const dayAgo = Date.now() - 86400_000;
+  const today = outages.filter((o) => new Date(o.started_at).getTime() > dayAgo && !(closed && !o.ended_at)).length;
+  const card = (v: string, l: string, sub: string, view: View, tone?: "good" | "bad") => (
+    <button className="rcs-stat" onClick={() => go(view)}>
+      <div className="v" style={{ color: tone === "good" ? "var(--good)" : tone === "bad" ? "var(--critical)" : undefined }}>{v}</div>
+      <div className="l">{l}</div>
+      <div className="sub" style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 2 }}>{sub}</div>
+    </button>
+  );
+  const tone = (l: Agent[]) => (closed ? undefined : up(l) === l.length ? "good" : "bad");
+  return (
+    <div style={{ margin: "14px 0" }}>
+      <div className="rcs-section-title" style={{ marginTop: 0 }}>Stations at a glance</div>
+      <div className="rcs-stats" style={{ marginBottom: 0 }}>
+        {card(`${up(k)}/${k.length}`, "Kiosks online", closed ? "closed — switched off" : "tap to see each bank", "kiosk", tone(k))}
+        {card(`${up(t)}/${t.length}`, "Ticket boxes online", closed ? "closed — switched off" : "tap for details", "ticketbox", tone(t))}
+        {card(String(printers), "Printer issues", printers ? "paper or cover — see Kiosks" : "all printers OK", "kiosk", printers ? "bad" : undefined)}
+        {card(String(today), "Outages, last 24 h", today ? "see Offline history" : "none", "history", today ? "bad" : undefined)}
+      </div>
+    </div>
   );
 }

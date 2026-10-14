@@ -10,6 +10,7 @@ import { ServerView } from "../components/ServerView";
 import { MainHealth } from "../components/MainHealth";
 import { LiveView } from "../components/LiveView";
 import { NotifyBell } from "../components/NotifyBell";
+import { GuestShareButton } from "../components/GuestShareButton";
 import { SettingsModal } from "../components/SettingsModal";
 import { SiteCard } from "../components/SiteCard";
 import { MapTab } from "../components/GeoMap";
@@ -206,6 +207,7 @@ export function Dashboard() {
         {configured && view === "fleet" && !siteRoute ? (
           <button className="btn btn-primary" onClick={sync} disabled={syncing}>{syncing ? "Syncing…" : "Sync now"}</button>
         ) : null}
+        {isAdmin() ? <GuestShareButton /> : null}
         <NotifyBell />
         <button className="btn mobile-only" onClick={() => setMoreOpen(true)} aria-label="Menu">☰</button>
       </header>

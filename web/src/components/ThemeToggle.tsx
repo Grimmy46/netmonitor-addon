@@ -2,15 +2,38 @@ import { useEffect, useState } from "react";
 import { getSkin, onSkinChange, setSkin, type Skin } from "../lib/skin";
 
 type Mode = "light" | "dark";
+const THEME_KEY = "nm-theme";
+
+/** The staff app's saved Light/Dark choice (null = follow the OS). */
+export function storedMode(): Mode | null {
+  try {
+    const v = localStorage.getItem(THEME_KEY);
+    return v === "dark" || v === "light" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Re-apply the staff app's own theme (e.g. after leaving the guest view). */
+export function applyStoredTheme(): void {
+  const m = storedMode();
+  if (m) document.documentElement.setAttribute("data-theme", m);
+  else document.documentElement.removeAttribute("data-theme");
+}
 
 /** Cycles Light → Dark → Holo → RCS. Holo is the HUD skin; RCS matches the
  * RCS inventory site (near-black sidebar, RCS red). See lib/skin. */
 export function ThemeToggle() {
-  const [mode, setMode] = useState<Mode | null>(null);
+  const [mode, setModeState] = useState<Mode | null>(() => storedMode());
+  const setMode = (m: Mode) => {
+    try { localStorage.setItem(THEME_KEY, m); } catch { /* private mode */ }
+    setModeState(m);
+  };
   const [skin, setSkinState] = useState<Skin>(getSkin());
 
   useEffect(() => {
     if (mode) document.documentElement.setAttribute("data-theme", mode);
+    else document.documentElement.removeAttribute("data-theme");
   }, [mode]);
   useEffect(() => onSkinChange(setSkinState), []);
 

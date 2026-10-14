@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, session, type Agent, type Closure, type StationOutage } from "../api/client";
 import { GuestServices } from "../components/GuestServices";
 import { FerrisWheel } from "../components/FerrisWheel";
+import { applyStoredTheme } from "../components/ThemeToggle";
 import { LiveView } from "../components/LiveView";
 import { MainHealth } from "../components/MainHealth";
 import { GuestMapView } from "../components/GeoMap";
@@ -88,7 +89,7 @@ export function EmployeeApp({ onSignOut, guest = false }: { onSignOut: () => voi
   }, []);
   useEffect(() => {
     applySkin("rcs");
-    return () => applySkin();
+    return () => { applySkin(); applyStoredTheme(); };
   }, []);
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");

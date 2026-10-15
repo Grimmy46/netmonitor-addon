@@ -671,6 +671,12 @@ async def sweep(db: AsyncSession) -> dict:
         await morning.maybe_send(db, now)
     except Exception as exc:  # noqa: BLE001 — a report must never break the sweep
         logger.warning("morning report: %s", exc)
+    # Daily 6 AM access-point restart (+ summary to the group ~15 min later).
+    try:
+        from app.services import ap_restart
+        await ap_restart.maybe_run(db, now)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AP restart: %s", exc)
     await _refresh_agent_status(db, now)
 
     # No ears, no alarms: skip all work until someone has enabled notifications.

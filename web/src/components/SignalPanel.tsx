@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, type SignalGroup, type SignalMsg, type SignalNameSuggestion, type SignalStatus } from "../api/client";
-import type { MorningCfg, TeardownBot } from "../api/client";
+import type { ApRestart, MorningCfg, TeardownBot } from "../api/client";
 import { API_BASE } from "../api/client";
 
 /** Settings → Signal: link the bot, pick chats, import history, search, names. */
@@ -182,6 +182,7 @@ export function SignalPanel() {
       ) : null}
 
       <MorningReport />
+      <ApRestartPanel />
       <ClosingEarly />
       <TeardownBotPanel watched={watched} />
 
@@ -258,6 +259,33 @@ function MorningReport() {
         <span className="sub">{msg}{last ? ` · last sent ${last}` : ""}</span>
       </div>
       <pre style={{ whiteSpace: "pre-wrap", fontSize: 12, background: "var(--surface-2, rgba(127,127,127,.08))", padding: 10, borderRadius: 8, marginTop: 8 }}>{preview}</pre>
+    </>
+  );
+}
+
+
+/** Daily access-point restart (server-side, UniFi soft restart). */
+function ApRestartPanel() {
+  const [c, setC] = useState<ApRestart | null>(null);
+  const [msg, setMsg] = useState("");
+  useEffect(() => { api.apRestart().then(setC).catch((e) => setMsg(String(e.message ?? e))); }, []);
+  if (!c) return msg ? <p className="sub">{msg}</p> : null;
+  const save = async (patch: { enabled?: boolean; time?: string }) => {
+    setMsg("Saving…");
+    try { setC(await api.apRestartSave(patch)); setMsg("Saved"); } catch (e) { setMsg(String((e as Error).message ?? e)); }
+  };
+  const fmt = (iso: string) => new Date(iso).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: c.tz || undefined });
+  return (
+    <>
+      <h4 style={{ margin: "16px 0 6px" }}>Daily AP restart</h4>
+      <p style={{ marginTop: 0 }}>Restarts every online access point on the main site once a day (local show time). Their alerts are muted for 20 min, and ~15 min later one summary posts to the alert group.</p>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <input type="checkbox" checked={c.enabled} onChange={(e) => save({ enabled: e.target.checked })} /> On
+        </label>
+        <label>Time <input type="time" value={c.time} onChange={(e) => setC({ ...c, time: e.target.value })} onBlur={() => save({ time: c.time })} /></label>
+        <span className="sub">{msg}{c.next ? `${msg ? " · " : ""}next ${fmt(c.next)}` : " · off"}{c.last ? ` · last ran ${c.last}` : ""}</span>
+      </div>
     </>
   );
 }

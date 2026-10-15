@@ -90,5 +90,6 @@ class Account(Base, UUIDPk, Timestamps):
     # Daily opening report to the Signal alert group ({enabled, time, tz, …}).
     morning_report: Mapped[dict | None] = mapped_column(JSONB, default=None)
     morning_report_last: Mapped[str | None] = mapped_column(default=None)  # local date sent
+    ap_restart: Mapped[dict | None] = mapped_column(JSONB, default=None)  # daily AP restart cfg + state
     users: Mapped[list["User"]] = relationship(back_populates="account")  # noqa: F821
     sites: Mapped[list["Site"]] = relationship(back_populates="account")  # noqa: F821

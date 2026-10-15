@@ -382,6 +382,8 @@ export function camWsUrl(id: string, share?: string): string {
   return `${base}/cams/ws?cam=${encodeURIComponent(id)}${share ? `&share=${encodeURIComponent(share)}` : ""}`;
 }
 
+export interface ApRestart { enabled: boolean; time: string; last: string | null; next: string | null; tz: string | null }
+
 export interface MorningCfg {
   enabled: boolean; time: string; tz: string; speedtest: boolean;
   min_down: number; min_up: number; max_latency: number;
@@ -455,6 +457,9 @@ export const api = {
   morning: () => req<{ config: MorningCfg; last: string | null; preview: string; route?: { event: string | null; tz: string }; due_today: string | null }>("/integrations/signal/morning"),
   morningSave: (c: Partial<MorningCfg>) =>
     req<{ config: MorningCfg }>("/integrations/signal/morning", { method: "PUT", body: JSON.stringify(c) }),
+  apRestart: () => req<ApRestart>("/integrations/signal/ap-restart"),
+  apRestartSave: (c: { enabled?: boolean; time?: string }) =>
+    req<ApRestart>("/integrations/signal/ap-restart", { method: "PUT", body: JSON.stringify(c) }),
   morningSendNow: () => req<{ sent: boolean; text: string }>("/integrations/signal/morning/send-now", { method: "POST" }),
   signalTest: () => req<{ ok: boolean }>("/integrations/signal/test", { method: "POST" }),
   teardownBot: () => req<TeardownBot>("/integrations/signal/teardown"),

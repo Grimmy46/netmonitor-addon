@@ -257,3 +257,40 @@ async def teardown_test(q: str = Query("", max_length=60), db: AsyncSession = De
     if q:
         out["preview"] = await teardownbot.handle({**td, "dry_run": True}, q, "me", datetime.now().astimezone())
     return out
+
+
+# ── Daily access-point restart ──────────────────────────────────────────────
+class ApRestartIn(BaseModel):
+    enabled: bool | None = None
+    time: str | None = None
+
+
+@router.get("/ap-restart")
+async def ap_restart_get(db: AsyncSession = Depends(get_db), _=Depends(current_user)) -> dict:
+    from datetime import datetime, timezone
+    from app.models import Account
+    from app.services import ap_restart
+    acc = (await db.execute(select(Account).limit(1))).scalars().first()
+    cfg = ap_restart.config(acc)
+    nxt = ap_restart.next_run(cfg, datetime.now(timezone.utc))
+    return {"enabled": cfg["enabled"], "time": cfg["time"], "last": cfg.get("last"),
+            "next": nxt.isoformat() if nxt and cfg["enabled"] else None,
+            "tz": str(nxt.tzinfo) if nxt else None}
+
+
+@router.put("/ap-restart")
+async def ap_restart_put(body: ApRestartIn, db: AsyncSession = Depends(get_db), _=Depends(require_admin)) -> dict:
+    import re
+    from app.models import Account
+    from app.services import ap_restart
+    acc = (await db.execute(select(Account).limit(1))).scalars().first()
+    if acc is None:
+        raise HTTPException(status_code=404, detail="No account.")
+    upd = body.model_dump(exclude_none=True)
+    if "time" in upd and not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", upd["time"]):
+        raise HTTPException(status_code=400, detail="Time must be HH:MM.")
+    cfg = ap_restart.config(acc)
+    cfg.update(upd)
+    acc.ap_restart = dict(cfg)
+    await db.commit()
+    return await ap_restart_get(db)

@@ -35,7 +35,10 @@ function loadPlayer(): Promise<void> {
   return playerReady;
 }
 
-type CamEl = HTMLElement & { mode: string; src: string; background: boolean; video?: HTMLVideoElement };
+type CamEl = HTMLElement & { mode: string; src: string; background: boolean; visibilityCheck: boolean; video?: HTMLVideoElement;
+  connectedCallback(): void; disconnectedCallback(): void };
+// Keep streams open while the browser tab is hidden, up to this long.
+const HIDDEN_KEEP_MS = 10 * 60 * 1000;
 
 // Last still per camera: shown the instant the tab opens, until live video
 // has frames. Kept in memory (tab switches) and localStorage (reloads).
@@ -86,6 +89,7 @@ function CamPlayer({ cam, share, playing }: { cam: Camera; share?: string; playi
       el = document.createElement("nm-cam") as CamEl;
       el.mode = "mse";
       el.className = "cam-video";
+      el.visibilityCheck = false; // don't drop the stream on a browser-tab switch…
       box.current.appendChild(el);
       el.src = camWsUrl(cam.id, share);
       tick = window.setInterval(() => {
@@ -97,8 +101,23 @@ function CamPlayer({ cam, share, playing }: { cam: Camera; share?: string; playi
         }
       }, 500);
     }).catch((e) => setErr(String(e)));
+    // …but if the tab stays hidden for 10 min, let it go; it reconnects on return.
+    let hideTid: number | undefined;
+    let slept = false;
+    const onVis = () => {
+      if (document.hidden) {
+        grab(cam.id, el?.video);
+        hideTid = window.setTimeout(() => { slept = true; el?.disconnectedCallback(); }, HIDDEN_KEEP_MS);
+      } else {
+        window.clearTimeout(hideTid);
+        if (slept && el?.isConnected) { slept = false; setLive(false); setSnap(getSnap(cam.id)); el.connectedCallback(); }
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
     return () => {
       alive = false;
+      document.removeEventListener("visibilitychange", onVis);
+      window.clearTimeout(hideTid);
       window.clearInterval(tick);
       grab(cam.id, el?.video); // freshest still for next time
       el?.remove();

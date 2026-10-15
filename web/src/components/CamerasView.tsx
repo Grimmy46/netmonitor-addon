@@ -37,13 +37,50 @@ function loadPlayer(): Promise<void> {
 
 type CamEl = HTMLElement & { mode: string; src: string; background: boolean; video?: HTMLVideoElement };
 
+// Last still per camera: shown the instant the tab opens, until live video
+// has frames. Kept in memory (tab switches) and localStorage (reloads).
+type Snap = { t: number; url: string };
+const snaps = new Map<string, Snap>();
+const SNAP_KEY = (id: string) => `nm-cam-snap-${id}`;
+function getSnap(id: string): Snap | null {
+  const m = snaps.get(id);
+  if (m) return m;
+  try {
+    const v = JSON.parse(localStorage.getItem(SNAP_KEY(id)) || "null") as Snap | null;
+    if (v?.url) { snaps.set(id, v); return v; }
+  } catch { /* ignore */ }
+  return null;
+}
+function grab(id: string, v: HTMLVideoElement | undefined): void {
+  if (!v || v.readyState < 2 || !v.videoWidth) return;
+  try {
+    const w = Math.min(640, v.videoWidth), h = Math.round((w * v.videoHeight) / v.videoWidth);
+    const c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    c.getContext("2d")!.drawImage(v, 0, 0, w, h);
+    const snap = { t: Date.now(), url: c.toDataURL("image/jpeg", 0.7) };
+    snaps.set(id, snap);
+    try { localStorage.setItem(SNAP_KEY(id), JSON.stringify(snap)); } catch { /* storage full */ }
+  } catch { /* canvas blocked */ }
+}
+function ago(t: number): string {
+  const m = Math.round((Date.now() - t) / 60000);
+  return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+}
+
 function CamPlayer({ cam, share, playing }: { cam: Camera; share?: string; playing: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   const [err, setErr] = useState("");
+  const [live, setLive] = useState(false);
+  const [snap, setSnap] = useState<Snap | null>(() => getSnap(cam.id));
   useEffect(() => {
+    setLive(false);
+    setSnap(getSnap(cam.id));
     if (!playing || !box.current) return;
     let el: CamEl | null = null;
     let alive = true;
+    let tick: number | undefined;
+    let lastGrab = 0;
     loadPlayer().then(() => {
       if (!alive || !box.current) return;
       el = document.createElement("nm-cam") as CamEl;
@@ -51,12 +88,28 @@ function CamPlayer({ cam, share, playing }: { cam: Camera; share?: string; playi
       el.className = "cam-video";
       box.current.appendChild(el);
       el.src = camWsUrl(cam.id, share);
+      tick = window.setInterval(() => {
+        const v = el?.video;
+        const ok = !!v && v.readyState >= 2 && v.videoWidth > 0 && v.currentTime > 0;
+        if (ok) {
+          setLive(true);
+          if (Date.now() - lastGrab > 15000) { lastGrab = Date.now(); grab(cam.id, v); }
+        }
+      }, 500);
     }).catch((e) => setErr(String(e)));
-    return () => { alive = false; el?.remove(); };
+    return () => {
+      alive = false;
+      window.clearInterval(tick);
+      grab(cam.id, el?.video); // freshest still for next time
+      el?.remove();
+    };
   }, [cam.id, share, playing]);
+  const showSnap = !!snap && (!playing || !live);
   return (
     <div className="cam-frame" ref={box}>
-      {!playing ? <div className="cam-idle">Paused</div> : null}
+      {showSnap ? <img className="cam-snap" src={snap!.url} alt="" /> : null}
+      {showSnap ? <span className="cam-snap-tag">{playing ? "Connecting… · " : "Paused · "}still from {ago(snap!.t)}</span> : null}
+      {!playing && !snap ? <div className="cam-idle">Paused</div> : null}
       {err ? <div className="cam-idle">{err}</div> : null}
     </div>
   );

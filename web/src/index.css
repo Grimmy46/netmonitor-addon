@@ -1035,6 +1035,8 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
 .cam-dot.on { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
 .cam-frame { position: relative; aspect-ratio: 16 / 9; background: #000; }
 .cam-frame .cam-video, .cam-frame video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+.cam-snap { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; z-index: 2; pointer-events: none; background: #000; }
+.cam-snap-tag { position: absolute; left: 8px; top: 8px; z-index: 3; font-size: 11px; color: #fff; background: rgba(0, 0, 0, .6); padding: 2px 7px; border-radius: 6px; pointer-events: none; }
 .cam-idle { position: absolute; inset: 0; display: grid; place-items: center; color: #9ca3af; font-size: 13px; }
 .cams-setup { border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
 .cams-setup-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }

@@ -77,10 +77,27 @@ def first_fail(dev_id) -> datetime | None:
     return _first_fail.get(str(dev_id))
 
 
-def adjust(dev_id, unifi_online: bool | None, now: datetime) -> bool | None:
-    """What a UniFi refresh should apply: fresh ping info wins over UniFi."""
+# A ping reply may only beat UniFi's "offline" while UniFi heard from the
+# device recently (its state lags a minute or two on recovery). Past that, the
+# reply is from whatever reused the old IP — not the device. Pings saying
+# DOWN still win right away (that's the fast-detection path).
+PING_UP_TRUST = timedelta(minutes=5)
+
+
+def ping_up_trusted(unifi_seen: datetime | None, now: datetime) -> bool:
+    return unifi_seen is not None and now - unifi_seen <= PING_UP_TRUST
+
+
+def adjust(dev_id, unifi_online: bool | None, now: datetime,
+           unifi_seen: datetime | None = None) -> bool | None:
+    """What a UniFi refresh should apply: fresh ping DOWN wins over UniFi; a
+    ping UP only overrides UniFi-offline while UniFi saw the device recently."""
     v = verdict(dev_id, now)
-    return unifi_online if v is None else v
+    if v is None:
+        return unifi_online
+    if v is True and unifi_online is False and not ping_up_trusted(unifi_seen, now):
+        return False
+    return v
 
 
 def assign(device_ids: list, agent_ids: list, me) -> set[str]:

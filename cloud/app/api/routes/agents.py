@@ -745,6 +745,8 @@ async def agent_device_report(
         if dev is None:
             continue
         change = pingwatch.record(dev.id, agent.id, r.reachable, agent_ok, now)
+        if r.reachable and dev.is_online is False and not pingwatch.ping_up_trusted(dev.unifi_last_seen, now):
+            continue  # UniFi lost it long ago: this reply is another device on its old IP
         if r.reachable:
             dev.local_reachable = True
             dev.local_rtt_ms = r.rtt_ms

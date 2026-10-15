@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -215,8 +215,18 @@ async def refresh_site_topology(db: AsyncSession, console: UnifiConsole, site: S
     for dev in devices:
         rd = by_mac.get(_norm_mac(dev.mac))
         if rd is None:
+            # Deleted/forgotten in UniFi: stop counting it (UniFi returned a
+            # real list, so absence is meaningful). Restorable from Dormant.
+            if len(by_mac) >= 10 and dev.device_type in ("switch", "ap") and not dev.manual_dormant:
+                logger.info("Device %s is no longer in UniFi — marking dormant", dev.name)
+                _apply_online_state(dev, False, now)
+                dev.manual_dormant = True
+                dev.local_reachable = None
             continue
         was_online = dev.is_online
+        ls = _int(rd.get("last_seen"))
+        if ls:
+            dev.unifi_last_seen = datetime.fromtimestamp(ls, tz=timezone.utc)
         # Faster up/down than the 5-minute inventory sync: 1 = connected,
         # 0 = disconnected; transitional states (upgrading, provisioning…) are
         # left alone.
@@ -224,7 +234,13 @@ async def refresh_site_topology(db: AsyncSession, console: UnifiConsole, site: S
         # Fresh kiosk pings win over UniFi's (laggy) state — pingwatch.py.
         from app.services import pingwatch
         if state in (0, 1):
-            _apply_online_state(dev, pingwatch.adjust(dev.id, state == 1, now), now)
+            _apply_online_state(dev, pingwatch.adjust(dev.id, state == 1, now, dev.unifi_last_seen), now)
+            if state == 0 and dev.is_online is False and not pingwatch.ping_up_trusted(dev.unifi_last_seen, now):
+                dev.local_reachable = None  # a reply here is someone else on its old IP
+            # "Down since" = when UniFi last heard from it, not when we noticed.
+            if (state == 0 and dev.is_online is False and dev.unifi_last_seen and dev.offline_since
+                    and dev.unifi_last_seen < dev.offline_since - timedelta(minutes=10)):
+                dev.offline_since = dev.unifi_last_seen
 
         up = rd.get("uplink") if isinstance(rd.get("uplink"), dict) else {}
         if (not up.get("uplink_mac") and state != 1 and rd.get("type") not in GATEWAY_TYPES
@@ -246,9 +262,6 @@ async def refresh_site_topology(db: AsyncSession, console: UnifiConsole, site: S
             dev.ports_up = sum(1 for p in ports if p.get("up"))
         if rd.get("type") in TYPE_MAP and not dev.device_type:
             dev.device_type = TYPE_MAP[rd["type"]]
-        ls = _int(rd.get("last_seen"))
-        if ls:
-            dev.unifi_last_seen = datetime.fromtimestamp(ls, tz=timezone.utc)
         dev.topology_at = now
         updated += 1
         if was_online is True and dev.is_online is False:

@@ -305,7 +305,7 @@ function AutoCloseTime() {
   return (
     <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", margin: "4px 0 12px" }}>
       <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-        <input type="checkbox" checked={on} onChange={(e) => save(e.target.checked ? "23:30" : "off")} /> Auto-close every fair night at
+        <input type="checkbox" checked={on} onChange={(e) => save(e.target.checked ? "01:00" : "off")} /> Auto-close every fair night at
       </label>
       {on ? <input type="time" value={at} onChange={(e) => setAt(e.target.value)} onBlur={() => save(at)} /> : null}
       <span className="sub">{msg}</span>

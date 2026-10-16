@@ -1,7 +1,7 @@
 """Nightly auto-close (show-local time), two triggers — whichever comes first:
 
 1. Kiosk drop: between 10:30 PM and 6:00 AM, ≥40% of kiosks off = we closed.
-2. Scheduled: on a fair night, at the auto-close time (default 11:30 PM) — if
+2. Scheduled: on a fair night, at the auto-close time (default 1:00 AM) — if
    nobody said "closed", close anyway (kiosks often stay on for hours).
 
 Either way alerts pause until the next gate opening (route.py) and admins get
@@ -20,7 +20,7 @@ from app.services import closure, route
 logger = logging.getLogger("netmonitor.nightly")
 
 WINDOW = (time(22, 30), time(6, 0))
-DEFAULT_AT = "23:30"   # scheduled auto-close; "off" disables
+DEFAULT_AT = "01:00"   # scheduled auto-close; "off" disables
 SHARE = 0.40          # ≥40% of active kiosks offline / shut down
 GRACE_MIN = 30        # alerts resume 30 min after gates open
 _STALE_DAYS = 7
@@ -40,12 +40,15 @@ def autoclose_at(acc: Account | None) -> time | None:
         hh, mm = (int(x) for x in v.split(":"))
         return time(hh, mm)
     except Exception:  # noqa: BLE001
-        return time(23, 30)
+        return time(1, 0)
 
 
 def _past(t: time, at: time) -> bool:
-    """t is at/after `at` tonight (evening), or in the small hours before 6 AM."""
-    return t < WINDOW[1] or (at >= time(12, 0) and t >= at)
+    """Is it at/after tonight's auto-close time? `at` may be evening (e.g. 23:30)
+    or after midnight (e.g. 01:00); the night ends at 6 AM either way."""
+    if at < WINDOW[1]:                     # after-midnight time, e.g. 01:00
+        return at <= t < WINDOW[1]
+    return t < WINDOW[1] or t >= at        # evening time, e.g. 23:30
 
 
 def _night_key(local: datetime) -> str:

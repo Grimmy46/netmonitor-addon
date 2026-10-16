@@ -317,8 +317,8 @@ async def autoclose_put(body: AutoCloseIn, db: AsyncSession = Depends(get_db), _
     acc = (await db.execute(select(Account).limit(1))).scalars().first()
     if acc is None:
         raise HTTPException(status_code=404, detail="No account.")
-    if body.at != "off" and not re.fullmatch(r"(1[2-9]|2[0-3]):[0-5]\d", body.at):
-        raise HTTPException(status_code=400, detail="Pick an evening time (12:00–23:59) or off.")
+    if body.at != "off" and not re.fullmatch(r"(0[0-5]|1[2-9]|2[0-3]):[0-5]\d", body.at):
+        raise HTTPException(status_code=400, detail="Pick a time between noon and 5:59 AM, or off.")
     st = dict(acc.netbot_state or {})
     st["autoclose_at"] = body.at
     acc.netbot_state = st

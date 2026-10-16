@@ -294,3 +294,33 @@ async def ap_restart_put(body: ApRestartIn, db: AsyncSession = Depends(get_db), 
     acc.ap_restart = dict(cfg)
     await db.commit()
     return await ap_restart_get(db)
+
+
+# ── Nightly scheduled auto-close ────────────────────────────────────────────
+class AutoCloseIn(BaseModel):
+    at: str  # "HH:MM" or "off"
+
+
+@router.get("/autoclose")
+async def autoclose_get(db: AsyncSession = Depends(get_db), _=Depends(current_user)) -> dict:
+    from app.models import Account
+    from app.services import nightly
+    acc = (await db.execute(select(Account).limit(1))).scalars().first()
+    t = nightly.autoclose_at(acc)
+    return {"at": t.strftime("%H:%M") if t else "off", "last": acc.autoclose_last if acc else None}
+
+
+@router.put("/autoclose")
+async def autoclose_put(body: AutoCloseIn, db: AsyncSession = Depends(get_db), _=Depends(require_admin)) -> dict:
+    import re
+    from app.models import Account
+    acc = (await db.execute(select(Account).limit(1))).scalars().first()
+    if acc is None:
+        raise HTTPException(status_code=404, detail="No account.")
+    if body.at != "off" and not re.fullmatch(r"(1[2-9]|2[0-3]):[0-5]\d", body.at):
+        raise HTTPException(status_code=400, detail="Pick an evening time (12:00–23:59) or off.")
+    st = dict(acc.netbot_state or {})
+    st["autoclose_at"] = body.at
+    acc.netbot_state = st
+    await db.commit()
+    return await autoclose_get(db)

@@ -291,6 +291,29 @@ function ApRestartPanel() {
 }
 
 
+/** Scheduled nightly auto-close time ("off" disables). */
+function AutoCloseTime() {
+  const [at, setAt] = useState<string | null>(null);
+  const [msg, setMsg] = useState("");
+  useEffect(() => { api.autoClose().then((r) => setAt(r.at)).catch((e) => setMsg(String(e.message ?? e))); }, []);
+  if (at === null) return msg ? <p className="sub">{msg}</p> : null;
+  const save = async (v: string) => {
+    setMsg("Saving…");
+    try { const r = await api.autoCloseSave(v); setAt(r.at); setMsg("Saved"); } catch (e) { setMsg(String((e as Error).message ?? e)); }
+  };
+  const on = at !== "off";
+  return (
+    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", margin: "4px 0 12px" }}>
+      <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        <input type="checkbox" checked={on} onChange={(e) => save(e.target.checked ? "23:30" : "off")} /> Auto-close every fair night at
+      </label>
+      {on ? <input type="time" value={at} onChange={(e) => setAt(e.target.value)} onBlur={() => save(at)} /> : null}
+      <span className="sub">{msg}</span>
+    </div>
+  );
+}
+
+
 /** How the team tells NETBOT we're closing early. */
 function ClosingEarly() {
   const [tok, setTok] = useState<string | null>(null);
@@ -305,7 +328,9 @@ function ClosingEarly() {
         <li>From 5 PM, if 40%+ of kiosks drop at once, NETBOT pauses alerts and notifies admins (app push). Send <b>closed</b> in the group to confirm or <b>no</b> if it's an outage.</li>
         <li>Weather heads-up: National Weather Service wind, dust, storm and flood alerts for the fairgrounds go to admins as app pushes — never to the group.</li>
         <li>After 10:30 PM, a mass kiosk drop is treated as normal closing (no question asked).</li>
+        <li>If nobody said we're closed, NETBOT closes on its own at the time below on every fair night, even if kiosks are still on. Admins get one notice; send <b>open</b> to undo.</li>
       </ul>
+      <AutoCloseTime />
       <b style={{ fontSize: 13 }}>Phone shortcut / NFC tag</b>
       <p className="sub" style={{ marginTop: 4, fontSize: 12 }}>
         iPhone: Shortcuts → New Shortcut → <i>Get Contents of URL</i>, paste the “closed” link, set Method to POST. Add it to your Home Screen,

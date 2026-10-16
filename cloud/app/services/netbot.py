@@ -121,7 +121,8 @@ async def open_now(db: AsyncSession, now: datetime, who: str) -> str:
     acc.closure_start = acc.closure_end = acc.closure_note = None
     acc.closure_grace_min = None
     from app.services import nightly
-    if nightly._in_window(_local(now).time()):
+    t = _local(now).time()
+    if t >= EARLY_FROM or t < nightly.WINDOW[1]:
         acc.autoclose_last = _night_key(now)  # don't auto-close again tonight
     st = _state(acc)
     st["early_key"] = _night_key(now)

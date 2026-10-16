@@ -457,6 +457,9 @@ export const api = {
   morning: () => req<{ config: MorningCfg; last: string | null; preview: string; route?: { event: string | null; tz: string }; due_today: string | null }>("/integrations/signal/morning"),
   morningSave: (c: Partial<MorningCfg>) =>
     req<{ config: MorningCfg }>("/integrations/signal/morning", { method: "PUT", body: JSON.stringify(c) }),
+  autoClose: () => req<{ at: string; last: string | null }>("/integrations/signal/autoclose"),
+  autoCloseSave: (at: string) =>
+    req<{ at: string; last: string | null }>("/integrations/signal/autoclose", { method: "PUT", body: JSON.stringify({ at }) }),
   apRestart: () => req<ApRestart>("/integrations/signal/ap-restart"),
   apRestartSave: (c: { enabled?: boolean; time?: string }) =>
     req<ApRestart>("/integrations/signal/ap-restart", { method: "PUT", body: JSON.stringify(c) }),

@@ -345,7 +345,7 @@ async def ingest(slot: int, request: Request, x_agent_token: str | None = Header
                              headers={"Content-Type": "video/mp2t"})
         return Response(status_code=r.status_code)
     except Exception as exc:  # noqa: BLE001
-        logger.info("cam%02d ingest ended: %s", slot, exc)
+        logger.info("cam%02d ingest from %s ended: %s", slot, agent.name, exc)
         return Response(status_code=204)
 
 

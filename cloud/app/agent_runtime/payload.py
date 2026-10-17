@@ -35,7 +35,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.10.10.2"
+PAYLOAD_VERSION = "2026.10.16.1"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -1688,6 +1688,25 @@ def _cam_forward(ctx, slot, keep):
         src.close()
 
 
+def _relay_lock():
+    """One camera relay per PC: if two agent copies run, only the holder of
+    this localhost port relays (otherwise they kill each other's go2rtc).
+    Kept on `sys` so a payload hot-reload in the same process reuses it."""
+    if getattr(sys, "_netmon_relay_lock", None) is not None:
+        return True
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        s.bind(("127.0.0.1", _G2R_PORT + 1))
+        s.listen(1)
+    except OSError:
+        s.close()
+        return False
+    sys._netmon_relay_lock = s
+    return True
+
+
 def _camera_relay_worker(ctx, stop):
     proc, sig = None, None
     feeds = {}  # slot -> {"want": float, "th": Thread}
@@ -1700,6 +1719,9 @@ def _camera_relay_worker(ctx, stop):
             if proc is not None:
                 _g2r_kill(); proc, sig = None, None
             stop.wait(60.0 if not plan else float(plan.get("poll", 60)))
+            continue
+        if not _relay_lock():
+            stop.wait(30.0)  # another agent copy on this PC is the relay
             continue
         try:
             cams = plan.get("cams") or []

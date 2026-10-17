@@ -44,6 +44,16 @@ _ONLINE_S = 150       # relay kiosk counts as up if seen this recently
 
 _wanted: dict[int, float] = {}      # slot -> last time a viewer wanted it
 _relay_seen: dict[str, float] = {}  # agent id -> last relay-plan poll
+# Per-kiosk relays: camera "Kiosk N" is relayed by an online "KN-…" PC, so one
+# PC's hiccup can't freeze every camera. The configured relay kiosk is the
+# fallback (cameras with no kiosk match, or a kiosk relay that isn't delivering).
+_assigned: dict[int, str] = {}         # slot -> agent id (sticky while online)
+_want_since: dict[int, float] = {}     # slot -> wanted-but-not-live since
+_fallback_until: dict[int, float] = {}  # slot -> use the fallback relay until
+_FALLBACK_AFTER_S = 60                 # kiosk relay silent this long -> fall back
+_FALLBACK_HOLD_S = 900
+_KIOSK_CAM = __import__("re").compile(r"^\s*kiosk\s*0*(\d+)\b", __import__("re").I)
+_KIOSK_PC = __import__("re").compile(r"^K0*(\d+)-", __import__("re").I)
 _exe_sha: str | None = None
 
 
@@ -88,6 +98,43 @@ async def _effective_relay(db: AsyncSession, cfg: CameraConfig) -> Agent | None:
               if a.id != pref.id and a.site_id == pref.site_id and _online(a)]
     others.sort(key=lambda a: a.name or "")
     return others[0] if others else None
+
+
+async def _assignments(db: AsyncSession, cfg: CameraConfig):
+    """(fallback relay, enabled cams, {slot: relay agent})."""
+    fallback = await _effective_relay(db, cfg)
+    cams = [c for c in (await db.execute(select(Camera).order_by(Camera.slot))).scalars()
+            if c.enabled and c.ip]
+    pcs: dict[int, list[Agent]] = {}
+    for a in sorted((a for a in (await db.execute(select(Agent))).scalars() if _online(a)),
+                    key=lambda a: a.name or ""):
+        m = _KIOSK_PC.match(a.name or "")
+        if m:
+            pcs.setdefault(int(m.group(1)), []).append(a)
+    now = time.time()
+    out: dict[int, Agent] = {}
+    for c in cams:
+        pick = None
+        m = _KIOSK_CAM.match(c.name or "")
+        if m and _fallback_until.get(c.slot, 0) < now:
+            cands = [a for a in pcs.get(int(m.group(1)), []) if a.site_id == c.site_id]
+            pick = next((a for a in cands if str(a.id) == _assigned.get(c.slot)), None) or \
+                (cands[0] if cands else None)
+        if pick is None and fallback is not None and fallback.site_id == c.site_id:
+            pick = fallback
+        if pick is not None:
+            out[c.slot] = pick
+            _assigned[c.slot] = str(pick.id)
+    return fallback, cams, out
+
+
+def _wanted_slots(slots: set[int], now: float) -> list[int]:
+    """Always on while the fair is open (instant viewing); when closed, only
+    what someone is actually watching."""
+    from app.services import closure
+    if closure.phase(_now()) != "closed":
+        return sorted(slots)
+    return sorted(s for s, t in _wanted.items() if s in slots and now - t < _WANT_S)
 
 
 async def _producers() -> dict[str, bool]:
@@ -146,6 +193,10 @@ async def list_cams(request: Request, share: str | None = None, db: AsyncSession
         out.append(row)
     res = {"cameras": out}
     if is_user:
+        _, _, assign = await _assignments(db, cfg)
+        for row in out:
+            a = assign.get(row["slot"])
+            row["relay"] = a.name if a else None
         last = _relay_seen.get(str(relay.id)) if relay else None
         res["relay"] = {
             "agent_id": str(relay.id) if relay else None,
@@ -206,20 +257,37 @@ async def relay_plan(x_agent_token: str | None = Header(default=None),
                      db: AsyncSession = Depends(get_db)) -> dict:
     agent = await _agent_from_token(db, x_agent_token)
     cfg = await _config(db)
-    relay = await _effective_relay(db, cfg)
-    await db.commit()
-    if relay is None or relay.id != agent.id or not (cfg.username and cfg.password_enc):
+    if not (cfg.username and cfg.password_enc):
+        await db.commit()
         return {"relay": False, "poll": 60}
-    _relay_seen[str(agent.id)] = time.time()
-    pw = decrypt(cfg.password_enc)
-    cams = [c for c in (await db.execute(select(Camera).order_by(Camera.slot))).scalars()
-            if c.enabled and c.ip and c.site_id == agent.site_id]
+    fallback, cams, assign = await _assignments(db, cfg)
+    await db.commit()
     now = time.time()
-    slots = {c.slot for c in cams}
+    is_fallback = fallback is not None and fallback.id == agent.id
+    if is_fallback:
+        # Watchdog: a kiosk relay that doesn't deliver within a minute hands
+        # its camera back to the fallback relay for 15 min.
+        live = await _producers()
+        for slot in _wanted_slots({c.slot for c in cams}, now):
+            a = assign.get(slot)
+            if a is None or a.id == fallback.id or live.get(f"cam{slot:02d}"):
+                _want_since.pop(slot, None)
+                continue
+            if now - _want_since.setdefault(slot, now) > _FALLBACK_AFTER_S:
+                logger.info("cam%02d: kiosk relay %s not delivering — falling back to %s",
+                            slot, a.name, fallback.name)
+                _fallback_until[slot] = now + _FALLBACK_HOLD_S
+                _want_since.pop(slot, None)
+        fallback, cams, assign = await _assignments(db, cfg)
+    mine = [c for c in cams if (a := assign.get(c.slot)) is not None and a.id == agent.id]
+    if not mine:
+        return {"relay": False, "poll": 5 if is_fallback else 30}
+    _relay_seen[str(agent.id)] = now
+    pw = decrypt(cfg.password_enc)
     return {
         "relay": True, "poll": 3, "sha256": await _exe_sha256(),
-        "cams": [{"slot": c.slot, "rtsp": f"rtsp://{cfg.username}:{pw}@{c.ip}:554/stream2"} for c in cams],
-        "wanted": sorted(s for s, t in _wanted.items() if s in slots and now - t < _WANT_S),
+        "cams": [{"slot": c.slot, "rtsp": f"rtsp://{cfg.username}:{pw}@{c.ip}:554/stream2"} for c in mine],
+        "wanted": _wanted_slots({c.slot for c in mine}, now),
     }
 
 
@@ -259,9 +327,10 @@ async def ingest(slot: int, request: Request, x_agent_token: str | None = Header
     async with SessionLocal() as db:   # short-lived: the upload can run for hours
         agent = await _agent_from_token(db, x_agent_token)
         cfg = await _config(db)
-        relay = await _effective_relay(db, cfg)
+        fallback, _, assign = await _assignments(db, cfg)
         await db.commit()
-    if relay is None or relay.id != agent.id:
+    a = assign.get(slot)
+    if not ((a is not None and a.id == agent.id) or (fallback is not None and fallback.id == agent.id)):
         raise HTTPException(status_code=403, detail="Not the camera relay.")
     if not 1 <= slot <= 99:
         raise HTTPException(status_code=404, detail="No such camera.")

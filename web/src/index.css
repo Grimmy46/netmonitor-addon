@@ -1197,3 +1197,6 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
 .paper-ed-events { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
 .paper-ed-ev { display: flex; gap: 10px; align-items: center; font-size: 13px; }
 .paper-ed-ev img { width: 120px; border-radius: 6px; }
+.paper-ov { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,.55); overflow-y: auto; padding: 16px; display: flex; justify-content: center; align-items: flex-start; }
+.paper-ov > div { width: min(1000px, 100%); }
+.paper-ov .paper-ed { margin: 0; background: var(--surface-1, #fff); box-shadow: 0 10px 40px rgba(0,0,0,.35); }

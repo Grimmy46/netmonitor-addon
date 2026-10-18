@@ -172,7 +172,13 @@ export function CamerasView({ share }: { share?: string }) {
       </div>
       {err ? <div className="error-box">{err}</div> : null}
       {admin && setup && data ? <CamSetup data={data} onSaved={load} /> : null}
-      {admin && paperCam ? <PaperEditor cam={paperCam} onClose={() => { setPaperCam(null); load(); }} /> : null}
+      {admin && paperCam ? (
+        <div className="paper-ov" onClick={() => { setPaperCam(null); load(); }}>
+          <div onClick={(e) => e.stopPropagation()}>
+            <PaperEditor cam={paperCam} onClose={() => { setPaperCam(null); load(); }} />
+          </div>
+        </div>
+      ) : null}
       {admin && relay && !relay.login_set ? (
         <div className="cams-note">Add the camera login under ⚙ Setup to start video.</div>
       ) : null}

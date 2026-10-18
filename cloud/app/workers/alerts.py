@@ -103,7 +103,16 @@ def _printer_title(name: str, state: str) -> str:
 
 
 def _printer_body(a, state: str) -> str:
-    return _PRINTER_BODY.get(state, "Printer fault") + (f" · {a.hostname}" if a.hostname else "")
+    body = _PRINTER_BODY.get(state, "Printer fault") + (f" · {a.hostname}" if a.hostname else "")
+    if state == "paper_out":
+        try:
+            from app.services import papervision
+            h = papervision.hint(a.id)
+            if h:
+                body += "\n" + h
+        except Exception:  # noqa: BLE001
+            pass
+    return body
 
 
 @dataclass

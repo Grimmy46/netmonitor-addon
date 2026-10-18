@@ -3,7 +3,7 @@ from app.models.account import Account
 from app.models.agent import Agent
 from app.models.agent_binary import AgentBinary
 from app.models.agent_command import AgentCommand
-from app.models.camera import Camera, CameraConfig
+from app.models.camera import Camera, CameraConfig, PaperVision
 from app.models.device import Device
 from app.models.fleet_batch import FleetBatch
 from app.models.geo_map import GeoMap
@@ -33,6 +33,7 @@ __all__ = [
     "AgentCommand",
     "Camera",
     "CameraConfig",
+    "PaperVision",
     "Device",
     "FleetBatch",
     "GeoMap",

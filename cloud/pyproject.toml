@@ -18,6 +18,8 @@ dependencies = [
     "bcrypt>=4.0",
     "pywebpush>=2.0",
     "python-multipart>=0.0.9",
+    "numpy>=1.26",
+    "opencv-python-headless>=4.9",
 ]
 
 [project.optional-dependencies]

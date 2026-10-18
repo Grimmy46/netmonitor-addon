@@ -197,6 +197,15 @@ async def list_cams(request: Request, share: str | None = None, db: AsyncSession
         for row in out:
             a = assign.get(row["slot"])
             row["relay"] = a.name if a else None
+        from app.services import papervision as _pv
+        names = {str(a.id): a.name for a in (await db.execute(select(Agent))).scalars()}
+        for c, row in zip([c for c in cams if is_user or c.enabled], out):
+            row["paper"] = [
+                {"agent_id": r.get("agent_id"), "name": names.get(str(r.get("agent_id")), "?"),
+                 "x": r.get("x"), "y": r.get("y"), "w": r.get("w"), "h": r.get("h"),
+                 "level": (_pv.latest.get(str(r.get("agent_id"))) or {}).get("level")}
+                for r in (c.paper_rois or [])
+            ]
         last = _relay_seen.get(str(relay.id)) if relay else None
         res["relay"] = {
             "agent_id": str(relay.id) if relay else None,
@@ -227,6 +236,100 @@ async def update_cam(cam_id: uuid.UUID, body: CamUpdate, _: User = Depends(requi
         c.enabled = body.enabled
     await db.commit()
     return {"ok": True}
+
+
+# ── paper vision (camera roll boxes + events) ─────────────────────────────
+@router.get("/{cam_id}/snapshot.jpg")
+async def cam_snapshot(cam_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    if await _staff(db, request) is None:
+        raise HTTPException(status_code=401, detail="Sign in required.")
+    c = await db.get(Camera, cam_id)
+    if c is None:
+        raise HTTPException(status_code=404, detail="Camera not found.")
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.get(f"{get_settings().go2rtc_url.rstrip('/')}/api/frame.jpeg",
+                             params={"src": f"cam{c.slot:02d}"})
+    if r.status_code != 200 or len(r.content) < 1000:
+        raise HTTPException(status_code=503, detail="No picture from this camera right now.")
+    return Response(content=r.content, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@router.get("/{cam_id}/paper")
+async def get_paper(cam_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)) -> dict:
+    import re
+    from app.services import papervision as _pv
+    if await _staff(db, request) is None:
+        raise HTTPException(status_code=401, detail="Sign in required.")
+    c = await db.get(Camera, cam_id)
+    if c is None:
+        raise HTTPException(status_code=404, detail="Camera not found.")
+    agents = list((await db.execute(select(Agent))).scalars())
+    m = re.search(r"(\d+)", c.name or "")
+    pre = f"K{m.group(1)}-" if m else None
+    stations = sorted(
+        [{"id": str(a.id), "name": a.name} for a in agents
+         if a.name and (pre is None or a.name.upper().startswith(pre))],
+        key=lambda x: x["name"])
+    if not stations:
+        stations = sorted([{"id": str(a.id), "name": a.name} for a in agents if a.name], key=lambda x: x["name"])
+    names = {str(a.id): a.name for a in agents}
+    rois = [{**r, "name": names.get(str(r.get("agent_id")), "?"),
+             "level": (_pv.latest.get(str(r.get("agent_id"))) or {}).get("level")} for r in (c.paper_rois or [])]
+    from app.models import PaperVision
+    ids = [uuid.UUID(str(r["agent_id"])) for r in (c.paper_rois or []) if r.get("agent_id")]
+    ev = []
+    if ids:
+        q = (select(PaperVision).where(PaperVision.agent_id.in_(ids), PaperVision.kind != "reading")
+             .order_by(PaperVision.created_at.desc()).limit(20))
+        ev = [{"id": str(e.id), "kind": e.kind, "name": names.get(str(e.agent_id), "?"), "level": e.level,
+               "prev_level": e.prev_level, "detail": e.detail, "at": e.created_at.isoformat(),
+               "has_image": e.image is not None} for e in (await db.execute(q)).scalars()]
+    return {"rois": rois, "stations": stations, "events": ev}
+
+
+class PaperRoi(BaseModel):
+    agent_id: uuid.UUID
+    x: float
+    y: float
+    w: float
+    h: float
+
+
+class PaperIn(BaseModel):
+    rois: list[PaperRoi]
+
+
+@router.put("/{cam_id}/paper")
+async def put_paper(cam_id: uuid.UUID, body: PaperIn, _: User = Depends(require_admin),
+                    db: AsyncSession = Depends(get_db)) -> dict:
+    c = await db.get(Camera, cam_id)
+    if c is None:
+        raise HTTPException(status_code=404, detail="Camera not found.")
+    old = {str(r.get("agent_id")): r for r in (c.paper_rois or [])}
+    out = []
+    for r in body.rois[:12]:
+        x, y = min(max(r.x, 0.0), 1.0), min(max(r.y, 0.0), 1.0)
+        w, h = min(max(r.w, 0.01), 1.0 - x), min(max(r.h, 0.01), 1.0 - y)
+        prev = old.get(str(r.agent_id)) or {}
+        same = prev and all(abs(float(prev.get(k, -1)) - v) < 0.005 for k, v in (("x", x), ("y", y), ("w", w), ("h", h)))
+        row = {"agent_id": str(r.agent_id), "x": round(x, 4), "y": round(y, 4), "w": round(w, 4), "h": round(h, 4)}
+        if same and prev.get("full_h"):
+            row["full_h"] = prev["full_h"]  # keep the learned full-roll size if the box didn't move
+        out.append(row)
+    c.paper_rois = out or None
+    await db.commit()
+    return {"ok": True, "count": len(out)}
+
+
+@router.get("/paper/events/{ev_id}.jpg")
+async def paper_event_image(ev_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)):
+    from app.models import PaperVision
+    if await _staff(db, request) is None:
+        raise HTTPException(status_code=401, detail="Sign in required.")
+    e = await db.get(PaperVision, ev_id)
+    if e is None or not e.image:
+        raise HTTPException(status_code=404, detail="No picture.")
+    return Response(content=e.image, media_type="image/jpeg")
 
 
 class CamConfigIn(BaseModel):

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, camWsUrl, isAdmin, type Agent, type Camera, type CamList } from "../api/client";
+import { API_BASE, api, camWsUrl, isAdmin, type Agent, type Camera, type CamList, type PaperInfo, type PaperRoi } from "../api/client";
 
 // go2rtc's MIT VideoRTC player (public/vendor) — MSE over a WebSocket, which
 // works on desktop browsers and iPhone (Safari 17+ ManagedMediaSource).
@@ -140,6 +140,7 @@ export function CamerasView({ share }: { share?: string }) {
   const [playing, setPlaying] = useState(true);
   const [big, setBig] = useState<string | null>(null);
   const [setup, setSetup] = useState(false);
+  const [paperCam, setPaperCam] = useState<Camera | null>(null);
   const admin = !share && isAdmin();
 
   const load = () => api.cams(share).then(setData).catch((e) => setErr(String(e)));
@@ -171,6 +172,7 @@ export function CamerasView({ share }: { share?: string }) {
       </div>
       {err ? <div className="error-box">{err}</div> : null}
       {admin && setup && data ? <CamSetup data={data} onSaved={load} /> : null}
+      {admin && paperCam ? <PaperEditor cam={paperCam} onClose={() => { setPaperCam(null); load(); }} /> : null}
       {admin && relay && !relay.login_set ? (
         <div className="cams-note">Add the camera login under ⚙ Setup to start video.</div>
       ) : null}
@@ -182,6 +184,19 @@ export function CamerasView({ share }: { share?: string }) {
               <span className={`cam-dot ${c.live ? "on" : ""}`} />
               <b>{c.name}</b>
               {c.ap_name && !share ? <span className="muted cam-ap">{c.ap_name}</span> : null}
+              {!share && c.paper?.length ? (
+                <span className="cam-paper">
+                  {c.paper.map((p) => (
+                    <span key={p.agent_id} className={`cam-paper-b ${p.level == null ? "" : p.level < 15 ? "bad" : p.level < 35 ? "warn" : "ok"}`}
+                      title={`${p.name}: camera sees ${p.level == null ? "—" : `~${p.level}%`} paper`}>
+                      🧻 {p.name?.replace(/^K\d+-/, "")} {p.level == null ? "—" : `${p.level}%`}
+                    </span>
+                  ))}
+                </span>
+              ) : null}
+              {admin ? (
+                <button className="btn cam-paper-btn" onClick={(e) => { e.stopPropagation(); setPaperCam(c); }} title="Mark the paper rolls this camera can see">🧻 Paper</button>
+              ) : null}
             </div>
             <CamPlayer cam={c} share={share} playing={playing} />
           </div>
@@ -249,5 +264,111 @@ function CamRow({ cam, onSaved }: { cam: Camera; onSaved: () => void }) {
       <td className="muted">{cam.ap_name ?? "—"}</td>
       <td className="muted">{cam.ip ?? "—"}</td>
     </tr>
+  );
+}
+
+// ── Paper vision: draw one box per ticket printer around its roll ─────────
+function PaperEditor({ cam, onClose }: { cam: Camera; onClose: () => void }) {
+  const [info, setInfo] = useState<PaperInfo | null>(null);
+  const [rois, setRois] = useState<PaperRoi[]>([]);
+  const [station, setStation] = useState("");
+  const [drag, setDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const [msg, setMsg] = useState("");
+  const [t, setT] = useState(Date.now());
+  const imgBox = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    api.camPaper(cam.id).then((i) => {
+      setInfo(i); setRois(i.rois);
+      const free = i.stations.find((s) => !i.rois.some((r) => r.agent_id === s.id));
+      setStation(free?.id ?? i.stations[0]?.id ?? "");
+    }).catch((e) => setMsg(String(e)));
+  }, [cam.id]);
+
+  const pos = (e: React.PointerEvent) => {
+    const r = imgBox.current!.getBoundingClientRect();
+    return { x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) };
+  };
+  const down = (e: React.PointerEvent) => {
+    if (!station) { setMsg("Pick a station first."); return; }
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    const p = pos(e); setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+  };
+  const move = (e: React.PointerEvent) => { if (drag) { const p = pos(e); setDrag({ ...drag, x1: p.x, y1: p.y }); } };
+  const up = () => {
+    if (!drag) return;
+    const x = Math.min(drag.x0, drag.x1), y = Math.min(drag.y0, drag.y1);
+    const w = Math.abs(drag.x1 - drag.x0), h = Math.abs(drag.y1 - drag.y0);
+    setDrag(null);
+    if (w < 0.01 || h < 0.01) return;
+    const name = info?.stations.find((s) => s.id === station)?.name;
+    const next = [...rois.filter((r) => r.agent_id !== station), { agent_id: station, name, x, y, w, h }];
+    setRois(next);
+    const free = info?.stations.find((s) => !next.some((r) => r.agent_id === s.id));
+    if (free) setStation(free.id);
+    setMsg("");
+  };
+  const save = async () => {
+    try { await api.camPaperSave(cam.id, rois); setMsg("Saved. Readings start within a few minutes."); }
+    catch (e) { setMsg(String(e)); }
+  };
+  const box = (r: { x: number; y: number; w: number; h: number }) => ({
+    left: `${r.x * 100}%`, top: `${r.y * 100}%`, width: `${r.w * 100}%`, height: `${r.h * 100}%`,
+  });
+
+  return (
+    <div className="paper-ed">
+      <div className="paper-ed-bar">
+        <strong>🧻 Paper rolls · {cam.name}</strong>
+        <span style={{ flex: 1 }} />
+        <button className="btn" onClick={() => setT(Date.now())}>↻ New picture</button>
+        <button className="btn" onClick={onClose}>Close</button>
+      </div>
+      <div className="muted paper-ed-help">
+        Pick a station, then drag a box tightly around its paper roll (the white roll on the holder, not the spares). One box per printer. Then Save.
+      </div>
+      <div className="paper-ed-row">
+        <select value={station} onChange={(e) => setStation(e.target.value)}>
+          {(info?.stations ?? []).map((s) => (
+            <option key={s.id} value={s.id}>{s.name}{rois.some((r) => r.agent_id === s.id) ? " ✓" : ""}</option>
+          ))}
+        </select>
+        <button className="btn btn-primary" onClick={save}>Save</button>
+        {msg ? <span className="muted">{msg}</span> : null}
+      </div>
+      <div className="paper-ed-img" ref={imgBox} onPointerDown={down} onPointerMove={move} onPointerUp={up}>
+        <img src={`${API_BASE}/cams/${cam.id}/snapshot.jpg?t=${t}`} alt="" draggable={false} />
+        {rois.map((r) => (
+          <div key={r.agent_id} className="paper-ed-box" style={box(r)}>
+            <span>{r.name?.replace(/^K\d+-/, "")}{r.level != null ? ` ${r.level}%` : ""}</span>
+          </div>
+        ))}
+        {drag ? <div className="paper-ed-box drawing" style={box({ x: Math.min(drag.x0, drag.x1), y: Math.min(drag.y0, drag.y1), w: Math.abs(drag.x1 - drag.x0), h: Math.abs(drag.y1 - drag.y0) })} /> : null}
+      </div>
+      {rois.length ? (
+        <div className="paper-ed-list">
+          {rois.map((r) => (
+            <span key={r.agent_id} className="paper-ed-chip">
+              {r.name} {r.level != null ? `· ~${r.level}%` : ""}
+              <button className="btn" onClick={() => setRois(rois.filter((x) => x.agent_id !== r.agent_id))} title="Remove">✕</button>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {info?.events.length ? (
+        <div className="paper-ed-events">
+          <strong>Recent camera events</strong>
+          {info.events.map((e) => (
+            <div key={e.id} className="paper-ed-ev">
+              {e.has_image ? <img src={`${API_BASE}/cams/paper/events/${e.id}.jpg`} alt="" /> : null}
+              <div>
+                <b>{e.name}</b> · {e.kind === "changed" ? "Roll changed" : e.kind === "jam_suspect" ? "Likely jam" : e.kind}
+                <div className="muted">{new Date(e.at).toLocaleString()} · {e.detail}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }

@@ -376,7 +376,7 @@ export interface Camera {
   model?: string; ip?: string | null; ap_name?: string | null; mac?: string; last_seen_at?: string | null;
   paper?: PaperRoi[];
 }
-export interface PaperRoi { agent_id: string; name?: string; x: number; y: number; w: number; h: number; level?: number | null }
+export interface PaperRoi { agent_id: string; name?: string; x: number; y: number; w: number; h: number; level?: number | null; calibrated?: boolean }
 export interface PaperEvent { id: string; kind: string; name: string; level: number | null; prev_level: number | null; detail: string | null; at: string; has_image: boolean }
 export interface PaperInfo { rois: PaperRoi[]; stations: { id: string; name: string }[]; events: PaperEvent[] }
 export interface CamRelay { agent_id: string | null; name: string | null; preferred_id: string | null; polling: boolean; login_set: boolean; username: string | null }
@@ -572,6 +572,8 @@ export const api = {
   camPaper: (id: string) => req<PaperInfo>(`/cams/${id}/paper`),
   camPaperSave: (id: string, rois: PaperRoi[]) =>
     req<{ ok: boolean }>(`/cams/${id}/paper`, { method: "PUT", body: JSON.stringify({ rois: rois.map(({ agent_id, x, y, w, h }) => ({ agent_id, x, y, w, h })) }) }),
+  camPaperFull: (id: string, agentId: string) =>
+    req<{ ok: boolean }>(`/cams/${id}/paper/${agentId}/full`, { method: "POST" }),
   camConfig: (body: { username?: string; password?: string; relay_agent_id?: string }) =>
     req<{ ok: boolean }>("/cams/config/settings", { method: "PUT", body: JSON.stringify(body) }),
   createAgent: (name: string, siteId: string | null) =>

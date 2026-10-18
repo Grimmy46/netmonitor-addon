@@ -274,7 +274,8 @@ async def get_paper(cam_id: uuid.UUID, request: Request, db: AsyncSession = Depe
         stations = sorted([{"id": str(a.id), "name": a.name} for a in agents if a.name], key=lambda x: x["name"])
     names = {str(a.id): a.name for a in agents}
     rois = [{**r, "name": names.get(str(r.get("agent_id")), "?"),
-             "level": (_pv.latest.get(str(r.get("agent_id"))) or {}).get("level")} for r in (c.paper_rois or [])]
+             "level": (_pv.latest.get(str(r.get("agent_id"))) or {}).get("level"),
+             "calibrated": bool(r.get("alg") == _pv.ALG and r.get("full_h"))} for r in (c.paper_rois or [])]
     from app.models import PaperVision
     ids = [uuid.UUID(str(r["agent_id"])) for r in (c.paper_rois or []) if r.get("agent_id")]
     ev = []
@@ -314,11 +315,38 @@ async def put_paper(cam_id: uuid.UUID, body: PaperIn, _: User = Depends(require_
         same = prev and all(abs(float(prev.get(k, -1)) - v) < 0.005 for k, v in (("x", x), ("y", y), ("w", w), ("h", h)))
         row = {"agent_id": str(r.agent_id), "x": round(x, 4), "y": round(y, 4), "w": round(w, 4), "h": round(h, 4)}
         if same and prev.get("full_h"):
-            row["full_h"] = prev["full_h"]  # keep the learned full-roll size if the box didn't move
+            for k in ("full_h", "alg", "cal", "cal_at"):  # keep the calibration if the box didn't move
+                if k in prev:
+                    row[k] = prev[k]
         out.append(row)
     c.paper_rois = out or None
     await db.commit()
     return {"ok": True, "count": len(out)}
+
+
+@router.post("/{cam_id}/paper/{agent_id}/full")
+async def mark_paper_full(cam_id: uuid.UUID, agent_id: uuid.UUID, _: User = Depends(require_admin),
+                          db: AsyncSession = Depends(get_db)) -> dict:
+    """'This roll is full right now' — calibrates the box from the latest reading."""
+    from app.services import papervision as _pv
+    c = await db.get(Camera, cam_id)
+    if c is None:
+        raise HTTPException(status_code=404, detail="Camera not found.")
+    h = (_pv.latest.get(str(agent_id)) or {}).get("h")
+    if not h:
+        raise HTTPException(status_code=409, detail="No reading for this roll yet. Wait a few minutes after saving the box.")
+    rois = [dict(r) for r in (c.paper_rois or [])]
+    hit = False
+    for r in rois:
+        if str(r.get("agent_id")) == str(agent_id):
+            r.update(full_h=float(h), alg=_pv.ALG, cal="user", cal_at=datetime.now(timezone.utc).isoformat())
+            hit = True
+    if not hit:
+        raise HTTPException(status_code=404, detail="That station has no box on this camera.")
+    c.paper_rois = rois
+    _pv.latest[str(agent_id)] = {**_pv.latest.get(str(agent_id), {}), "level": 100.0, "calibrated": True}
+    await db.commit()
+    return {"ok": True, "full_h": h}
 
 
 @router.get("/paper/events/{ev_id}.jpg")

@@ -331,7 +331,8 @@ function PaperEditor({ cam, onClose }: { cam: Camera; onClose: () => void }) {
         <button className="btn" onClick={onClose}>Close</button>
       </div>
       <div className="muted paper-ed-help">
-        Pick a station, then drag a box tightly around its paper roll (the white roll on the holder, not the spares). One box per printer. Then Save.
+        Pick a station, then drag a box around its paper roll (the white roll on the holder, not the spares). One box per printer, then Save.
+        If a roll is full right now, tap "Mark full" so it knows the 100% size. New rolls calibrate themselves when the printer reports a change.
       </div>
       <div className="paper-ed-row">
         <select value={station} onChange={(e) => setStation(e.target.value)}>
@@ -355,7 +356,12 @@ function PaperEditor({ cam, onClose }: { cam: Camera; onClose: () => void }) {
         <div className="paper-ed-list">
           {rois.map((r) => (
             <span key={r.agent_id} className="paper-ed-chip">
-              {r.name} {r.level != null ? `· ~${r.level}%` : ""}
+              {r.name} {r.level != null ? `· ~${r.level}%` : ""}{r.calibrated ? " ✓" : ""}
+              <button className="btn" title="This roll is full right now — use it as the 100% size"
+                onClick={async () => {
+                  try { await api.camPaperFull(cam.id, r.agent_id); setRois(rois.map((x) => x.agent_id === r.agent_id ? { ...x, level: 100, calibrated: true } : x)); setMsg(`${r.name} marked as a full roll.`); }
+                  catch (e) { setMsg(String(e)); }
+                }}>Mark full</button>
               <button className="btn" onClick={() => setRois(rois.filter((x) => x.agent_id !== r.agent_id))} title="Remove">✕</button>
             </span>
           ))}

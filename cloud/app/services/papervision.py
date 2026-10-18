@@ -83,7 +83,7 @@ def measure(img, box_px):
     cs, _ = cv2.findContours(c, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     c = np.zeros_like(c)
     cv2.drawContours(c, cs, -1, 1, -1)          # fill the core / spindle hole
-    k = max(3, int(st[i, 2] * 0.45)) | 1
+    k = max(3, int(min(st[i, 2], w, h) * 0.4)) | 1   # wider than the strip, narrower than the roll
     o = cv2.morphologyEx(c, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
     n2, _l2, s2, _ = cv2.connectedComponentsWithStats(o)
     if n2 < 2:

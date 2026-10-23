@@ -74,6 +74,12 @@ def _build_site_out(site: Site, n_total: int, n_online: int, n_dormant: int, m) 
     online = (
         (site.device_total - site.device_offline) if site.device_total else n_online
     )
+    # No Site Manager metric (console-only setups)? Use the gateway's own WAN
+    # reading from the console sync — the active link's latency / availability.
+    link = None
+    for lk in ((site.wan_status or {}).get("links") or []):
+        if isinstance(lk, dict) and (lk.get("active") or link is None):
+            link = lk
     return SiteOut(
         id=site.id,
         name=site.name,
@@ -82,10 +88,13 @@ def _build_site_out(site: Site, n_total: int, n_online: int, n_dormant: int, m) 
         device_count=total,
         online_device_count=online,
         dormant_device_count=int(n_dormant or 0),
-        latency_ms=m.latency_ms if m else None,
+        latency_ms=(m.latency_ms if m and m.latency_ms is not None else (link or {}).get("latency_ms")),
         packet_loss_pct=m.packet_loss_pct if m else None,
-        # Prefer the live metric uptime; fall back to the site's reported WAN uptime.
-        uptime_pct=(m.uptime_pct if m and m.uptime_pct is not None else site.wan_uptime_pct),
+        # Prefer the live metric uptime; fall back to the site's reported WAN uptime,
+        # then the gateway's WAN availability.
+        uptime_pct=(m.uptime_pct if m and m.uptime_pct is not None
+                    else site.wan_uptime_pct if site.wan_uptime_pct is not None
+                    else (link or {}).get("availability")),
         download_mbps=m.download_mbps if m else None,
         upload_mbps=m.upload_mbps if m else None,
         map_x=site.map_x,

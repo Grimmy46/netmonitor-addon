@@ -213,7 +213,14 @@ function RadialMap({ roots, kids, byId, beats, poll, onPick, topo, skin }: {
     // core beside it — two AIs side by side — instead of on the first ring.
     const isTwin = (n: TopoNode) => n.type === "gateway" && !!n.parent_id &&
       byId.get(n.parent_id)?.type === "gateway";
-    const kidsOf = (id: string) => (kids.get(id) ?? []).filter((k) => !isTwin(k));
+    // Devices plugged into the twin belong to the shared core too (after an HA
+    // failover every switch can hang off the "standby" unit — draw them all).
+    const kidsOf = (id: string) => {
+      const own = kids.get(id) ?? [];
+      const out = own.filter((k) => !isTwin(k));
+      for (const t of own.filter(isTwin)) out.push(...(kids.get(t.id) ?? []).filter((k) => !isTwin(k)));
+      return out;
+    };
     const leaves = new Map<string, number>();
     const seen = new Set<string>();
     const count = (n: TopoNode): number => {

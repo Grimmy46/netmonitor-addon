@@ -35,7 +35,7 @@ import urllib.request
 # frozen runtime, so an import it needs that the exe didn't bundle crashes the
 # agent. `threading` is bundled; `concurrent.futures` is NOT — hence the manual
 # thread pool below instead of ThreadPoolExecutor.
-PAYLOAD_VERSION = "2026.10.16.1"
+PAYLOAD_VERSION = "2026.10.23.1"
 
 SYSTEM = platform.system()
 _CTX = None  # set in main(); carries bootstrap_version + worker_exe for reporting
@@ -1029,9 +1029,47 @@ def _cmd_rights(_args):
     return out
 
 
+_HW_PS = r'''$ErrorActionPreference='SilentlyContinue'
+$cs=Get-CimInstance Win32_ComputerSystem; $bios=Get-CimInstance Win32_BIOS; $bb=Get-CimInstance Win32_BaseBoard
+$cpu=Get-CimInstance Win32_Processor | Select-Object -First 1
+$os=Get-CimInstance Win32_OperatingSystem
+$disks=@(Get-CimInstance Win32_DiskDrive | ForEach-Object { @{model=$_.Model; gb=[math]::Round($_.Size/1GB)} })
+$mons=@(Get-CimInstance -Namespace root\wmi WmiMonitorID | ForEach-Object {
+  $d={param($a) if($a){ -join ($a | Where-Object {$_ -gt 0} | ForEach-Object {[char]$_}) } }
+  @{maker=(& $d $_.ManufacturerName); model=(& $d $_.UserFriendlyName); code=(& $d $_.ProductCodeID)} })
+$vc=Get-CimInstance Win32_VideoController | Select-Object -First 1
+$touch=@(Get-PnpDevice -PresentOnly | Where-Object { $_.FriendlyName -match 'touch' } | ForEach-Object { $_.FriendlyName }) | Select-Object -Unique
+$usb=@(Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -match '^(USB|HID)\\VID_' } | ForEach-Object {
+  if($_.InstanceId -match 'VID_([0-9A-F]{4})&PID_([0-9A-F]{4})'){ @{vid=$matches[1]; pid=$matches[2]; name=$_.FriendlyName; cls=$_.Class} } })
+$pr=@(Get-Printer | ForEach-Object { @{name=$_.Name; driver=$_.DriverName; port=$_.PortName} })
+@{maker=$cs.Manufacturer; model=$cs.Model; family=$cs.SystemFamily; sku=$cs.SystemSKUNumber; serial=$bios.SerialNumber;
+  board=("$($bb.Manufacturer) $($bb.Product)").Trim(); bios=$bios.SMBIOSBIOSVersion;
+  cpu=$cpu.Name; cores=$cpu.NumberOfCores; ram_gb=[math]::Round($cs.TotalPhysicalMemory/1GB,1);
+  os=$os.Caption; build=$os.BuildNumber; disks=$disks; monitors=$mons;
+  gpu=$vc.Name; res="$($vc.CurrentHorizontalResolution)x$($vc.CurrentVerticalResolution)";
+  touch=$touch; usb=$usb; printers=$pr} | ConvertTo-Json -Depth 4 -Compress'''
+
+
+def _cmd_hardware(args):
+    """Read-only hardware snapshot: PC maker/model/serial, CPU, RAM, disks,
+    monitors (EDID), touch digitizers, USB devices (VID/PID → scanner etc.)
+    and Windows printers. PowerShell CIM only — nothing is changed."""
+    if SYSTEM != "Windows":
+        return {"host": socket.gethostname(), "os": platform.platform()}
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", _HW_PS],
+                           capture_output=True, text=True, timeout=90, errors="ignore", **_no_window_kwargs())
+        out = json.loads((r.stdout or "").strip() or "{}")
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"hardware query failed: {e}"[:300]}
+    out["host"] = socket.gethostname()
+    return out
+
+
 _COMMAND_HANDLERS = {
     "cam-diag": _cmd_cam_diag,
     "inventory": _cmd_inventory,
+    "hardware": _cmd_hardware,
     "rights": _cmd_rights,
     "power-off": _cmd_power_off,
     "power-cancel": _cmd_power_cancel,

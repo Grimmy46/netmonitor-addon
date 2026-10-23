@@ -79,15 +79,31 @@ async def send_group(number: str, internal_id: str, text: str) -> None:
     if gid is None:
         import base64
         gid = "group." + base64.b64encode(internal_id.encode()).decode()
-    async with httpx.AsyncClient(timeout=30) as c:
-        r = await c.post(_url("/v2/send"), json={"message": text, "number": number, "recipients": [gid]})
-        r.raise_for_status()
+    await _send(number, gid, text)
 
 
 async def send_direct(number: str, to: str, text: str) -> None:
-    async with httpx.AsyncClient(timeout=30) as c:
-        r = await c.post(_url("/v2/send"), json={"message": text, "number": number, "recipients": [to]})
-        r.raise_for_status()
+    await _send(number, to, text)
+
+
+async def _send(number: str, to: str, text: str, tries: int = 3) -> None:
+    """POST /v2/send with retries. signal-cli can stall ~30 s while its receive
+    loop holds the account lock ("Config file is in use by another instance"),
+    then answer 400 — one retry after a short pause goes through."""
+    import asyncio
+    last: Exception | None = None
+    for i in range(tries):
+        try:
+            async with httpx.AsyncClient(timeout=75) as c:
+                r = await c.post(_url("/v2/send"), json={"message": text, "number": number, "recipients": [to]})
+                r.raise_for_status()
+                return
+        except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+            last = exc
+            logger.warning("signal send attempt %d failed: %s", i + 1, repr(exc)[:200])
+            if i + 1 < tries:
+                await asyncio.sleep(5 + 10 * i)
+    raise RuntimeError(f"signal send failed after {tries} tries: {last!r}"[:300])
 
 
 def _dedupe(group_id: str, ts_ms: int, sender: str, body: str) -> str:

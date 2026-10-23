@@ -230,8 +230,21 @@ async def maybe_send(db: AsyncSession, now: datetime) -> None:
     await db.commit()
     try:
         await send(db, await build(db, now))
+        _fails.pop(today, None)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("morning report failed: %s", exc)
+        n = _fails[today] = _fails.get(today, 0) + 1
+        logger.warning("morning report failed (try %d): %r", n, exc)
+        if n < 4:  # let the next sweep try again (still inside the 2 h window)
+            acc.morning_report_last = _yesterday(today)
+            await db.commit()
+
+
+_fails: dict[str, int] = {}
+
+
+def _yesterday(day: str) -> str:
+    from datetime import date
+    return (date.fromisoformat(day) - timedelta(days=1)).isoformat()
 
 
 async def send(db: AsyncSession, text: str) -> None:

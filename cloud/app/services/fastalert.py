@@ -152,6 +152,13 @@ async def _confirm_devices(site_id, ids: list, seen: datetime) -> None:
                 _sent_down[str(d.id)] = now
             names = sorted((_label(d) for d in still), key=len)
             head = names[0] if len(names) == 1 else f"{names[0]} +{len(names) - 1} more"
+            from app.services import linkhealth
+            if all(linkhealth.unifi_alive(d, now) or d.link_status == "degraded" for d in still):
+                await _push_admins(db, f"🟠 {head} not answering pings",
+                                   f"{site.name}: {', '.join(names[:6])}. UniFi still sees it up and powered — "
+                                   "likely a bad or slow cable, not power.", f"fast-{still[0].id}")
+                logger.info("Fast push (link trouble): %s", names)
+                return
             await _push_admins(db, f"⚡ {head} went offline",
                                f"{site.name}: {', '.join(names[:6])}. Still down on re-check — "
                                "the group alert follows if it stays down.",

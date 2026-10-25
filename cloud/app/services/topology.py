@@ -231,6 +231,7 @@ async def refresh_site_topology(db: AsyncSession, console: UnifiConsole, site: S
         # 0 = disconnected; transitional states (upgrading, provisioning…) are
         # left alone.
         state = rd.get("state")
+        dev.unifi_state = state if isinstance(state, int) else dev.unifi_state
         # Fresh kiosk pings win over UniFi's (laggy) state — pingwatch.py.
         from app.services import pingwatch
         if state in (0, 1):
@@ -262,6 +263,11 @@ async def refresh_site_topology(db: AsyncSession, console: UnifiConsole, site: S
             dev.ports_up = sum(1 for p in ports if p.get("up"))
         if rd.get("type") in TYPE_MAP and not dev.device_type:
             dev.device_type = TYPE_MAP[rd["type"]]
+        try:
+            from app.services import linkhealth
+            linkhealth.evaluate(dev, rd, by_mac.get(dev.uplink_mac) if dev.uplink_mac else None, now)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("link health failed for %s: %s", dev.name, exc)
         dev.topology_at = now
         updated += 1
         if was_online is True and dev.is_online is False:
@@ -291,6 +297,11 @@ async def refresh_site_topology(db: AsyncSession, console: UnifiConsole, site: S
         }
         site.wan_status_at = now
     await db.commit()
+    try:
+        from app.services import linkhealth
+        await linkhealth.notify(db, site, list(devices), now)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("link health notify failed: %s", exc)
     # Super-fast heads-up push to admins (no confirm wait).
     try:
         from app.services import fastalert

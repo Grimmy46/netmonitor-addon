@@ -27,11 +27,12 @@ const LABEL_SIZES = [12, 13.5, 15.5] as const;
 type Pt = { x: number; y: number };
 type BgGeom = { c: Pt; u: Pt; v: Pt }; // centre + half-width / half-height vectors (z20 px)
 
-type Health = "up" | "missed" | "down" | "dormant" | "unreach";
+type Health = "up" | "missed" | "down" | "dormant" | "unreach" | "degraded";
 function health(n: TopoNode): Health {
   if (n.dormant || n.closed_down) return "dormant";
-  if (n.is_online === false) return "down";
+  if (n.is_online === false) return n.seen_age_s != null && n.seen_age_s <= 90 && n.type !== "gateway" ? "degraded" : "down";
   if (n.seen_age_s != null && n.seen_age_s > MISSED_AFTER_S) return "missed";
+  if (n.link_status === "degraded") return "degraded";
   if (n.local_reachable === false) return "unreach";
   return "up";
 }
@@ -542,7 +543,7 @@ function GeoMap({ siteId, sites, onSite, shareToken, guest = false }: Props) {
       const rows: string[] = [];
       rows.push(`<b>${esc(nm.label)}</b>${nm.tag ? ` <span class="gpp-tag">#${nm.tag}</span>` : ""}`);
       rows.push(`<div class="gpp-sub">${esc([isSwitch(n) ? (n.type === "gateway" ? "Gateway" : "Switch") : "Access point", n.model].filter(Boolean).join(" · "))}</div>`);
-      const st = n.closed_down ? "Switched off (closure)" : h === "down" ? `DOWN ${humanizeDuration(n.down_seconds) ?? ""}` : h === "missed" ? `Missed heartbeat (${humanizeDuration(n.seen_age_s)})` : h === "unreach" ? "Up, not answering pings" : h === "dormant" ? "Dormant" : `Up · beat ${Math.round(n.seen_age_s ?? 0)}s ago`;
+      const st = n.closed_down ? "Switched off (closure)" : h === "down" ? `DOWN ${humanizeDuration(n.down_seconds) ?? ""}` : h === "missed" ? `Missed heartbeat (${humanizeDuration(n.seen_age_s)})` : h === "unreach" ? "Up, not answering pings" : h === "degraded" ? `⚠ Degraded link: ${n.link_reason ?? "up in UniFi, not answering pings"}` : h === "dormant" ? "Dormant" : `Up · beat ${Math.round(n.seen_age_s ?? 0)}s ago`;
       rows.push(`<div class="gpp-st gpp-${h}">${esc(st)}</div>`);
       if (parent) rows.push(`<div>Fed from <b>${esc(splitName(parent.name).label)}</b>${n.uplink_type === "wireless" ? " (mesh)" : n.uplink_port ? `, port ${n.uplink_port}` : ""}</div>`);
       if (root) {

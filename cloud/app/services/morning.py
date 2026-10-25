@@ -102,6 +102,21 @@ async def build(db: AsyncSession, now: datetime | None = None) -> str:
             lines.append(f"{'✅' if ok else '⚠️'} {label}: {c['online']}/{c['total']} online"
                          + (f" — down: {_names(downs)}" if downs else ""))
 
+        degr = [n for n in view["nodes"] if n.get("link_status") == "degraded" and not n["dormant"] and n["is_online"]]
+        issues += bool(degr)
+        lines.append("✅ Links: no degraded cables" if not degr else
+                     f"⚠️ Degraded links: {len(degr)} — " + "; ".join(
+                         f"{n['name']}: {n.get('link_reason') or 'bad link'}" for n in degr[:3])
+                     + (f" +{len(degr) - 3} more" if len(degr) > 3 else ""))
+        ipi = view.get("ip_issues") or {}
+        nconf = len(ipi.get("conflicts") or [])
+        nnoip = len(ipi.get("no_ip") or []) + len(ipi.get("apipa") or [])
+        if ipi:
+            issues += bool(nconf)
+            lines.append(("✅ IP check: no conflicts" if not nconf else f"⚠️ IP conflicts: {nconf} — "
+                          + ", ".join(c["ip"] for c in ipi["conflicts"][:4]))
+                         + (f" · {nnoip} device{'s' if nnoip != 1 else ''} without a proper IP" if nnoip else ""))
+
         wan = view.get("wan") or {}
         links = wan.get("links") or []
         speed = await _speedtest_result(db, site) if cfg.get("speedtest") else None

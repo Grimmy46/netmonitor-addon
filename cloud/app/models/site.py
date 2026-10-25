@@ -41,6 +41,10 @@ class Site(Base, UUIDPk, Timestamps):
     device_total: Mapped[int] = mapped_column(default=0)
     device_offline: Mapped[int] = mapped_column(default=0)
     wan_uptime_pct: Mapped[float | None] = mapped_column(default=None)
+    # Automatic IP check (services/ipcheck.py): live duplicate IPs, 169.254
+    # self-assigned clients, wired clients with no IP.
+    ip_issues: Mapped[dict | None] = mapped_column(JSONB, default=None)
+    ip_issues_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     # Site-down alerting state machine (see workers/alerts.py): None (never
     # seen online — dark/retired sites can't alert), "ok" (last seen online),

@@ -1200,3 +1200,21 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
 .paper-ov { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,.55); overflow-y: auto; padding: 16px; display: flex; justify-content: center; align-items: flex-start; }
 .paper-ov > div { width: min(1000px, 100%); }
 .paper-ov .paper-ed { margin: 0; background: var(--surface-1, #fff); box-shadow: 0 10px 40px rgba(0,0,0,.35); }
+
+/* Degraded link: up, but the cable / link feeding it is bad */
+.hb-degraded { background: #ff8a1c; }
+.hl-degraded .hl-core { fill: #ffd2a6; stroke: #ff8a1c; }
+.hl-degraded .hl-halo { fill: #ff8a1c; }
+.holo-legend .lg.degraded { background: #ff8a1c; box-shadow: 0 0 8px #ff8a1c; }
+.promap .hl-degraded .hl-core { fill: #ff8a1c; }
+.promap-legend .lg.degraded { background: #ff8a1c; }
+.gp-degraded { --c: #ff8a1c; }
+.gpp-degraded { color: #c2410c; }
+.nl-status.degr { color: #c2410c; font-weight: 600; white-space: normal; }
+.nl-degraded { background: rgba(255, 138, 28, 0.07); }
+.ipchk { margin-top: 12px; }
+.ipchk-row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; padding: 6px 0; border-top: 1px solid var(--border); font-size: 13px; }
+.ipchk-row:first-of-type { border-top: 0; }
+.ipchk-bad { color: #b91c1c; font-weight: 600; }
+.ipchk-warn { color: #c2410c; font-weight: 600; }
+.ipchk-ok { color: #15803d; font-weight: 600; }

@@ -46,6 +46,8 @@ def _node(d: Device, parent: Device | None, root_id, now: datetime) -> dict:
         "last_seen": d.unifi_last_seen.isoformat() if d.unifi_last_seen else None,
         "seen_age_s": (now - d.unifi_last_seen).total_seconds() if d.unifi_last_seen else None,
         "closed_down": closure.powered_down_for_closure(d, now),
+        "link_status": d.link_status, "link_reason": d.link_reason,
+        "link_since": d.link_since.isoformat() if d.link_since else None, "link_errors": d.link_errors,
     }
 
 
@@ -94,6 +96,7 @@ async def _site_view(db: AsyncSession, site: Site) -> dict:
     ]
     return {
         "site_id": str(site.id), "site_name": site.name, "wan": _wan(site, now),
+        "ip_issues": site.ip_issues, "ip_issues_at": site.ip_issues_at.isoformat() if site.ip_issues_at else None,
         "counts": {"switch": count("switch"), "ap": count("ap"), "gateway": count("gateway")},
         "outages": [_outage(o, now) for o in a["outages"]],
         "unreachable": unreachable,
@@ -223,6 +226,7 @@ async def overview(db: AsyncSession = Depends(get_db), _user=Depends(current_use
     view.pop("nodes")   # the landing strip doesn't need the whole tree
     if getattr(_user, "role", None) == "guest":
         view = _scrub_addresses(view)  # guest link: no IPs / MACs
+        view.pop("ip_issues", None)
         if isinstance(view.get("wan"), dict):
             view["wan"]["gateway"] = None       # no internal device names
         if isinstance(view.get("closure"), dict):
@@ -236,4 +240,7 @@ async def site_topology(site_id: uuid.UUID, db: AsyncSession = Depends(get_db),
     site = await db.get(Site, site_id)
     if site is None:
         raise HTTPException(status_code=404, detail="Site not found")
-    return await _site_view(db, site)
+    view = await _site_view(db, site)
+    if getattr(_user, "role", None) == "guest":
+        view.pop("ip_issues", None)
+    return view

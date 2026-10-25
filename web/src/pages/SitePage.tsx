@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, isAdmin, type Device, type MetricPoint, type Site } from "../api/client";
 import { DeviceTable } from "../components/DeviceTable";
 import { LatencyChart } from "../components/LatencyChart";
+import HealthPanel from "../components/HealthPanel";
 import { NetworkMap } from "../components/NetworkMap";
 import { StatusPill } from "../components/StatusPill";
 
@@ -181,6 +182,9 @@ export function SitePage({ siteId, onBack }: { siteId: string; onBack: () => voi
 
       {/* ── Self-building network map (uplinks from UniFi) ─────────────── */}
       <NetworkMap siteId={siteId} />
+
+      {/* ── Degraded links + IP check ──────────────────────────────────── */}
+      <HealthPanel siteId={siteId} />
 
       {/* ── WAN latency trend ──────────────────────────────────────────── */}
       <section className="panel">

@@ -755,6 +755,9 @@ async def agent_device_report(
             dev.local_reachable = False
             dev.local_rtt_ms = None
             dev.local_checked_at = now
+        if change == "down":
+            from app.services import linkhealth
+            linkhealth.note_ping_down(dev.id, now)
         if change == "down" and dev.is_online is not False:
             _apply_online_state(dev, False, pingwatch.first_fail(dev.id) or now)
             went_down.append(dev)

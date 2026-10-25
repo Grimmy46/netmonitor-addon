@@ -6,7 +6,7 @@ create duplicates or break history.
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -78,6 +78,15 @@ class Device(Base, UUIDPk, Timestamps):
     local_port: Mapped[int | None] = mapped_column(Integer, default=None)
     uplink_type: Mapped[str | None] = mapped_column(default=None)  # wire | wireless
     uplink_speed_mbps: Mapped[int | None] = mapped_column(Integer, default=None)
+    # Link health: UniFi state (1 = connected) and a "degraded" verdict when the
+    # device is up but its link is bad (slow negotiation, rising port errors,
+    # repeated ping drops) — services/linkhealth.py.
+    unifi_state: Mapped[int | None] = mapped_column(Integer, default=None)
+    link_status: Mapped[str | None] = mapped_column(default=None)
+    link_reason: Mapped[str | None] = mapped_column(default=None)
+    link_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    link_errors: Mapped[int | None] = mapped_column(BigInteger, default=None)
+    link_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     uplink_depth: Mapped[int | None] = mapped_column(Integer, default=None)
     ports_up: Mapped[int | None] = mapped_column(Integer, default=None)
     ports_total: Mapped[int | None] = mapped_column(Integer, default=None)

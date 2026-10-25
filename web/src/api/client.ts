@@ -315,6 +315,16 @@ export type TopoNode = {
   last_seen: string | null;    // last UniFi check-in (heartbeat)
   seen_age_s: number | null;
   closed_down?: boolean;
+  link_status?: string | null;   // ok | degraded
+  link_reason?: string | null;
+  link_since?: string | null;
+  link_errors?: number | null;
+};
+export type IpIssues = {
+  conflicts: { ip: string; entries: { mac: string; name: string; kind: string; where: string }[] }[];
+  apipa: { mac: string; name: string; ip: string; where: string }[];
+  no_ip: { mac: string; name: string; network: string; where: string; sw_port: number | null; minutes: number }[];
+  clients: number; devices: number;
 };
 export type Closure = {
   phase: "scheduled" | "closed" | "reopening";
@@ -334,7 +344,7 @@ export type NetworkOverview = {
   topology_at: string | null;
   closure?: Closure | null;
 };
-export type SiteTopology = NetworkOverview & { nodes: TopoNode[] };
+export type SiteTopology = NetworkOverview & { nodes: TopoNode[]; ip_issues?: IpIssues | null; ip_issues_at?: string | null };
 export type SignalStatus = {
   service: boolean; number: string | null; alert_group_id: string | null;
   watched: Record<string, { name: string; role: "deploy" | "hardware" | "other" }>;

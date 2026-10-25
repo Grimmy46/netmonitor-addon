@@ -432,6 +432,17 @@ def _where(o) -> str:
     return f"Fed from {_lbl(p)}{port}{extra} — check power and that cable."
 
 
+def _link_trouble(d, now: datetime) -> bool:
+    """Kiosk pings say down, but UniFi still hears it — a link problem, not power."""
+    from app.services import linkhealth
+    return isinstance(d, Device) and (linkhealth.unifi_alive(d, now) or d.link_status == "degraded")
+
+
+def _trouble_body(d, o) -> str:
+    from app.services import linkhealth
+    return linkhealth.trouble_text(d, getattr(o, "parent", None))
+
+
 def _names(fs, n=4) -> str:
     xs = [_lbl(f.entity) if not isinstance(f.entity, Agent) else (f.entity.name or "kiosk") for f in fs]
     return ", ".join(xs[:n]) + (f" +{len(xs) - n} more" if len(xs) > n else "")
@@ -895,7 +906,10 @@ async def sweep(db: AsyncSession) -> dict:
                 if o is not None:
                     for f in fs:         # a lone device: say where it plugs in
                         f.body = _where(o)
-                        if f.kind == "switch":
+                        if f.kind in ("switch", "ap") and _link_trouble(f.entity, now):
+                            f.title = f"🟠 LINK TROUBLE: {_lbl(f.entity)}"
+                            f.body = _trouble_body(f.entity, o)
+                        elif f.kind == "switch":
                             f.title = f"🔴 SWITCH DOWN: {_lbl(f.entity)}"
                         elif f.kind == "ap":
                             f.title = f"📶 AP down: {_lbl(f.entity)}"
@@ -914,12 +928,16 @@ async def sweep(db: AsyncSession) -> dict:
                 f"{ap_b} AP{'s' if ap_b != 1 else ''}" if ap_b else "",
                 f"{behind - sw_b - ap_b} other" if behind - sw_b - ap_b > 0 else "",
             ] if p)
+            trouble = root.device_type != "gateway" and _link_trouble(root, now)
             keep.append(_Fault(
                 entity=root,
-                title=(f"🔴 {'GATEWAY' if root.device_type == 'gateway' else 'SWITCH'} DOWN: {_lbl(root)}"
+                title=((f"🟠 LINK TROUBLE: {_lbl(root)}" if trouble
+                        else f"🔴 {'GATEWAY' if root.device_type == 'gateway' else 'SWITCH'} DOWN: {_lbl(root)}")
                        if k == "switch" else f"🔴 {_lbl(root)} went down")
                       + (f" (+{behind} behind it)" if behind else ""),
-                body=_where(o) + (f" Also offline behind it: {mix}." if mix else ""),
+                body=(_trouble_body(root, o) if trouble else _where(o))
+                     + (f" Also not answering behind it: {mix}." if (mix and trouble)
+                        else f" Also offline behind it: {mix}." if mix else ""),
                 tag=f"device-{root.id}", url=f"/#/site/{root.site_id}?focus={root.id}",
                 kind=k, behind=behind,
             ))

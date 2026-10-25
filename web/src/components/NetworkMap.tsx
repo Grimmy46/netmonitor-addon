@@ -19,14 +19,23 @@ const MISSED_AFTER_S = 120; // no check-in for this long while "online" = missed
 const HOVER_DELAY_MS = 150;
 
 type Kids = Map<string | null, TopoNode[]>;
-type Health = "up" | "missed" | "down" | "dormant" | "unreach";
+type Health = "up" | "missed" | "down" | "dormant" | "unreach" | "degraded";
+
+/** UniFi heard from it in the last 90 s — so "down" from kiosk pings is a link problem, not power. */
+const unifiHears = (n: TopoNode) => n.seen_age_s != null && n.seen_age_s <= 90;
 
 function health(n: TopoNode): Health {
   if (n.dormant || n.closed_down) return "dormant";
-  if (n.is_online === false) return "down";
+  if (n.is_online === false) return unifiHears(n) && n.type !== "gateway" ? "degraded" : "down";
   if (n.seen_age_s != null && n.seen_age_s > MISSED_AFTER_S) return "missed";
+  if (n.link_status === "degraded") return "degraded";
   if (n.local_reachable === false) return "unreach";
   return "up";
+}
+export function linkText(n: TopoNode): string {
+  if (n.link_reason) return n.link_reason;
+  if (n.is_online === false && unifiHears(n)) return "up in UniFi, but not answering kiosk pings";
+  return "link problem";
 }
 const isInfra = (n: TopoNode) => n.type === "switch" || n.type === "gateway";
 
@@ -432,6 +441,7 @@ function RadialMap({ roots, kids, byId, beats, poll, onPick, topo, skin }: {
         <span><i className="lg up" /> heartbeat</span>
         <span><i className="lg missed" /> missed</span>
         <span><i className="lg down" /> down</span>
+        <span><i className="lg degraded" /> degraded link</span>
         <span><i className="lg unreach" /> no kiosk ping</span>
         <span className="dim">{holo ? "large = switch · small = AP · center = core gateway" : `labelled = switch · small = AP${labels && labels.hidden ? ` · ${labels.hidden} label${labels.hidden > 1 ? "s" : ""} tucked away to avoid overlap` : ""} · hover any dot for details`}</span>
       </div>
@@ -526,6 +536,7 @@ function HoverCard({ p, parent, size, holo }: { p: Placed; parent?: TopoNode; si
     const pn = splitName(parent.name);
     rows.push(["UPLINK", `${pn.label}${n.uplink_type === "wireless" ? " · MESH" : n.uplink_port ? ` · P${n.uplink_port}` : ""}${speed(n.uplink_speed_mbps) ? ` · ${speed(n.uplink_speed_mbps)}` : ""}`]);
   }
+  if (h === "degraded") rows.push(["LINK", `⚠ ${linkText(n).toUpperCase()}`]);
   if (n.ip) rows.push(["IP", n.ip]);
   if (n.ports_total) rows.push(["PORTS", `${n.ports_up}/${n.ports_total} UP`]);
   rows.push(["STATUS",
@@ -626,6 +637,7 @@ function ListView({ tree, q, focus, setFocus, beats, poll }: {
         {isRoot ? <span className="nm-count bad">root cause</span> : null}
         {h === "down" ? <span className="nl-status bad">down {humanizeDuration(n.down_seconds)}</span> : null}
         {h === "missed" ? <span className="nl-status bad">no heartbeat {humanizeDuration(n.seen_age_s)}</span> : null}
+        {h === "degraded" ? <span className="nl-status degr" title={linkText(n)}>⚠ {linkText(n)}</span> : null}
         {h === "unreach" ? <span className="nl-status warn">no ping</span> : null}
         {h === "dormant" ? <span className="nl-status">dormant</span> : null}
         <span className="nm-spacer" />

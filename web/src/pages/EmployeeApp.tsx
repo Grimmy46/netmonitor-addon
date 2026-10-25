@@ -6,6 +6,7 @@ import { applyStoredTheme } from "../components/ThemeToggle";
 import { LiveView } from "../components/LiveView";
 import { MainHealth } from "../components/MainHealth";
 import { GuestMapView } from "../components/GeoMap";
+import { NetworkMap } from "../components/NetworkMap";
 import { applySkin } from "../lib/skin";
 
 /**
@@ -80,6 +81,7 @@ export function EmployeeApp({ onSignOut, guest = false }: { onSignOut: () => voi
   const [days, setDays] = useState(7);
   const [err, setErr] = useState<string | null>(null);
   const [closure, setClosure] = useState<Closure | null>(null);
+  const [siteId, setSiteId] = useState("");
   const [dark, setDark] = useState(() => localStorage.getItem("rcs-dark") === "1");
 
   useEffect(() => {
@@ -100,7 +102,7 @@ export function EmployeeApp({ onSignOut, guest = false }: { onSignOut: () => voi
     let alive = true;
     const load = () => {
       Promise.all([api.agents(), api.stationOutages(days), api.networkOverview().catch(() => null)])
-        .then(([a, o, ov]) => { if (!alive) return; setAgents(a.filter((x) => !isRetired(x))); setOutages(o); setClosure(ov?.closure ?? null); setErr(null); })
+        .then(([a, o, ov]) => { if (!alive) return; setAgents(a.filter((x) => !isRetired(x))); setOutages(o); setClosure(ov?.closure ?? null); if (ov?.site_id) setSiteId(ov.site_id); setErr(null); })
         .catch((e) => alive && setErr(String(e?.message ?? e)));
     };
     load();
@@ -175,7 +177,10 @@ export function EmployeeApp({ onSignOut, guest = false }: { onSignOut: () => voi
               {guest ? <GuestServices closed={closed} until={closure?.end} /> : <LiveView />}
             </>
           ) : view === "map" ? (
-            <GuestMapView />
+            <>
+              <GuestMapView />
+              {siteId ? <div style={{ marginTop: 16 }}><NetworkMap siteId={siteId} localSkin /></div> : null}
+            </>
           ) : view === "history" ? (
             <>{closedNote}<HistoryView outages={outages} days={days} setDays={setDays} closed={closed} /></>
           ) : (

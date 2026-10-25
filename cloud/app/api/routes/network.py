@@ -242,5 +242,10 @@ async def site_topology(site_id: uuid.UUID, db: AsyncSession = Depends(get_db),
         raise HTTPException(status_code=404, detail="Site not found")
     view = await _site_view(db, site)
     if getattr(_user, "role", None) == "guest":
+        view = _scrub_addresses(view)  # guest link: no IPs / MACs
         view.pop("ip_issues", None)
+        if isinstance(view.get("wan"), dict):
+            view["wan"]["gateway"] = None
+        if isinstance(view.get("closure"), dict):
+            view["closure"]["note"] = None
     return view

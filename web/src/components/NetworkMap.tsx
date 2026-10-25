@@ -73,13 +73,14 @@ function useHeartbeats(nodes: TopoNode[] | undefined) {
   return { beats, poll };
 }
 
-export function NetworkMap({ siteId }: { siteId: string }) {
+export function NetworkMap({ siteId, localSkin = false }: { siteId: string; localSkin?: boolean }) {
   const [topo, setTopo] = useState<SiteTopology | null>(null);
   const [err, setErr] = useState("");
   const [mode, setMode] = useState<"map" | "list">(focusFromHash() ? "list" : "map");
-  const [skin, setSkinState] = useState<MapSkin>(getSkin() === "holo" ? "holo" : "pro");
-  useEffect(() => onSkinChange((s) => setSkinState(s === "holo" ? "holo" : "pro")), []);
-  const setSkin = (v: MapSkin) => setGlobalSkin(v);
+  // localSkin (guest view): Pro/Holo only changes this map, never the app's skin.
+  const [skin, setSkinState] = useState<MapSkin>(localSkin || getSkin() === "holo" ? "holo" : "pro");
+  useEffect(() => (localSkin ? undefined : onSkinChange((s) => setSkinState(s === "holo" ? "holo" : "pro"))), [localSkin]);
+  const setSkin = (v: MapSkin) => (localSkin ? setSkinState(v) : setGlobalSkin(v));
   const [q, setQ] = useState("");
   const [showDormant, setShowDormant] = useState(false);
   const [focus, setFocus] = useState<string | null>(focusFromHash());

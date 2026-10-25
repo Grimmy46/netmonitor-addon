@@ -570,6 +570,12 @@ async def agent_report(
 
     now = datetime.now(tz=timezone.utc)
     agent.last_seen_at = now.isoformat()
+    if agent.status in ("offline", "off"):
+        # Back from an outage: end its history row here, because the sweep
+        # will now see "online" already and never log the recovery itself.
+        from sqlalchemy import text as _t
+        await db.execute(_t("UPDATE agent_outages SET ended_at = :t WHERE agent_id = :a AND ended_at IS NULL"),
+                         {"a": agent.id, "t": now})
     agent.status = "online"
     agent.powered_off_at = None
     # A ticket-box install kit tags its PC: applied on the agent's FIRST report

@@ -110,6 +110,16 @@ async def _upsert_cameras(db: AsyncSession, site: Site, clients: list[dict], now
     await db.flush()
 
 
+# Card terminals and LED-sign controllers on a kiosk's network can announce the
+# kiosk's own hostname; never let them stand in for the kiosk PC.
+_NOT_PC_OUIS = ("ingenico", "verifone", "pax ", "pax technology", "castles", "novastar")
+
+
+def _host_rank(c: dict) -> tuple:
+    oui = str(c.get("oui") or "").lower()
+    return (not any(t in oui for t in _NOT_PC_OUIS), bool(c.get("is_wired")), c.get("last_seen") or 0)
+
+
 async def refresh_kiosk_locations(db: AsyncSession, console: UnifiConsole, site: Site,
                                   now: datetime) -> int:
     """Which switch + port each kiosk is plugged into, from UniFi's client list
@@ -128,11 +138,14 @@ async def refresh_kiosk_locations(db: AsyncSession, console: UnifiConsole, site:
         logger.warning("camera discovery failed for %s: %s", site.name, exc)
     if not agents:
         return 0
-    by_host = {}
+    by_host: dict[str, dict] = {}
     by_ip = {}
     for c in clients:
-        if c.get("hostname"):
-            by_host[str(c["hostname"]).lower()] = c
+        h = str(c.get("hostname") or "").lower()
+        # Card terminals (Ingenico etc.) can announce the PC's hostname: when
+        # two clients share one, the real PC wins, then the most recently seen.
+        if h and (h not in by_host or _host_rank(c) > _host_rank(by_host[h])):
+            by_host[h] = c
         if c.get("ip"):
             by_ip[c["ip"]] = c
     if not by_host and not by_ip:

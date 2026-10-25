@@ -240,6 +240,10 @@ async def site_topology(site_id: uuid.UUID, db: AsyncSession = Depends(get_db),
     site = await db.get(Site, site_id)
     if site is None:
         raise HTTPException(status_code=404, detail="Site not found")
+    if getattr(_user, "role", None) == "guest":
+        st = get_settings()
+        if site.name != (st.alert_site_name or st.default_probe_site_name):
+            raise HTTPException(status_code=403, detail="Not available on the guest view.")
     view = await _site_view(db, site)
     if getattr(_user, "role", None) == "guest":
         view = _scrub_addresses(view)  # guest link: no IPs / MACs

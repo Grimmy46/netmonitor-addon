@@ -8,6 +8,7 @@ use cookies; they authenticate with X-Agent-Token on their own endpoints.
 Roles: "admin" (can change things) · "viewer" (read-only). Enforced server-side
 via the require_admin dependency; the UI merely hides what a viewer can't do.
 """
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -121,6 +122,8 @@ async def _user_from_token(token: str, db: AsyncSession) -> User | None:
 # What a guest-link visitor may read (everything else 403s, all writes too).
 GUEST_GET_PATHS = ("/auth/me", "/live/feed", "/network/overview", "/agents", "/agents/outages",
                    "/agents/teardown", "/map/guest", "/map/guest/bg")
+# Network map on the guest view (route scrubs IPs/MACs and allows the Main site only).
+_GUEST_TOPO = re.compile(r"^/network/sites/[0-9a-fA-F-]{36}/topology$")
 
 
 async def current_user(request: Request, db: AsyncSession = Depends(get_db)) -> User:
@@ -137,7 +140,8 @@ async def current_user(request: Request, db: AsyncSession = Depends(get_db)) -> 
     if user.role in ("employee", "guest") and request.method not in ("GET", "HEAD", "OPTIONS") \
             and path != "/auth/logout":
         raise HTTPException(status_code=403, detail="View-only account.")
-    if user.role == "guest" and request.method in ("GET", "HEAD") and path not in GUEST_GET_PATHS:
+    if user.role == "guest" and request.method in ("GET", "HEAD") and path not in GUEST_GET_PATHS \
+            and not _GUEST_TOPO.match(path):
         raise HTTPException(status_code=403, detail="Not available on the guest view.")
     return user
 

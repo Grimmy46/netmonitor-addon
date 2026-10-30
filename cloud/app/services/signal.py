@@ -113,6 +113,7 @@ def _dedupe(group_id: str, ts_ms: int, sender: str, body: str) -> str:
 async def _store(db: AsyncSession, rows: list[dict]) -> int:
     if not rows:
         return 0
+    rows = [{k: v for k, v in r.items() if k != "att_meta"} for r in rows]
     for r in rows:
         r["dedupe"] = _dedupe(r["group_id"], r["ts_ms"], r["sender"], r["body"])
     stmt = insert(SignalMessage).values(rows).on_conflict_do_nothing(constraint="uq_signal_messages_dedupe")
@@ -135,6 +136,8 @@ def _envelope_rows(env: dict, watched: dict) -> list[dict]:
     if not gid or gid not in watched:
         return []
     body = dm.get("message") or ""
+    att_meta = [{"id": a.get("id"), "type": a.get("contentType") or "", "name": a.get("filename") or ""}
+                for a in (dm.get("attachments") or []) if a.get("id")]
     att = len(dm.get("attachments") or [])
     if not body and not att:
         return []
@@ -142,7 +145,7 @@ def _envelope_rows(env: dict, watched: dict) -> list[dict]:
     return [{
         "group_id": gid, "group_name": watched[gid].get("name", ""), "sender": sender,
         "sent_at": datetime.fromtimestamp(ts / 1000, timezone.utc), "ts_ms": ts,
-        "body": body, "attachments": att, "source": "live",
+        "body": body, "attachments": att, "source": "live", "att_meta": att_meta,
     }]
 
 
@@ -151,9 +154,15 @@ async def receive_once(db: AsyncSession) -> int:
     num = cfg.number or await linked_number(db)
     if not num:
         return 0
+    from app.services import teardownbot
+    td = teardownbot.cfg_of(cfg)
+    td_on = teardownbot.active(td)
     async with httpx.AsyncClient(timeout=90) as c:
+        # Photos are only downloaded while the teardown bot is on (it forwards
+        # them to Inventory/Cases); every downloaded file is deleted below.
         resp = await c.get(_url(f"/v1/receive/{num}"),
-                           params={"timeout": 10, "ignore_attachments": "true", "send_read_receipts": "false"})
+                           params={"timeout": 10, "ignore_attachments": "false" if td_on else "true",
+                                   "send_read_receipts": "false"})
         if resp.status_code >= 400:
             cfg.last_error = f"receive {resp.status_code}: {resp.text[:200]}"
             await db.commit()
@@ -162,9 +171,6 @@ async def receive_once(db: AsyncSession) -> int:
     rows: list[dict] = []
     commands: list[dict] = []
     teardown: list[dict] = []
-    from app.services import teardownbot
-    td = teardownbot.cfg_of(cfg)
-    td_on = teardownbot.active(td)
     for env in envs if isinstance(envs, list) else []:
         rows += _envelope_rows(env, cfg.watched or {})
         if cfg.alert_group_id:
@@ -188,12 +194,47 @@ async def receive_once(db: AsyncSession) -> int:
                     logger.warning("netbot command failed: %s", exc)
     for r in teardown:
         try:
-            reply = await teardownbot.handle(td, r["body"], r["sender"], r["sent_at"], r["attachments"])
+            photo = await _first_photo(r.get("att_meta") or [])
+            reply = await teardownbot.handle(td, r["body"], r["sender"], r["sent_at"], r["attachments"], photo=photo)
             if reply:
                 await send_group(num, td["group_id"], reply)
         except Exception as exc:  # noqa: BLE001
             logger.warning("teardown bot failed: %s", exc)
+    if td_on:
+        await _drop_attachments(envs if isinstance(envs, list) else [])
     return n
+
+
+async def _first_photo(meta: list[dict]) -> dict | None:
+    """Bytes of the first image attached to a message (max 15 MB), or None."""
+    for a in meta:
+        if not a["type"].startswith("image/"):
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=60) as c:
+                r = await c.get(_url(f"/v1/attachments/{a['id']}"))
+            if r.status_code == 200 and 0 < len(r.content) <= 15 * 1024 * 1024:
+                return {"bytes": r.content, "mime": a["type"], "name": a["name"] or a["id"]}
+        except httpx.HTTPError as exc:
+            logger.warning("teardown photo download failed: %s", exc)
+    return None
+
+
+async def _drop_attachments(envs: list) -> None:
+    """Delete every attachment signal-cli downloaded in this batch (keeps the disk clean)."""
+    ids = []
+    for env in envs:
+        e = (env or {}).get("envelope") or {}
+        dm = e.get("dataMessage") or ((e.get("syncMessage") or {}).get("sentMessage")) or {}
+        ids += [a.get("id") for a in (dm.get("attachments") or []) if a.get("id")]
+    if not ids:
+        return
+    async with httpx.AsyncClient(timeout=20) as c:
+        for i in ids:
+            try:
+                await c.delete(_url(f"/v1/attachments/{i}"))
+            except httpx.HTTPError:
+                pass
 
 
 class _AnyGroup(dict):

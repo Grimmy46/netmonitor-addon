@@ -90,10 +90,15 @@ async def lookup(token: str, q: str) -> dict:
             return {"http": r.status_code, "ok": False, "error": r.text[:200]}
 
 
-async def mark_returned(token: str, asset_tag: str, who: str, at: datetime, dry_run: bool, note: str | None) -> dict:
+async def mark_returned(token: str, asset_tag: str, who: str, at: datetime, dry_run: bool, note: str | None,
+                        photo: dict | None = None) -> dict:
     body = {"asset_tag": asset_tag, "returned_by": who, "returned_at": at.isoformat(), "dry_run": bool(dry_run)}
     if note:
         body["note"] = note[:300]
+    if photo:
+        import base64
+        body |= {"photo_base64": base64.b64encode(photo["bytes"]).decode(), "photo_mime": photo["mime"],
+                 "photo_filename": photo["name"]}
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.post(f"{BASE}/devices/return", json=body, headers={"Authorization": f"Bearer {token}"})
         if r.status_code >= 500:  # API guide: retry once
@@ -119,7 +124,8 @@ def _short(dev: dict) -> str:
     return f"#{dev.get('asset_tag')} {s}" + (f" ({where})" if where else "")
 
 
-async def handle(td: dict, body: str, sender: str, sent_at: datetime, attachments: int = 0) -> str | None:
+async def handle(td: dict, body: str, sender: str, sent_at: datetime, attachments: int = 0,
+                 photo: dict | None = None) -> str | None:
     """Process one group message; returns the reply text (or None to stay quiet)."""
     items = extract(body)
     who = (td.get("owner") or "Dawid") if sender in ("me", "", "?") else sender
@@ -152,7 +158,9 @@ async def handle(td: dict, body: str, sender: str, sent_at: datetime, attachment
             continue
         dev = pick[0]
         try:
-            rr = await mark_returned(token, dev["asset_tag"], who, sent_at, dry, note=None)
+            post = " ".join(body.split())[:200]
+            rr = await mark_returned(token, dev["asset_tag"], who, sent_at, dry,
+                                     note=f'Collected by {who}. Signal post: "{post}"', photo=photo)
         except Exception as exc:  # noqa: BLE001
             lines.append(f"⚠️ {_short(dev)}: couldn't update inventory ({type(exc).__name__}).")
             continue
@@ -163,7 +171,7 @@ async def handle(td: dict, body: str, sender: str, sent_at: datetime, attachment
             lines.append(f"✅ #{dev['asset_tag']} was already back at ARK — nothing changed.")
             continue
         msg = rr.get("message") or f"#{dev['asset_tag']} returned by {who}."
-        lines.append(("🧪 Practice — would log: " if dry else "✅ ") + msg)
+        lines.append(("🧪 Practice — would log: " if dry else "✅ ") + msg + (" 📷 photo attached." if photo else ""))
     if not lines:
         return None
     head = f"{MARK} NETBOT: got it, {who}." + (" (practice mode — nothing saved)" if dry else "")

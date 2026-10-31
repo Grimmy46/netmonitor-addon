@@ -40,6 +40,18 @@ def cfg_of(sigcfg) -> dict:
     return dict(sigcfg.teardown or {})
 
 
+async def teardown_running(db) -> bool:
+    """The bot only listens while teardown is actually on — the global teardown
+    toggle or a site in teardown — never during the live show."""
+    from sqlalchemy import select
+
+    from app.models import Account, Site
+    acc = (await db.execute(select(Account).limit(1))).scalars().first()
+    if acc is not None and acc.teardown_mode:
+        return True
+    return (await db.execute(select(Site.id).where(Site.teardown_active.is_(True)).limit(1))).first() is not None
+
+
 def active(td: dict, now: datetime | None = None) -> bool:
     if not td.get("enabled") or not td.get("group_id") or not td.get("token_enc"):
         return False
@@ -117,6 +129,9 @@ async def health() -> bool:
         return False
 
 
+_HINT = re.compile(r"\b(ap|switch|sb|router|asset|tag|teardown|collected|u7|usw)\b", re.I)
+
+
 def _short(dev: dict) -> str:
     bits = [dev.get("manufacturer"), dev.get("model")]
     where = " / ".join(x for x in (dev.get("venue"), dev.get("area")) if x)
@@ -127,10 +142,16 @@ def _short(dev: dict) -> str:
 async def handle(td: dict, body: str, sender: str, sent_at: datetime, attachments: int = 0,
                  photo: dict | None = None) -> str | None:
     """Process one group message; returns the reply text (or None to stay quiet)."""
+    # Teardown posts always carry a photo. Plain chat ("check kiosk 6047 at
+    # mini bumper boats") is never treated as a return, even if it has a number.
+    if not attachments:
+        return None
     items = extract(body)
     who = (td.get("owner") or "Dawid") if sender in ("me", "", "?") else sender
     if not items:
-        if attachments:
+        # Only nudge when the caption looks like a teardown post; memes and
+        # caption-less photos are ignored silently.
+        if attachments and _HINT.search(body or ""):
             return (f"{MARK} NETBOT: I can't read photos yet — please type the 4-digit RCS tag "
                     f"(or the serial) of what you grabbed.")
         return None
@@ -154,7 +175,7 @@ async def handle(td: dict, body: str, sender: str, sent_at: datetime, attachment
             continue
         if len(pick) > 1:
             opts = ", ".join(_short(r) for r in pick[:4])
-            lines.append(f"❓ {q} matches {len(pick)} devices: {opts}. Which one? (reply with the tag)")
+            lines.append(f"❓ {q} matches {len(pick)} devices: {opts}. Which one? (repost the photo with its 4-digit tag)")
             continue
         dev = pick[0]
         try:

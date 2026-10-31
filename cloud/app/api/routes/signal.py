@@ -194,13 +194,14 @@ class TeardownIn(BaseModel):
     token: str | None = None      # write-only; "" clears
 
 
-def _td_public(td: dict) -> dict:
+def _td_public(td: dict, running: bool = False) -> dict:
     from app.services import teardownbot
     out = {k: v for k, v in td.items() if k != "token_enc"}
     out["has_token"] = bool(td.get("token_enc"))
     out.setdefault("dry_run", True)
     out.setdefault("enabled", False)
-    out["active"] = teardownbot.active(td)
+    out["teardown_running"] = running
+    out["active"] = teardownbot.active(td) and running  # listens only during teardown
     return out
 
 
@@ -208,7 +209,8 @@ def _td_public(td: dict) -> dict:
 async def teardown_get(db: AsyncSession = Depends(get_db), _=Depends(require_admin)) -> dict:
     cfg = await sig.get_config(db)
     await db.commit()
-    return _td_public(dict(cfg.teardown or {}))
+    from app.services import teardownbot
+    return _td_public(dict(cfg.teardown or {}), await teardownbot.teardown_running(db))
 
 
 @router.put("/teardown")
@@ -239,7 +241,8 @@ async def teardown_put(body: TeardownIn, db: AsyncSession = Depends(get_db), _=D
     td.update(upd)
     cfg.teardown = td
     await db.commit()
-    return _td_public(td)
+    from app.services import teardownbot
+    return _td_public(td, await teardownbot.teardown_running(db))
 
 
 @router.post("/teardown/test")

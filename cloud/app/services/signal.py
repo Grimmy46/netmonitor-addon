@@ -156,7 +156,7 @@ async def receive_once(db: AsyncSession) -> int:
         return 0
     from app.services import teardownbot
     td = teardownbot.cfg_of(cfg)
-    td_on = teardownbot.active(td)
+    td_on = teardownbot.active(td) and await teardownbot.teardown_running(db)
     async with httpx.AsyncClient(timeout=90) as c:
         # Photos are only downloaded while the teardown bot is on (it forwards
         # them to Inventory/Cases); every downloaded file is deleted below.

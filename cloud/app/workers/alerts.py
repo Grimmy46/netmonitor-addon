@@ -722,9 +722,13 @@ async def sweep(db: AsyncSession) -> dict:
         down = silent_for >= st.alert_kiosk_offline_seconds
         if down and a.powered_off_at is not None:
             continue  # we shut it down on purpose — not a fault
+        rearm = False
+        if down and a.alert_state == "suppressed" and closure.started_in_grace(
+                seen + timedelta(seconds=st.alert_kiosk_offline_seconds), now):
+            a.alert_state, rearm = None, True   # went quiet in the reopen grace
         if down and a.alert_state is None:
             fault_age = silent_for - st.alert_kiosk_offline_seconds
-            if fault_age <= fresh:
+            if fault_age <= fresh or rearm:
                 faults.append(_Fault(
                     entity=a,
                     title=f"🔴 Kiosk {a.name} stopped reporting",
@@ -838,6 +842,14 @@ async def sweep(db: AsyncSession) -> dict:
                 # even though UniFi thinks it's up — the orange money signal.
                 kind, fault_since = "unreachable", d.local_checked_at
 
+            rearm = False
+            # (LAN-unreachable re-stamps local_checked_at every probe, so use
+            # when it was first paused as its start.)
+            began = d.alert_state_at if kind == "unreachable" else fault_since
+            if kind and d.alert_state == "suppressed" and closure.started_in_grace(began, now):
+                # Died during the reopen grace: alert now that the grace is over.
+                # (Victims of an already-told root get re-suppressed below.)
+                d.alert_state, rearm = None, True
             if kind and d.alert_state is None:
                 fault_age = (now - fault_since).total_seconds()
                 if fault_age < st.alert_confirm_seconds:
@@ -852,7 +864,7 @@ async def sweep(db: AsyncSession) -> dict:
                         and (now - par.unifi_last_seen).total_seconds() > 75
                         and fault_age < st.alert_confirm_seconds + 300):
                     continue
-                if fault_age <= fresh:
+                if fault_age <= fresh or rearm:
                     label = d.name or d.model or "device"
                     if kind == "offline":
                         title = f"🔴 {label} went down"

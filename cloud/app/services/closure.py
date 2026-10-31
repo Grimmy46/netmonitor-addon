@@ -81,6 +81,22 @@ def alerts_paused(now: datetime | None = None) -> bool:
     return phase(now) in ("closed", "reopening")
 
 
+def started_in_grace(since: datetime | None, now: datetime | None = None) -> bool:
+    """True if a fault began during the reopen grace that has now ENDED.
+
+    Faults seen during the grace are marked "suppressed" and, without this,
+    never alerted (the sweep only looks at alert_state None) — e.g. the CCA
+    switch that died at 12:22 on 2026-10-31, 22 min into a 30 min grace, and
+    stayed silent in RCS-IT. Faults from before reopening are covered by the
+    one "Reopened: N didn't come back" summary instead."""
+    if _window is None or since is None:
+        return False
+    now = now or _now()
+    end = _window[1]
+    until = end + _grace()
+    return now >= until and end <= since < until
+
+
 def reopen_until() -> datetime | None:
     if _window is None:
         return None

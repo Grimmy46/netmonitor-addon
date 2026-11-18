@@ -234,6 +234,9 @@ async def maybe_send(db: AsyncSession, now: datetime) -> None:
     # Skip while closed; the short post-opening grace is fine (that's when we report).
     if closure.phase(now) == "closed":
         return
+    from app.services import eventmode
+    if eventmode.current(acc) != "open":
+        return  # the opening report is an Open-mode post
     if acc.morning_report_last is None:
         # First run after this feature ships: start tomorrow, don't post mid-day.
         acc.morning_report_last = today

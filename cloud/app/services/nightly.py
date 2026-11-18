@@ -84,6 +84,9 @@ async def maybe_autoclose(db: AsyncSession, now: datetime) -> None:
     tz = route.tz_now(now)
     local = now.astimezone(tz)
     acc = (await db.execute(select(Account).limit(1))).scalars().first()
+    from app.services import eventmode
+    if eventmode.current(acc) != "open":
+        return  # the nightly "We're closed" only applies while the show is open
     at = autoclose_at(acc)
     scheduled = at is not None and _past(local.time(), at)
     if not (_in_window(local.time()) or scheduled):

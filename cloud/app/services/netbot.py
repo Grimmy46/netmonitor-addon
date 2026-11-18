@@ -183,6 +183,9 @@ async def maybe_early_close(db: AsyncSession, now: datetime) -> None:
     acc = await _acc(db)
     if acc is None:
         return
+    from app.services import eventmode
+    if eventmode.current(acc) != "open":
+        return  # early-close checks only while the show is open
     st = _state(acc)
     if st.get("early_key") == _night_key(now):
         return

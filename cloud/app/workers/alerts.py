@@ -375,8 +375,9 @@ async def _maybe_expire_teardown(db: AsyncSession, now: datetime) -> bool:
     if account is None or not account.teardown_mode:
         return False
     if account.teardown_auto_off_at is not None and now >= account.teardown_auto_off_at:
+        label = "Setup" if account.event_mode == "setup" else "Teardown"
         account.teardown_mode = False
-        account.rollout_notice = "🧰 Teardown mode auto-ended (safety expiry) — alerts resumed."
+        account.rollout_notice = f"🧰 {label} mode auto-ended (safety expiry) — alerts resumed."
         account.rollout_notice_at = now
         await db.commit()
         logger.info("Teardown mode auto-expired")
@@ -668,6 +669,13 @@ async def sweep(db: AsyncSession) -> dict:
     # Planned closure: pause alerts through the closure + reopen grace, then
     # send one "what didn't come back" summary.
     await closure.refresh(db)
+    # Event mode (setup/open/teardown/offseason) is a facade over the teardown
+    # toggle + closure: fold any change from the old toggles back into it.
+    try:
+        from app.services import eventmode
+        await eventmode.sync(db, now)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("event mode sync: %s", exc)
     # Nightly auto-close (10:30 PM–2 AM, mass kiosk drop → closed till gates open).
     try:
         from app.services import nightly

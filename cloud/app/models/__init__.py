@@ -3,6 +3,7 @@ from app.models.account import Account
 from app.models.agent import Agent
 from app.models.agent_binary import AgentBinary
 from app.models.agent_command import AgentCommand
+from app.models.bot_photo import BotPhoto
 from app.models.camera import Camera, CameraConfig, PaperVision
 from app.models.device import Device
 from app.models.fleet_batch import FleetBatch
@@ -31,6 +32,7 @@ __all__ = [
     "Agent",
     "AgentBinary",
     "AgentCommand",
+    "BotPhoto",
     "Camera",
     "CameraConfig",
     "PaperVision",

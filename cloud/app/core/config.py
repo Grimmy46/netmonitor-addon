@@ -161,6 +161,14 @@ class Settings(BaseSettings):
     # How often the retention worker runs once it has caught up.
     ping_retention_interval_seconds: int = 600
 
+    # Teardown/setup bot photos: read RCS tags / UniFi labels off them (local
+    # OCR) and keep them on disk this many days; after that a daily job writes
+    # a text summary to the bot_photos row and deletes the image file.
+    # PHOTO_DIR must be a mounted volume in prod (e.g. photos:/data/photos).
+    photo_ocr: bool = True
+    photo_dir: str = "/data/photos"
+    photo_keep_days: int = 90
+
     # Network map: how often to pull uplinks + WAN link state from each console.
     topology_interval_seconds: int = 20
     # A WAN link must read down this long before it pushes an alert.

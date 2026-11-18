@@ -77,6 +77,17 @@ def phase(now: datetime | None = None) -> str | None:
     return None
 
 
+def season_paused(now: datetime | None = None) -> bool:
+    """A long closure (more than a day left), e.g. "season over, pause all
+    notifications" - unlike the nightly "We're closed" pause, routine jobs
+    such as the daily AP restart and its report are skipped too."""
+    if _window is None:
+        return False
+    now = now or _now()
+    start, end = _window
+    return start <= now < end and (end - now) > timedelta(hours=24)
+
+
 def alerts_paused(now: datetime | None = None) -> bool:
     return phase(now) in ("closed", "reopening")
 

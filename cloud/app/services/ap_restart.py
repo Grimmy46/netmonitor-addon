@@ -122,6 +122,9 @@ async def maybe_run(db: AsyncSession, now: datetime) -> None:
     acc = (await db.execute(select(Account).limit(1))).scalars().first()
     if acc is None:
         return
+    from app.services import closure
+    if closure.season_paused(now):
+        return   # season pause: no restarts, no RCS-IT report
     cfg = config(acc)
     pend = cfg.get("pending")
     if pend and now >= datetime.fromisoformat(pend["at"]) + CHECK_AFTER:

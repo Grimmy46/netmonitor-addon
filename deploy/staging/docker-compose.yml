@@ -1,0 +1,34 @@
+# NetMon STAGING — isolated copy. Internal-only network: no internet, so no
+# Signal, UniFi, push or inventory calls can leave the box. "signal" and the
+# teardown-bot API are answered by the mock service (logged to mock/calls.jsonl).
+name: nmstage
+networks:
+  stagenet: { internal: true }
+services:
+  db:
+    image: postgres:16-alpine
+    env_file: .env
+    volumes: [ stagepg:/var/lib/postgresql/data ]
+    networks: [ stagenet ]
+    mem_limit: 384m
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U stage"], interval: 5s, timeout: 3s, retries: 20 }
+  mock:
+    image: python:3.12-alpine
+    command: python -u /mock/mock.py
+    volumes: [ "./mock:/mock" ]
+    networks: { stagenet: { aliases: [ signal ] } }
+    mem_limit: 96m
+  cloud:
+    build: ./src/cloud
+    depends_on: { db: { condition: service_healthy }, mock: { condition: service_started } }
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      NETMON_STAGING: "1"
+      TEARDOWN_BOT_BASE: http://mock:8080/teardown
+    networks: [ stagenet ]
+    mem_limit: 512m
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+volumes:
+  stagepg:

@@ -14,6 +14,7 @@ never returned to the browser.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -180,19 +181,137 @@ def _short(dev: dict) -> str:
     return f"#{dev.get('asset_tag')} {s}" + (f" ({where})" if where else "")
 
 
+async def _read_photo(td: dict, photo: dict | None) -> dict | None:
+    """Tags / QR / UniFi labels read off the photo (local OCR), or None."""
+    from app.core.config import get_settings
+    if not photo or not photo.get("bytes") or td.get("photo_ocr") is False or not get_settings().photo_ocr:
+        return None
+    from app.services import photo_reader
+    try:
+        return await asyncio.wait_for(photo_reader.read_async(photo["bytes"]), timeout=15)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("photo read failed: %s", exc)
+        return None
+
+
+async def _match_label(token: str, labels: list[str]) -> dict:
+    """UniFi label off the photo → {"tag", "why", "device"} or {"ask"} or {}."""
+    from app.core.db import SessionLocal
+    from app.services import teardown_match as tm
+
+    async def lk(q):
+        return await lookup(token, q)
+    try:
+        async with SessionLocal() as db:
+            r = await tm.resolve_label(db, labels, lk, taken=_posted)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("label match failed: %s", exc)
+        return {}
+    c = r.get("cand")
+    if r["status"] == "match":
+        return {"tag": r["tag"], "device": c.name,
+                "why": f'no tag in the post — read the label "{r["label"]}" off the photo: UniFi "{c.name}", by {c.via}'}
+    if r["status"] == "no_inventory":
+        mac = (c.mac or "")[-5:].upper()
+        return {"device": c.name,
+                "ask": f'the photo shows the label "{r["label"]}" — that\'s UniFi "{c.name}" (MAC ends {mac}), but it '
+                       f"isn't in Inventory. Please add it there, or type its 4-digit tag if it has one."}
+    if r["status"] == "ambiguous":
+        opts = ", ".join(f"#{x.tag} ({x.name})" for x in r["cands"][:3])
+        return {"ask": f'the label "{r["label"]}" in the photo could be {opts}. Which one? Reply with the tag.'}
+    return {}
+
+
+# A tag read off the photo by OCR (not its QR) is acted on alone only above
+# PHOTO_TAG_SURE; below that the bot asks. It counts as contradicting a caption
+# tag above PHOTO_TAG_FIRM.
+PHOTO_TAG_SURE = 0.93
+PHOTO_TAG_FIRM = 0.8
+
+
+def _norm(t: str) -> str:
+    return t.lstrip("0") or t
+
+
 async def handle(td: dict, body: str, sender: str, sent_at: datetime, attachments: int = 0,
                  photo: dict | None = None) -> str | None:
-    """Process one group message; returns the reply text (or None to stay quiet)."""
+    """Process one group message; returns the reply text (or None to stay quiet).
+
+    Where the tag comes from, in order: the caption; the RCS tag (or its QR)
+    read off the photo; a UniFi label read off the photo, matched to the
+    devices table; the caption matched against devices that just went offline.
+    A caption tag that the photo contradicts is not acted on — the bot asks.
+    Photos the bot acts on are kept on disk (see bot_photos)."""
     # Teardown posts always carry a photo. Plain chat ("check kiosk 6047 at
     # mini bumper boats") is never treated as a return, even if it has a number.
     if not attachments:
         return None
+    read = await _read_photo(td, photo)
+    out: dict = {}
+    reply = await _respond(td, body, sender, sent_at, photo, read, out)
+    if photo and reply:
+        who = (td.get("owner") or "Dawid") if sender in ("me", "", "?") else sender
+        await _keep_photo(photo, body, who, sent_at, read, out | {"reply": reply})
+    return reply
+
+
+async def _keep_photo(photo: dict, body: str, who: str, sent_at: datetime, read: dict | None, out: dict) -> None:
+    from app.core.db import SessionLocal
+    from app.services import bot_photos
+    try:
+        async with SessionLocal() as db:
+            await bot_photos.save(db, photo, caption=body, sender=who, sent_at=sent_at,
+                                  mode=out.get("mode") or "return", read=read, outcome=out)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not keep teardown photo: %s", exc)
+
+
+async def _respond(td: dict, body: str, sender: str, sent_at: datetime, photo: dict | None,
+                   read: dict | None, out: dict) -> str | None:
     items = extract(body)
     who = (td.get("owner") or "Dawid") if sender in ("me", "", "?") else sender
     token = _token(td)
     dry = td.get("dry_run", True)
     lines: list[str] = []
     via: dict[str, str] = {}
+    ptags = list((read or {}).get("tags") or [])
+    tconf = (read or {}).get("tag_conf") or {}
+    qr_tags = set()
+    if read and read.get("qr"):
+        from app.services.photo_reader import qr_tag
+        qr_tags = {_norm(t) for t in (qr_tag(q) for q in read["qr"]) if t}
+    if items:
+        out["via"] = "caption"
+        cap_tags = [x for x in items if x.isdigit() and len(x) <= 4]
+        firm = [t for t in ptags if tconf.get(t, 1.0) >= PHOTO_TAG_FIRM]
+        if firm and cap_tags and not ({_norm(t) for t in cap_tags} & {_norm(t) for t in ptags}):
+            out["via"] = "conflict"
+            said = ", ".join(f"#{t}" for t in cap_tags)
+            seen = ", ".join(f"#{t}" for t in firm)
+            return (f"{MARK} NETBOT: the caption says {said}, but the tag in the photo reads {seen}. "
+                    f"Which one is it? Reply with the right 4-digit tag and I'll log it.")
+    elif ptags:
+        unsure = [t for t in ptags if _norm(t) not in qr_tags and tconf.get(t, 1.0) < PHOTO_TAG_SURE]
+        if unsure:
+            out["via"] = "photo"
+            return (f"{MARK} NETBOT: I think the tag in the photo says #{unsure[0]}, but I can't read it well. "
+                    f"Please type the 4-digit tag so I log the right one.")
+        items = ptags[:MAX_ITEMS]
+        out["via"] = "qr" if all(_norm(t) in qr_tags for t in items) else "photo"
+        for t in items:
+            src = "the QR code" if _norm(t) in qr_tags else "the tag"
+            via[t] = f"no tag in the caption — read #{t} off {src} in the photo"
+    elif read and read.get("labels"):
+        found = await _match_label(token, read["labels"])
+        if found.get("device"):
+            out["device"] = found["device"]
+        if found.get("tag"):
+            items = [found["tag"]]
+            via[found["tag"]] = found["why"]
+            out["via"] = "label"
+        elif found.get("ask"):
+            out["via"] = "label"
+            return f"{MARK} NETBOT: {found['ask']}"
     if not items:
         # Only act when the caption looks like a teardown post; memes and
         # caption-less photos are ignored silently.
@@ -201,7 +320,8 @@ async def handle(td: dict, body: str, sender: str, sent_at: datetime, attachment
         found = await _match_untagged(token, body, sent_at)
         if found.get("tag"):
             items = [found["tag"]]
-            via[found["tag"]] = found["why"]
+            via[found["tag"]] = f"no tag in the post — matched {found['why']}"
+            out["via"] = "offline"
         else:
             return f"{MARK} NETBOT: {found['ask']}"
     for q in items:
@@ -224,6 +344,7 @@ async def handle(td: dict, body: str, sender: str, sent_at: datetime, attachment
             lines.append(f"❓ {q} matches {len(pick)} devices: {opts}. Which one? (repost the photo with its 4-digit tag)")
             continue
         dev = pick[0]
+        out.setdefault("tag", dev.get("asset_tag"))
         try:
             post = " ".join(body.split())[:200]
             rr = await mark_returned(token, dev["asset_tag"], who, sent_at, dry,
@@ -241,7 +362,7 @@ async def handle(td: dict, body: str, sender: str, sent_at: datetime, attachment
         _posted.add(dev["asset_tag"])
         msg = rr.get("message") or f"#{dev['asset_tag']} returned by {who}."
         if q in via:
-            msg += f" (no tag in the post — matched {via[q]})"
+            msg += f" ({via[q]})"
         lines.append(("🧪 Practice — would log: " if dry else "✅ ") + msg + (" 📷 photo attached." if photo else ""))
     if not lines:
         return None

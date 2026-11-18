@@ -558,11 +558,14 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     <button class="mode active" id="modeDraw">✏️ Draw block</button>
     <button class="mode" id="modeEdit">👆 Select / edit</button>
     <button class="mode" id="modeLink">🔗 Connect</button>
+    <button class="mode" id="modeCable" title="Draw a network cable run between two devices">🧵 Cable run</button>
     <button class="mode" id="modePan">🖐 Pan</button>
     <span class="sep"></span>
     <span class="palettelbl">Drop&nbsp;on&nbsp;map:</span>
     <div class="chip" id="apChip" title="Drag onto the map to drop an access point — it snaps to the nearest quadrant">📶 AP</div>
     <div class="chip" id="sbChip" title="Drag onto the map to drop a switchbox">🔌 SB</div>
+    <div class="chip" id="kioskChip" title="Drag onto the map to drop a kiosk">🖥 Kiosk</div>
+    <div class="chip" id="gwChip" title="Drag onto the map to drop a gateway">🌐 GW</div>
     <span class="sep"></span>
     <div class="rot" title="Rotate the map — block labels stay level and readable">
       <button id="rotL">⟲</button>
@@ -577,6 +580,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     <span class="spacer"></span>
     <span id="hint"></span>
     <span class="sep"></span>
+    <button class="btn ghost sm" id="cableBtn" title="Cable estimate and setup checklist">🧾 Cable</button>
     <button class="btn ghost sm" id="devBtn">🖧 Devices</button>
     <button class="btn sm" id="pdfBtn">📄 PDF</button>
     <button class="btn ghost sm" id="saveBtn">💾 Save</button>
@@ -593,6 +597,9 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var n,r,i,a,
     <button class="vtog on" data-k="ap">AP</button>
     <button class="vtog on" data-k="sbLines">SB lines</button>
     <button class="vtog on" data-k="apLines">AP lines</button>
+    <button class="vtog on" data-k="kiosk">Kiosk</button>
+    <button class="vtog on" data-k="gw">GW</button>
+    <button class="vtog on" data-k="cable">Cable runs</button>
     <button class="vtog on" data-k="labels">Labels</button>
     <span class="sep" style="height:20px"></span>
     <span class="vlabel">Icons</span>
@@ -683,13 +690,18 @@ const FIELDS = [
   {key:"Food",   full:"Food stands"},
   {key:"SB",     full:"Switchboxes", placed:true},
   {key:"AP",     full:"Access points", placed:true},
+  {key:"Kiosk",  full:"Kiosks", placed:true},
+  {key:"GW",     full:"Gateways", placed:true},
   {key:"Office", full:"Offices"},
   {key:"LED",    full:"LED screens"},
   {key:"Other",  full:"Other"},
 ];
 const PLACED=new Set(FIELDS.filter(f=>f.placed).map(f=>f.key));
 function itemName(it){return typeof it==="string"?it:((it&&it.name)||"");}
-function markerRadius(field){return field==="SB"?12:9;}
+function markerRadius(field){return (field==="SB"||field==="GW")?12:9;}
+const MARKER_FILL={SB:"#f7a63d",AP:"#25c9d6",Kiosk:"#b57bff",GW:"#ff7a6b"};
+const MARKER_TAG={SB:"SB",AP:"AP",Kiosk:"K",GW:"GW"};
+const MARKER_ICON={SB:"🔌",AP:"📶",Kiosk:"🖥",GW:"🌐"};
 const BLOCK_COLORS = ["#4aa3ff","#39c07a","#f0a53d","#e5604d","#b57bff","#3dd6c4","#ff8fb1","#c7d94a"];
 const SNAP=14, VHIT=10;
 
@@ -706,8 +718,16 @@ const state = {
   selId:null, panning:false, panStart:null, spaceDown:false,
   drag:null,   // {type:'vertex'|'move'|'marker', ...}
   hoverMarker:null, iconScale:1,
-  show:{qzones:true, sb:true, ap:true, sbLines:true, apLines:true, labels:true},
+  show:{qzones:true, sb:true, ap:true, kiosk:true, gw:true, sbLines:true, apLines:true, cable:true, labels:true},
+  // Setup mode: cable runs between placed markers, the map scale, estimate settings
+  runs:[],           // [{id, a:markerId (upstream), b:markerId, waypoints:[{x,y}], name, notes}]
+  rseq:0,
+  cable:{slackPct:15, dropM:3},
+  calib:null,        // {mode:"geo",tl,tr,bl:[lat,lng]} (normalized image corners) | {mode:"scale",mPerPx,lat0,lng0}
+  runDraft:null, selRun:null, scalePick:null,
+  setupChecklist:null,
 };
+const SHOW_DEFAULTS={qzones:true, sb:true, ap:true, kiosk:true, gw:true, sbLines:true, apLines:true, cable:true, labels:true};
 // ---------- device registry (real switches / APs, keyed by MAC) ----------
 function normMac(s){const h=String(s||"").toLowerCase().replace(/[^0-9a-f]/g,"").slice(0,12);const m=h.match(/.{1,2}/g);return m?m.join(":"):"";}
 function deviceByMac(mac){mac=normMac(mac);if(!mac)return null;return state.devices.find(d=>normMac(d.mac)===mac)||null;}
@@ -813,7 +833,7 @@ function createMarker(field,imgPt,forBlock){
   toast(field+" "+mk.name+" → "+owner.name+" · drag it to reposition");
   return mk;
 }
-function markerVisible(key){return key==="SB"?state.show.sb:state.show.ap;}
+function markerVisible(key){return key==="SB"?state.show.sb:key==="Kiosk"?state.show.kiosk!==false:key==="GW"?state.show.gw!==false:state.show.ap;}
 function markerAt(sx,sy){
   for(let bi=state.blocks.length-1;bi>=0;bi--){const b=state.blocks[bi];
     for(const f of FIELDS){if(!f.placed||!markerVisible(f.key))continue;const arr=b.items[f.key]||[];
@@ -828,7 +848,7 @@ function toggleLink(a,b){
   if(i>=0){state.links.splice(i,1);toast("Connection removed.");}
   else{state.links.push({a,b});const k=linkKind({a,b});toast((k==="sb"?"SB":"AP")+" connection added.");}
 }
-function purgeLinks(){state.links=state.links.filter(l=>markerById(l.a)&&markerById(l.b));}
+function purgeLinks(){state.links=state.links.filter(l=>markerById(l.a)&&markerById(l.b));state.runs=(state.runs||[]).filter(r=>markerById(r.a)&&markerById(r.b));if(state.selRun!=null&&!state.runs.some(r=>r.id===state.selRun))state.selRun=null;}
 function linkAt(sx,sy){
   for(let i=state.links.length-1;i>=0;i--){const A=markerById(state.links[i].a),B=markerById(state.links[i].b);if(!A||!B)continue;
     const p=toScreen(A.it),q=toScreen(B.it),t=segT(sx,sy,p,q),px=p.x+(q.x-p.x)*t,py=p.y+(q.y-p.y)*t;
@@ -845,13 +865,13 @@ function reassignMarker(d){ // after a drag, hand the marker to whatever block i
   }
 }
 function drawMarker(g,x,y,field,name,sf,selected,statusCol){
-  const isSB=field==="SB",r=markerRadius(field)*sf,fill=isSB?"#f7a63d":"#25c9d6";
+  const isSB=field==="SB"||field==="GW",r=markerRadius(field)*sf,fill=MARKER_FILL[field]||"#25c9d6";
   if(statusCol){ // monitor mode: a bold status ring around the type-colored bubble
     g.beginPath();g.arc(x,y,r+4*sf,0,7);g.lineWidth=3.5*sf;g.strokeStyle=statusCol;g.stroke();
   }
   g.beginPath();g.arc(x,y,r,0,7);g.fillStyle=fill;g.fill();
   g.lineWidth=(selected?3:2)*sf;g.strokeStyle=selected?"#ffffff":"rgba(11,16,23,.85)";g.stroke();
-  g.font=`bold ${(isSB?11:9)*sf}px Arial`;g.fillStyle="#06222b";g.textAlign="center";g.textBaseline="middle";g.fillText(field,x,y+0.5*sf);
+  g.font=`bold ${(isSB?11:9)*sf}px Arial`;g.fillStyle="#06222b";g.textAlign="center";g.textBaseline="middle";g.fillText(MARKER_TAG[field]||field,x,y+0.5*sf);
   if(name){g.font=`bold ${11*sf}px Arial`;g.textAlign="left";g.textBaseline="middle";
     g.lineWidth=3.5*sf;g.strokeStyle="rgba(11,16,23,.92)";g.strokeText(name,x+r+7*sf,y);
     g.fillStyle="#eaf6ff";g.fillText(name,x+r+7*sf,y);}
@@ -895,8 +915,9 @@ function drawScene(g,toS,sf,L,now,screen,ms){
     if(L.qLabels){const c=centroid(pts);drawLabelG(g,c.x,c.y,b.name,col,totalCount(b)>0,sf);}
   });
   drawLinks(g,toS,sf,L);
+  if(L.cable&&typeof drawRuns==="function")drawRuns(g,toS,sf,L,screen);
   state.blocks.forEach(b=>{FIELDS.forEach(f=>{
-    if(!f.placed)return;const showThis=f.key==="SB"?L.sb:L.ap;if(!showThis)return;
+    if(!f.placed)return;const showThis=f.key==="SB"?L.sb:f.key==="AP"?L.ap:(L[f.key.toLowerCase()]!==undefined?L[f.key.toLowerCase()]:L.ap);if(!showThis)return;
     const titles=f.key==="SB"?L.sbTitles:L.apTitles;
     const msf=sf*ms;
     (b.items[f.key]||[]).forEach(it=>{
@@ -908,7 +929,7 @@ function drawScene(g,toS,sf,L,now,screen,ms){
     });
   });});
 }
-function screenLayers(){return {qFill:state.show.qzones,qOutline:state.show.qzones,qLabels:state.show.qzones,sb:state.show.sb,sbTitles:state.show.labels,ap:state.show.ap,apTitles:state.show.labels,sbLines:state.show.sbLines,apLines:state.show.apLines,monitor:state.monitor};}
+function screenLayers(){return {qFill:state.show.qzones,qOutline:state.show.qzones,qLabels:state.show.qzones,sb:state.show.sb,sbTitles:state.show.labels,ap:state.show.ap,apTitles:state.show.labels,kiosk:state.show.kiosk!==false,gw:state.show.gw!==false,sbLines:state.show.sbLines,apLines:state.show.apLines,cable:state.show.cable!==false,monitor:state.monitor};}
 let pulsing=false;
 function animatePulse(){if(pulsing||!window.requestAnimationFrame)return;pulsing=true;const start=performance.now();(function loop(){render();if(performance.now()-start<650)requestAnimationFrame(loop);else pulsing=false;})();}
 
@@ -924,6 +945,7 @@ function render(){
     ctx.restore();
   }
   drawScene(ctx,toScreen,1,screenLayers(),window.performance?performance.now():0,true,state.iconScale);
+  if(typeof drawCableOverlay==="function")drawCableOverlay(ctx);
   // link-in-progress rubber band (Connect mode)
   if(state.mode==="link"&&state.linkFrom!=null){
     const A=markerById(state.linkFrom);
@@ -956,6 +978,7 @@ canvas.addEventListener("mousemove",e=>{
     const ip=toImg(m.x,m.y);
     if(state.drag.type==="vertex"){state.drag.b.points[state.drag.idx]={x:ip.x,y:ip.y};}
     else if(state.drag.type==="marker"){state.drag.marker.x=ip.x;state.drag.marker.y=ip.y;}
+    else if(state.drag.type==="waypoint"){state.drag.run.waypoints[state.drag.idx]={x:ip.x,y:ip.y};if(typeof refreshCablePanel==="function")refreshCablePanel();}
     else{const dx=ip.x-state.drag.startImg.x,dy=ip.y-state.drag.startImg.y;state.drag.b.points=state.drag.orig.map(p=>({x:p.x+dx,y:p.y+dy}));}
     renderList();render();return;
   }
@@ -974,6 +997,8 @@ canvas.addEventListener("mousedown",e=>{
   if(state.mode==="draw"){
     if(state.draft.length>=3&&state.hoverClose){closeDraft();return;}
     state.draft.push(toImg(m.x,m.y));render();
+  }else if(state.mode==="cable"||state.mode==="scale"){
+    if(typeof cableMouseDown==="function")cableMouseDown(m);
   }else if(state.mode==="link"){
     const mk=markerAt(m.x,m.y);
     if(mk){
@@ -983,6 +1008,7 @@ canvas.addEventListener("mousedown",e=>{
     }else{const li=linkAt(m.x,m.y);if(li>=0){state.links.splice(li,1);toast("Connection removed.");}state.linkFrom=null;}
     render();
   }else{ // edit
+    if(typeof cableEditMouseDown==="function"&&cableEditMouseDown(m))return;
     const mk=markerAt(m.x,m.y);
     if(mk){if(mk.block.id!==state.selId)openEdit(mk.block);state.drag={type:"marker",marker:mk.item,field:mk.field,fromBlock:mk.block};return;}
     if(state.selId){const b=cur();const vi=vertexAt(b,m.x,m.y);if(vi>=0){state.drag={type:"vertex",b,idx:vi};return;}}
@@ -996,6 +1022,7 @@ canvas.addEventListener("contextmenu",e=>e.preventDefault());
 canvas.addEventListener("dblclick",e=>{
   const m=evPos(e);
   if(state.mode==="draw"){if(state.draft.length>=3)closeDraft();return;}
+  if(typeof cableDblClick==="function"&&cableDblClick(m))return;
   // edit mode: dbl-click a vertex to delete it; dbl-click inside a block to add a vertex
   if(state.selId){
     const b=cur();const vi=vertexAt(b,m.x,m.y);
@@ -1019,6 +1046,7 @@ window.addEventListener("keydown",e=>{
     if(e.key==="Escape")state.draft=[],render();
     if(e.key==="Backspace"){state.draft.pop();render();e.preventDefault();}
   }
+  if(typeof cableKeyDown==="function"&&cableKeyDown(e))return;
   if(e.key==="Escape"){if(state.linkFrom!=null){state.linkFrom=null;render();}else closeEdit();}
 });
 window.addEventListener("keyup",e=>{if(e.code==="Space"){state.spaceDown=false;updateCursor();}});
@@ -1048,15 +1076,18 @@ function updateCursor(){
 const HINTS={
   draw:"Click to drop points · click first point (or Enter) to close · Backspace undo",
   edit:"Click a block to edit · drag AP/SB bubbles to reposition · drag corners to reshape · drag inside to move · dbl-click edge/corner = add/remove corner",
+  cable:"Click the upstream device (gateway or SB), click the map to add bends along fences and paths, then click the far device · Backspace undo bend · Esc cancels",
+  scale:"Click two points you know the real distance between",
   link:"Click one SB then another to draw a connection · connect an AP to an SB for a drop line · click a line to delete it · Esc cancels",
   pan:"Drag anywhere to move the map · scroll or +/− to zoom · (hold Space or right-drag to pan in any mode)"
 };
 function setMode(m){
-  state.mode=m;state.draft=[];state.hoverClose=false;state.drag=null;state.linkFrom=null;
+  state.mode=m;state.draft=[];state.hoverClose=false;state.drag=null;state.linkFrom=null;state.runDraft=null;if(m!=="scale")state.scalePick=null;
   $("modeDraw").classList.toggle("active",m==="draw");
   $("modeEdit").classList.toggle("active",m==="edit");
   $("modeLink").classList.toggle("active",m==="link");
   $("modePan").classList.toggle("active",m==="pan");
+  if($("modeCable"))$("modeCable").classList.toggle("active",m==="cable");
   updateCursor();
   $("hint").textContent=HINTS[m]||"";
   render();
@@ -1171,7 +1202,7 @@ function renderFields(b){
       else{arr.push(defaultName(f.key,arr.length+1));renderFields(b);renderList();render();}
     });
     head.appendChild(add);g.appendChild(head);
-    if(f.placed){const h=document.createElement("div");h.className="noinst";h.style.fontStyle="normal";h.textContent=f.key==="AP"?"Drag the 📶 AP chip onto the map, or add here then drag the bubble.":"Adds a bubble in this Q — drag it where the switchbox goes.";g.appendChild(h);}
+    if(f.placed){const h=document.createElement("div");h.className="noinst";h.style.fontStyle="normal";h.textContent=f.key==="SB"?"Adds a bubble in this Q — drag it where the switchbox goes.":"Drag the "+(MARKER_ICON[f.key]||"")+" "+f.key+" chip onto the map, or add here then drag the bubble.";g.appendChild(h);}
     if(!arr.length){const e=document.createElement("div");e.className="noinst";e.textContent="None yet — click "+(f.placed?"+ Drop on Q":"+ Add");g.appendChild(e);}
     arr.forEach((it,i)=>{
       const row=document.createElement("div");row.className="inst";
@@ -1225,11 +1256,13 @@ function startPlacing(field,e){
   if(e.button!==undefined&&e.button!==0)return;
   e.preventDefault();
   if(!state.blocks.length){toast("Draw at least one quadrant first, then drop "+field+"s.");return;}
-  state.placing={field};const gh=$("ghost");gh.textContent=(field==="AP"?"📶 ":"🔌 ")+field;
-  gh.style.background=field==="SB"?"#f7a63d":"#25c9d6";gh.style.display="block";moveGhost(e);document.body.style.cursor="grabbing";
+  state.placing={field};const gh=$("ghost");gh.textContent=(MARKER_ICON[field]||"")+" "+field;
+  gh.style.background=MARKER_FILL[field]||"#25c9d6";gh.style.display="block";moveGhost(e);document.body.style.cursor="grabbing";
 }
 $("apChip").addEventListener("mousedown",e=>startPlacing("AP",e));
 $("sbChip").addEventListener("mousedown",e=>startPlacing("SB",e));
+$("kioskChip").addEventListener("mousedown",e=>startPlacing("Kiosk",e));
+$("gwChip").addEventListener("mousedown",e=>startPlacing("GW",e));
 window.addEventListener("mousemove",e=>{if(state.placing)moveGhost(e);});
 window.addEventListener("mouseup",e=>{
   if(!state.placing)return;const field=state.placing.field;state.placing=null;
@@ -1240,7 +1273,7 @@ window.addEventListener("mouseup",e=>{
 
 // ================= SAVE / LOAD / EXPORT =================
 function download(name,content,type){const blob=new Blob([content],{type}),url=URL.createObjectURL(blob),a=$("dl");a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1500);}
-$("saveBtn").addEventListener("click",()=>{download("siteplanner_project.json",JSON.stringify({version:4,imageDataUrl:state.imageDataUrl,blocks:state.blocks,links:state.links,devices:state.devices,statusFeed:state.statusFeed,nextNum:state.nextNum,seq:state.seq,mseq:state.mseq,show:state.show,view:{rot:state.view.rot}}),"application/json");toast("Project saved — keep the .json to reopen later.");});
+$("saveBtn").addEventListener("click",()=>{download("siteplanner_project.json",JSON.stringify({version:4,imageDataUrl:state.imageDataUrl,blocks:state.blocks,links:state.links,devices:state.devices,statusFeed:state.statusFeed,nextNum:state.nextNum,seq:state.seq,mseq:state.mseq,show:state.show,view:{rot:state.view.rot},runs:state.runs,rseq:state.rseq,cable:state.cable,calib:state.calib,setupChecklist:(typeof buildChecklist==="function"?buildChecklist():null)}),"application/json");toast("Project saved — keep the .json to reopen later.");});
 $("openBtn").addEventListener("click",()=>$("openInput").click());
 $("openInput").addEventListener("change",e=>{
   const f=e.target.files[0];if(!f)return;const r=new FileReader();
@@ -1275,7 +1308,8 @@ $("openInput").addEventListener("change",e=>{
         state.links=Array.isArray(p.links)?p.links.filter(l=>l&&l.a!=null&&l.b!=null):[];purgeLinks();
         state.devices=Array.isArray(p.devices)?p.devices:[];
         state.statusFeed=Object.assign({url:"",auto:false},p.statusFeed||{});
-        if(p.show)state.show=Object.assign({qzones:true,sb:true,ap:true,sbLines:true,apLines:true},p.show);
+        state.show=Object.assign({},SHOW_DEFAULTS,p.show||{});
+        if(typeof loadCableData==="function")loadCableData(p);
         syncToggleButtons();
         state.view.rot=(p.view&&p.view.rot)||0;
         $("upload").classList.add("hidden");$("app").classList.remove("hidden");
@@ -1334,12 +1368,15 @@ function exportPDF(){
   const L_SB={qOutline:true,faintQ:true,qLabels:true,sb:true,sbTitles:true};
   const L_SBAP={qOutline:true,faintQ:true,qLabels:true,sb:true,sbTitles:false,ap:true,apTitles:true};
   const L_LINES={qOutline:true,faintQ:true,qLabels:true,sb:true,sbTitles:true,ap:true,apTitles:false,sbLines:true,apLines:true};
+  const L_CABLE={qOutline:true,faintQ:true,qLabels:true,sb:true,sbTitles:true,ap:true,apTitles:true,kiosk:true,gw:true,cable:true};
   pageImage("1 · Grounds aerial",null);
   doc.addPage();pageImage("2 · Quadrant (Q) layout",L_Q);
   doc.addPage();pageImage("3 · Switchbox (SB) placement",L_SB);
   doc.addPage();pageImage("4 · Switchboxes + access points",L_SBAP);
   doc.addPage();pageImage("5 · SB / AP connections",L_LINES);
+  if(state.runs&&state.runs.length){doc.addPage("a4","landscape");pageImage("6 · Cable runs",L_CABLE);}
   doc.addPage("a4","portrait");drawTable(doc);
+  if(state.runs&&state.runs.length&&typeof drawCableTable==="function")drawCableTable(doc);
   doc.save("SitePlanner_layout.pdf");
   toast("PDF downloaded.");
 }
@@ -1383,6 +1420,461 @@ let toastT;function toast(msg){const t=$("toast");t.textContent=msg;t.classList.
 setMode("draw");
 </script>
 <style>
+  /* ---------- Setup: cable runs, estimate, checklist ---------- */
+  #cableModal,#scaleModal{position:fixed;inset:0;background:rgba(6,10,15,.62);display:flex;align-items:center;justify-content:center;z-index:86;padding:20px;}
+  #cableModal .cbox{background:var(--panel);border:1px solid var(--line);border-radius:14px;width:980px;max-width:100%;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 24px 70px rgba(0,0,0,.55);}
+  #scaleModal .cbox{background:var(--panel);border:1px solid var(--line);border-radius:14px;width:520px;max-width:100%;padding:0 0 14px;box-shadow:0 24px 70px rgba(0,0,0,.55);}
+  .cbody{overflow:auto;padding:4px 16px 14px;}
+  .csec{margin-top:14px;}
+  .csec h4{margin:0 0 8px;font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);}
+  .crow{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:13px;}
+  .crow label{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;}
+  .crow input[type=number],.crow input[type=text],.crow select{background:var(--bg);border:1px solid var(--line);color:var(--ink);border-radius:6px;padding:6px 8px;font-size:13px;}
+  .crow input[type=number]{width:80px;}
+  .ctable{width:100%;border-collapse:collapse;font-size:12px;}
+  .ctable th{text-align:left;color:var(--muted);font-weight:bold;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap;}
+  .ctable td{padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:middle;}
+  .ctable td.num,.ctable th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
+  .ctable input{width:100%;min-width:110px;background:var(--bg);border:1px solid var(--line);color:var(--ink);border-radius:5px;padding:4px 6px;font-size:12px;}
+  .ctable tr.sel td{background:#1a2c44;}
+  .ctable .drm{background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:5px;width:26px;height:26px;}
+  .ctable .drm:hover{border-color:var(--danger);color:var(--danger);}
+  .ctable tfoot td{font-weight:bold;border-top:2px solid var(--line);}
+  .cflag{display:inline-block;border-radius:10px;padding:2px 8px;font-size:11px;font-weight:bold;}
+  .cflag.ok{background:#123020;color:#8ff0b8;}
+  .cflag.near{background:#3a2a10;color:#ffcf7a;}
+  .cflag.over{background:#3d1712;color:#ffb3a7;}
+  .cbig{display:flex;gap:12px;flex-wrap:wrap;}
+  .cbig .stat{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 14px;min-width:150px;}
+  .cbig .stat b{display:block;font-size:20px;}
+  .cbig .stat span{font-size:11px;color:var(--muted);}
+  .cnote{font-size:12px;color:var(--muted);line-height:1.5;}
+  .cwarn{font-size:12px;color:var(--warn);line-height:1.5;}
+  .cfoot{display:flex;gap:8px;justify-content:flex-end;padding:12px 16px;border-top:1px solid var(--line);flex-wrap:wrap;}
+</style>
+<script>
+"use strict";
+/* ══════════════ SETUP MODE: cable runs · cable estimate · setup checklist ══════════════
+   Additive module. Runs live in state.runs and are saved with the project (local .json and
+   cloud plan). Lengths need a map scale (state.calib): either the Map tab's georeferenced
+   image (exact lat/lng per pixel) or a two-point scale. Distances are haversine along the
+   run's waypoints, so bends that follow fences and paths count. */
+const M_TO_FT=3.28084, SPOOL_FT=1000, ETH_PRACTICAL_M=90, ETH_MAX_M=100, EARTH_R=6371008.8;
+const UPSTREAM_RANK={GW:0,SB:1,AP:2,Kiosk:2};
+const DEVICE_TYPE={GW:"gateway",SB:"switch",AP:"ap",Kiosk:"kiosk"};
+
+// ---------- geo ----------
+function haversineM(a,b){
+  const r=Math.PI/180,dLat=(b[0]-a[0])*r,dLng=(b[1]-a[1])*r;
+  const h=Math.sin(dLat/2)**2+Math.cos(a[0]*r)*Math.cos(b[0]*r)*Math.sin(dLng/2)**2;
+  return 2*EARTH_R*Math.asin(Math.min(1,Math.sqrt(h)));
+}
+function pxToLatLng(p){
+  const c=state.calib;if(!c)return null;
+  if(c.mode==="geo"){
+    if(!state.img)return null;
+    const u=p.x/state.img.width,v=p.y/state.img.height;
+    return [c.tl[0]+u*(c.tr[0]-c.tl[0])+v*(c.bl[0]-c.tl[0]), c.tl[1]+u*(c.tr[1]-c.tl[1])+v*(c.bl[1]-c.tl[1])];
+  }
+  if(c.mode==="scale"&&c.mPerPx>0){ // local tangent plane anchored at lat0/lng0
+    const lat0=c.lat0||0,lng0=c.lng0||0,dN=-p.y*c.mPerPx,dE=p.x*c.mPerPx;
+    return [lat0+dN/EARTH_R*180/Math.PI, lng0+dE/(EARTH_R*Math.cos(lat0*Math.PI/180))*180/Math.PI];
+  }
+  return null;
+}
+function calibrated(){return !!(state.calib&&(state.calib.mode==="scale"?state.calib.mPerPx>0:state.calib.mode==="geo"&&state.img));}
+function calibLabel(){
+  const c=state.calib;if(!c)return "Not set — lengths can't be worked out yet.";
+  if(c.mode==="geo")return "Matched to the Map tab image (real GPS positions).";
+  return "Two-point scale: "+fmtNum(c.refDist||0,1)+" "+(c.refUnit||"m")+" between the picked points ("+(1/c.mPerPx).toFixed(2)+" px per metre).";
+}
+
+// ---------- runs ----------
+function runPath(r){const A=markerById(r.a),B=markerById(r.b);if(!A||!B)return null;return [A.it,...(r.waypoints||[]),B.it];}
+function runMapM(r){
+  if(!calibrated())return null;const P=runPath(r);if(!P)return null;
+  let d=0;for(let i=1;i<P.length;i++){const a=pxToLatLng(P[i-1]),b=pxToLatLng(P[i]);if(!a||!b)return null;d+=haversineM(a,b);}
+  return d;
+}
+function runEstimate(r){
+  const map=runMapM(r);if(map==null)return null;
+  const slack=Math.max(0,+state.cable.slackPct||0),drop=Math.max(0,+state.cable.dropM||0);
+  const total=map*(1+slack/100)+2*drop;
+  return {mapM:map,slackM:map*slack/100,dropM:2*drop,totalM:total,totalFt:total*M_TO_FT,flag:total>ETH_MAX_M?"over":total>ETH_PRACTICAL_M?"near":"ok"};
+}
+function runArea(r){const A=markerById(r.a);return A?A.block.name:"—";}
+function runDefaultName(r){const A=markerById(r.a),B=markerById(r.b);return (A?A.it.name:"?")+" → "+(B?B.it.name:"?");}
+function runName(r){return (r.name&&r.name.trim())||runDefaultName(r);}
+function fmtNum(n,d){return (n==null||!isFinite(n))?"—":Number(n).toLocaleString(undefined,{minimumFractionDigits:d||0,maximumFractionDigits:d||0});}
+function fmtLen(m){return m==null?"—":fmtNum(Math.ceil(m))+" m · "+fmtNum(Math.ceil(m*M_TO_FT))+" ft";}
+function flagText(f){return f==="over"?"Over 100 m — add a switch partway or run fibre":f==="near"?"Over 90 m — near the Ethernet limit":"OK";}
+function cableTotals(){
+  const areas={};let tm=0,n=0,unknown=0,over=0,near=0;
+  (state.runs||[]).forEach(r=>{const e=runEstimate(r),ar=runArea(r);const a=areas[ar]||(areas[ar]={runs:0,m:0});a.runs++;
+    if(!e){unknown++;return;}a.m+=e.totalM;tm+=e.totalM;n++;if(e.flag==="over")over++;else if(e.flag==="near")near++;});
+  const ft=tm*M_TO_FT;
+  return {areas,totalM:tm,totalFt:ft,spools:Math.ceil(ft/SPOOL_FT-1e-9),measured:n,unknown,over,near};
+}
+
+// ---------- drawing ----------
+function pathMid(pts){ // point halfway along a polyline (screen space)
+  let L=0;for(let i=1;i<pts.length;i++)L+=Math.hypot(pts[i].x-pts[i-1].x,pts[i].y-pts[i-1].y);
+  let h=L/2;for(let i=1;i<pts.length;i++){const s=Math.hypot(pts[i].x-pts[i-1].x,pts[i].y-pts[i-1].y);if(h<=s&&s>0){const t=h/s;return{x:pts[i-1].x+(pts[i].x-pts[i-1].x)*t,y:pts[i-1].y+(pts[i].y-pts[i-1].y)*t};}h-=s;}
+  return pts[0];
+}
+function runColor(e){return !e?"#f472d0":e.flag==="over"?"#e5604d":e.flag==="near"?"#f0a53d":"#f472d0";}
+function drawRuns(g,toS,sf,L,screen){
+  (state.runs||[]).forEach(r=>{
+    const P=runPath(r);if(!P)return;const pts=P.map(toS),e=runEstimate(r),sel=screen&&state.selRun===r.id;
+    g.beginPath();pts.forEach((p,i)=>i?g.lineTo(p.x,p.y):g.moveTo(p.x,p.y));
+    g.setLineDash([]);g.lineJoin="round";g.lineWidth=(sel?8:6.5)*sf;g.strokeStyle=sel?"rgba(255,255,255,.85)":"rgba(11,16,23,.6)";g.stroke();
+    g.beginPath();pts.forEach((p,i)=>i?g.lineTo(p.x,p.y):g.moveTo(p.x,p.y));
+    g.lineWidth=3.5*sf;g.strokeStyle=runColor(e);g.stroke();
+    if(screen&&(state.mode==="edit"||state.mode==="cable"))pts.slice(1,-1).forEach(p=>{g.beginPath();g.arc(p.x,p.y,4.5,0,7);g.fillStyle="#fff";g.fill();g.lineWidth=1.5;g.strokeStyle=runColor(e);g.stroke();});
+    let slen=0;for(let i=1;i<pts.length;i++)slen+=Math.hypot(pts[i].x-pts[i-1].x,pts[i].y-pts[i-1].y);
+    if(e&&slen>=70*sf){ // short runs: no tag, it would cover the devices (length shows on click)
+      const mid=pathMid(pts),txt=fmtNum(Math.ceil(e.totalM))+" m"+(e.flag!=="ok"?" !":"");
+      g.font=`bold ${11*sf}px Arial`;const w=g.measureText(txt).width+10*sf,h=17*sf;
+      rr(g,mid.x-w/2,mid.y-h/2,w,h,5*sf);g.fillStyle="rgba(11,16,23,.88)";g.fill();g.lineWidth=1.2*sf;g.strokeStyle=runColor(e);g.stroke();
+      g.fillStyle="#fff";g.textAlign="center";g.textBaseline="middle";g.fillText(txt,mid.x,mid.y+0.5*sf);
+    }
+  });
+}
+function drawCableOverlay(g){
+  if(state.mode==="cable"&&state.runDraft){
+    const A=markerById(state.runDraft.a);
+    if(A){const pts=[A.it,...state.runDraft.waypoints].map(toScreen);
+      const p0=pts[0];g.beginPath();g.arc(p0.x,p0.y,markerRadius(A.field)+4,0,7);g.strokeStyle="#fff";g.lineWidth=2;g.stroke();
+      g.beginPath();pts.forEach((p,i)=>i?g.lineTo(p.x,p.y):g.moveTo(p.x,p.y));g.lineTo(state.mouse.x,state.mouse.y);
+      g.strokeStyle="#f472d0";g.lineWidth=2.5;g.setLineDash([7,5]);g.stroke();g.setLineDash([]);
+      pts.slice(1).forEach(p=>{g.beginPath();g.arc(p.x,p.y,4,0,7);g.fillStyle="#fff";g.fill();});
+      // live length of the draft so far
+      if(calibrated()){let d=0;const P=[A.it,...state.runDraft.waypoints,toImg(state.mouse.x,state.mouse.y)];
+        for(let i=1;i<P.length;i++)d+=haversineM(pxToLatLng(P[i-1]),pxToLatLng(P[i]));
+        const txt="~"+fmtNum(Math.ceil(d))+" m on the map";g.font="bold 12px Arial";const w=g.measureText(txt).width+12;
+        rr(g,state.mouse.x+14,state.mouse.y+12,w,20,5);g.fillStyle="rgba(11,16,23,.9)";g.fill();g.fillStyle="#fff";g.textAlign="left";g.textBaseline="middle";g.fillText(txt,state.mouse.x+20,state.mouse.y+22);}
+    }
+  }
+  if(state.mode==="scale"&&state.scalePick){
+    const pts=state.scalePick.map(toScreen);
+    g.beginPath();pts.forEach((p,i)=>i?g.lineTo(p.x,p.y):g.moveTo(p.x,p.y));if(pts.length===1)g.lineTo(state.mouse.x,state.mouse.y);
+    g.strokeStyle="#ffe066";g.lineWidth=2.5;g.setLineDash([6,4]);g.stroke();g.setLineDash([]);
+    pts.forEach(p=>{g.beginPath();g.arc(p.x,p.y,5,0,7);g.fillStyle="#ffe066";g.fill();});
+  }
+}
+
+// ---------- hit tests ----------
+function runSegAt(sx,sy){ // {run, seg} — seg i is between path[i] and path[i+1]
+  for(let k=(state.runs||[]).length-1;k>=0;k--){const r=state.runs[k],P=runPath(r);if(!P)continue;const pts=P.map(toScreen);
+    for(let i=0;i<pts.length-1;i++){const p=pts[i],q=pts[i+1],t=segT(sx,sy,p,q);if(Math.hypot(sx-(p.x+(q.x-p.x)*t),sy-(p.y+(q.y-p.y)*t))<=6)return {run:r,seg:i};}}
+  return null;
+}
+function runWaypointAt(sx,sy){
+  for(let k=(state.runs||[]).length-1;k>=0;k--){const r=state.runs[k];const w=r.waypoints||[];
+    for(let i=0;i<w.length;i++){const s=toScreen(w[i]);if(Math.hypot(sx-s.x,sy-s.y)<=7)return {run:r,idx:i};}}
+  return null;
+}
+
+// ---------- mouse / keys (called from the core handlers) ----------
+function cableMouseDown(m){
+  if(state.mode==="scale"){
+    state.scalePick=state.scalePick||[];state.scalePick.push(toImg(m.x,m.y));
+    if(state.scalePick.length>=2){const pk=state.scalePick.slice(0,2);setMode("edit");state.scalePick=pk;render();openScale(true);}
+    else render();
+    return;
+  }
+  const mk=markerAt(m.x,m.y);
+  if(!state.runDraft){
+    if(mk){state.runDraft={a:mk.item.id,waypoints:[]};toast("Now click along the route to add bends, then click the far device.");}
+    else{const hit=runSegAt(m.x,m.y);if(hit){selectRun(hit.run.id);}else toast("Start a run on a device: a gateway, SB, AP or kiosk.");}
+    render();return;
+  }
+  if(mk){
+    if(mk.item.id===state.runDraft.a){if(!state.runDraft.waypoints.length){state.runDraft=null;toast("Run cancelled.");render();return;}
+      toast("A run needs two different devices.");return;}
+    finishRun(state.runDraft.a,mk.item.id,state.runDraft.waypoints);state.runDraft=null;render();return;
+  }
+  state.runDraft.waypoints.push(toImg(m.x,m.y));render();
+}
+function finishRun(a,b,wps){
+  const A=markerById(a),B=markerById(b);if(!A||!B)return;
+  let from=a,to=b,w=wps.slice();
+  if((UPSTREAM_RANK[B.field]??9)<(UPSTREAM_RANK[A.field]??9)){from=b;to=a;w.reverse();} // store upstream end first
+  const r={id:++state.rseq,a:from,b:to,waypoints:w,name:"",notes:""};
+  state.runs.push(r);state.selRun=r.id;
+  const e=runEstimate(r);
+  toast("Run "+runName(r)+(e?": "+fmtLen(e.totalM)+(e.flag!=="ok"?" — "+flagText(e.flag):""):" added. Set the map scale to get a length."));
+  refreshCablePanel();
+}
+function selectRun(id){state.selRun=id;render();refreshCablePanel();const r=state.runs.find(x=>x.id===id);if(r){const e=runEstimate(r);toast(runName(r)+(e?": "+fmtLen(e.totalM):"")+" · Delete key removes it");}}
+function cableEditMouseDown(m){
+  const wp=runWaypointAt(m.x,m.y);
+  if(wp){state.selRun=wp.run.id;state.drag={type:"waypoint",run:wp.run,idx:wp.idx};render();return true;}
+  if(markerAt(m.x,m.y))return false;
+  const hit=runSegAt(m.x,m.y);
+  if(hit){selectRun(hit.run.id);return true;}
+  if(state.selRun!=null){state.selRun=null;render();refreshCablePanel();}
+  return false;
+}
+function cableDblClick(m){
+  if(state.mode!=="edit"&&state.mode!=="cable")return false;
+  const wp=runWaypointAt(m.x,m.y);
+  if(wp){wp.run.waypoints.splice(wp.idx,1);toast("Bend removed.");render();refreshCablePanel();return true;}
+  if(state.mode==="cable")return false;
+  const hit=runSegAt(m.x,m.y);
+  if(hit){hit.run.waypoints.splice(hit.seg,0,toImg(m.x,m.y));state.selRun=hit.run.id;toast("Bend added — drag it to follow the route.");render();refreshCablePanel();return true;}
+  return false;
+}
+function cableKeyDown(e){
+  if(state.mode==="cable"&&state.runDraft){
+    if(e.key==="Escape"){state.runDraft=null;render();toast("Run cancelled.");return true;}
+    if(e.key==="Backspace"){e.preventDefault();if(state.runDraft.waypoints.length)state.runDraft.waypoints.pop();else state.runDraft=null;render();return true;}
+  }
+  if(state.mode==="scale"&&e.key==="Escape"){state.scalePick=null;setMode("edit");return true;}
+  if((e.key==="Delete"||e.key==="Backspace")&&state.selRun!=null&&(state.mode==="edit"||state.mode==="cable")){e.preventDefault();deleteRun(state.selRun);return true;}
+  return false;
+}
+async function deleteRun(id){
+  const r=state.runs.find(x=>x.id===id);if(!r)return;
+  if(!(await confirmBox("Delete cable run "+runName(r)+"?","Yes, delete")))return;
+  state.runs=state.runs.filter(x=>x.id!==id);if(state.selRun===id)state.selRun=null;render();refreshCablePanel();toast("Run deleted.");
+}
+
+// ---------- setup checklist ----------
+function buildChecklist(){
+  const prev={};((state.setupChecklist&&state.setupChecklist.items)||[]).forEach(it=>{prev[it.id]=it;});
+  const keep=(id,o)=>{const p=prev[id];if(p){o.done=!!p.done;o.status=p.status||(p.done?"done":"todo");if(p.done_at)o.done_at=p.done_at;if(p.done_by)o.done_by=p.done_by;if(p.note)o.note=p.note;}else{o.done=false;o.status="todo";}return o;};
+  const items=[];
+  state.blocks.forEach(b=>FIELDS.forEach(f=>{if(!f.placed)return;(b.items[f.key]||[]).forEach(it=>{
+    const id="dev:"+it.id,ll=pxToLatLng(it),dv=markerDevice(it);
+    items.push(keep(id,{id,kind:"device",device_type:DEVICE_TYPE[f.key]||f.key.toLowerCase(),name:it.name||"",area:b.name,
+      mac:it.deviceMac?normMac(it.deviceMac):null,model:(dv&&dv.model)||null,lat:ll?+ll[0].toFixed(7):null,lng:ll?+ll[1].toFixed(7):null,
+      label:"Install "+(DEVICE_TYPE[f.key]||f.key)+" "+(it.name||"")+" in "+b.name}));
+  });}));
+  (state.runs||[]).forEach(r=>{
+    const A=markerById(r.a),B=markerById(r.b),e=runEstimate(r),id="run:"+r.id;
+    items.push(keep(id,{id,kind:"cable_run",name:runName(r),area:runArea(r),
+      from:A?{id:"dev:"+A.it.id,name:A.it.name,device_type:DEVICE_TYPE[A.field]}:null,
+      to:B?{id:"dev:"+B.it.id,name:B.it.name,device_type:DEVICE_TYPE[B.field]}:null,
+      bends:(r.waypoints||[]).length,
+      map_m:e?+e.mapM.toFixed(1):null,length_m:e?Math.ceil(e.totalM):null,length_ft:e?Math.ceil(e.totalFt):null,
+      warning:e?(e.flag==="ok"?null:e.flag==="over"?"over_100m":"over_90m"):"no_scale",
+      label:"Run and test cable "+runName(r)+(e?" ("+Math.ceil(e.totalM)+" m / "+Math.ceil(e.totalFt)+" ft)":""),
+      speed_test:null}));
+  });
+  const t=cableTotals();
+  const cl={schema:"rcs.setup_checklist",version:1,generated_at:new Date().toISOString(),
+    site_id:(window.__nmShim&&window.__nmShim.SITE)||null,
+    settings:{slack_pct:+state.cable.slackPct||0,drop_m_per_end:+state.cable.dropM||0,spool_ft:SPOOL_FT,practical_limit_m:ETH_PRACTICAL_M,max_m:ETH_MAX_M},
+    scale:state.calib?state.calib.mode:null,
+    totals:{devices:items.filter(i=>i.kind==="device").length,runs:(state.runs||[]).length,runs_measured:t.measured,
+      cable_m:Math.ceil(t.totalM),cable_ft:Math.ceil(t.totalFt),spools_1000ft:t.spools,runs_over_90m:t.near+t.over,runs_over_100m:t.over,
+      areas:Object.fromEntries(Object.entries(t.areas).map(([k,v])=>[k,{runs:v.runs,cable_m:Math.ceil(v.m),cable_ft:Math.ceil(v.m*M_TO_FT)}]))},
+    items};
+  state.setupChecklist=cl;
+  return cl;
+}
+function loadCableData(p){
+  state.runs=Array.isArray(p.runs)?p.runs.filter(r=>r&&r.a!=null&&r.b!=null).map((r,i)=>({id:typeof r.id==="number"?r.id:i+1,a:r.a,b:r.b,
+    waypoints:Array.isArray(r.waypoints)?r.waypoints.filter(w=>w&&isFinite(w.x)&&isFinite(w.y)).map(w=>({x:+w.x,y:+w.y})):[],name:r.name||"",notes:r.notes||""})):[];
+  state.rseq=Math.max(p.rseq||0,...state.runs.map(r=>r.id),0);
+  state.cable=Object.assign({slackPct:15,dropM:3},p.cable||{});
+  state.calib=(p.calib&&(p.calib.mode==="geo"||p.calib.mode==="scale"))?p.calib:null;
+  state.setupChecklist=p.setupChecklist||null;
+  state.selRun=null;state.runDraft=null;
+  purgeLinks();refreshCablePanel();
+}
+
+// ---------- UI: modal ----------
+(function buildCableUI(){
+  const m=document.createElement("div");m.id="cableModal";m.className="hidden";
+  m.innerHTML=`<div class="cbox">
+    <div class="devhead"><b>Cable runs &amp; setup checklist</b><button class="btn ghost sm" id="cableClose">✕</button></div>
+    <div class="cbody">
+      <div class="csec"><h4>Map scale</h4>
+        <div class="crow"><span id="calibState" class="cnote"></span><span class="spacer" style="flex:1"></span>
+          <button class="btn ghost sm" id="calibOpen">📏 Set scale</button></div></div>
+      <div class="csec"><h4>Estimate settings</h4>
+        <div class="crow">
+          <label>Slack for routing <input type="number" id="cSlack" min="0" max="200" step="1"> %</label>
+          <label>Drop at each end <input type="number" id="cDrop" min="0" max="50" step="0.5"> m</label>
+          <span class="cnote">Each run = map length + slack + a drop at both ends (up the pole, into the box).</span>
+        </div></div>
+      <div class="csec"><h4>Site total</h4><div class="cbig" id="cTotals"></div><div id="cWarn" class="cwarn" style="margin-top:8px"></div></div>
+      <div class="csec"><h4>Runs</h4>
+        <table class="ctable"><thead><tr><th>Run</th><th>From → to</th><th>Area</th><th class="num">Map</th><th class="num">Cable (m)</th><th class="num">Cable (ft)</th><th>Check</th><th></th></tr></thead>
+        <tbody id="cRuns"></tbody></table>
+        <div id="cNoRuns" class="devempty">No cable runs yet. Pick 🧵 Cable run, click a gateway or SB, click along the route, then click the AP, kiosk or SB at the far end.</div></div>
+      <div class="csec"><h4>By area</h4>
+        <table class="ctable"><thead><tr><th>Area</th><th class="num">Runs</th><th class="num">Cable (m)</th><th class="num">Cable (ft)</th></tr></thead><tbody id="cAreas"></tbody></table></div>
+      <div class="csec"><h4>Setup checklist</h4>
+        <div class="cnote" id="cChk"></div></div>
+    </div>
+    <div class="cfoot">
+      <button class="btn ghost sm" id="cCsv">⬇ Cable CSV</button>
+      <button class="btn sm" id="cJson">⬇ Checklist JSON</button>
+    </div></div>`;
+  document.body.appendChild(m);
+  const s=document.createElement("div");s.id="scaleModal";s.className="hidden";
+  s.innerHTML=`<div class="cbox">
+    <div class="devhead"><b>Map scale</b><button class="btn ghost sm" id="scaleClose">✕</button></div>
+    <div class="cbody">
+      <div class="csec" id="geoSec"><h4>Match the Map tab (best)</h4>
+        <div class="cnote">Uses the image you placed on the satellite map, so every point has a real GPS position.</div>
+        <div class="crow" style="margin-top:8px"><button class="btn sm" id="geoMatch">Match to Map tab</button><span id="geoMsg" class="cnote"></span></div></div>
+      <div class="csec"><h4>Two points and a known distance</h4>
+        <div class="cnote">Pick two points on the aerial (a tent width, a fence line), then type the real distance between them.</div>
+        <div class="crow" style="margin-top:8px">
+          <button class="btn ghost sm" id="scalePickBtn">Pick two points</button>
+          <label>Distance <input type="number" id="scaleDist" min="0" step="0.1"></label>
+          <select id="scaleUnit"><option value="m">metres</option><option value="ft">feet</option></select>
+          <button class="btn sm" id="scaleApply">Apply</button></div>
+        <div id="scaleMsg" class="cnote" style="margin-top:6px"></div></div>
+      <div class="csec"><div class="crow"><span class="cnote" id="scaleNow"></span><span style="flex:1"></span><button class="btn danger sm" id="scaleClear">Clear scale</button></div></div>
+    </div></div>`;
+  document.body.appendChild(s);
+  $("cableBtn").addEventListener("click",openCable);
+  $("cableClose").addEventListener("click",()=>m.classList.add("hidden"));
+  $("calibOpen").addEventListener("click",()=>openScale(false));
+  $("modeCable").addEventListener("click",()=>{setMode("cable");if(!calibrated())toast("Tip: set the map scale (🧾 Cable & checklist → Set scale) to get lengths.");});
+  $("cSlack").addEventListener("input",e=>{state.cable.slackPct=Math.max(0,parseFloat(e.target.value)||0);refreshCablePanel(true);render();});
+  $("cDrop").addEventListener("input",e=>{state.cable.dropM=Math.max(0,parseFloat(e.target.value)||0);refreshCablePanel(true);render();});
+  $("cJson").addEventListener("click",()=>{const cl=buildChecklist();download("setup_checklist.json",JSON.stringify(cl,null,2),"application/json");refreshCablePanel();toast("Checklist exported: "+cl.items.length+" items.");});
+  $("cCsv").addEventListener("click",exportCableCSV);
+  $("scaleClose").addEventListener("click",()=>s.classList.add("hidden"));
+  $("scalePickBtn").addEventListener("click",()=>{s.classList.add("hidden");$("cableModal").classList.add("hidden");setMode("scale");state.scalePick=[];});
+  $("scaleApply").addEventListener("click",applyScale);
+  $("scaleClear").addEventListener("click",()=>{state.calib=null;refreshScale();refreshCablePanel();render();toast("Scale cleared.");});
+  $("geoMatch").addEventListener("click",matchGeo);
+})();
+function openCable(){refreshCablePanel();$("cableModal").classList.remove("hidden");}
+function refreshCablePanel(skipInputs){
+  if(!$("cableModal"))return;
+  $("calibState").textContent=calibLabel();
+  if(!skipInputs){$("cSlack").value=state.cable.slackPct;$("cDrop").value=state.cable.dropM;}
+  const t=cableTotals(),cal=calibrated();
+  $("cTotals").innerHTML=cal?`<div class="stat"><b>${fmtNum(Math.ceil(t.totalM))} m</b><span>Cat cable, all runs</span></div>
+    <div class="stat"><b>${fmtNum(Math.ceil(t.totalFt))} ft</b><span>Cat cable, all runs</span></div>
+    <div class="stat"><b>${t.spools}</b><span>1000 ft spool${t.spools===1?"":"s"} to bring</span></div>
+    <div class="stat"><b>${(state.runs||[]).length}</b><span>run${(state.runs||[]).length===1?"":"s"}</span></div>`
+    :`<div class="cwarn">Set the map scale to work out cable lengths.</div>`;
+  const w=[];if(t.over)w.push(t.over+" run"+(t.over===1?" is":"s are")+" over 100 m. Put a switch partway along, or use fibre.");
+  if(t.near)w.push(t.near+" run"+(t.near===1?" is":"s are")+" over 90 m, close to the Ethernet limit.");
+  if(cal)w.push("Spools are a minimum: runs can't always be cut from leftovers.");
+  $("cWarn").textContent=w.join(" ");
+  const tb=$("cRuns");tb.innerHTML="";$("cNoRuns").style.display=(state.runs||[]).length?"none":"block";
+  (state.runs||[]).forEach(r=>{
+    const e=runEstimate(r),A=markerById(r.a),B=markerById(r.b),tr=document.createElement("tr");if(state.selRun===r.id)tr.className="sel";
+    const tdN=document.createElement("td"),inp=document.createElement("input");inp.value=r.name||"";inp.placeholder=runDefaultName(r);
+    inp.addEventListener("input",()=>{r.name=inp.value;render();});tdN.appendChild(inp);tr.appendChild(tdN);
+    const cell=(h,c)=>{const td=document.createElement("td");if(c)td.className=c;td.innerHTML=h;tr.appendChild(td);};
+    cell(esc((A?A.it.name:"?")+" → "+(B?B.it.name:"?"))+(r.waypoints.length?` <span class="cnote">· ${r.waypoints.length} bend${r.waypoints.length===1?"":"s"}</span>`:""));
+    cell(esc(runArea(r)));
+    cell(e?fmtNum(e.mapM,1)+" m":"—","num");
+    cell(e?fmtNum(Math.ceil(e.totalM)):"—","num");
+    cell(e?fmtNum(Math.ceil(e.totalFt)):"—","num");
+    cell(e?`<span class="cflag ${e.flag}">${esc(flagText(e.flag))}</span>`:`<span class="cnote">needs scale</span>`);
+    const td=document.createElement("td"),rb=document.createElement("button");rb.className="drm";rb.textContent="✕";rb.title="Delete run";
+    rb.addEventListener("click",()=>deleteRun(r.id));td.appendChild(rb);tr.appendChild(td);
+    tr.addEventListener("click",ev=>{if(ev.target.tagName==="INPUT"||ev.target.tagName==="BUTTON")return;state.selRun=r.id;render();refreshCablePanel();});
+    tb.appendChild(tr);
+  });
+  const ta=$("cAreas");ta.innerHTML="";
+  Object.entries(t.areas).sort((a,b)=>a[0].localeCompare(b[0],undefined,{numeric:true})).forEach(([k,v])=>{
+    ta.insertAdjacentHTML("beforeend",`<tr><td>${esc(k)}</td><td class="num">${v.runs}</td><td class="num">${cal?fmtNum(Math.ceil(v.m)):"—"}</td><td class="num">${cal?fmtNum(Math.ceil(v.m*M_TO_FT)):"—"}</td></tr>`);});
+  if(Object.keys(t.areas).length)ta.insertAdjacentHTML("beforeend",`<tr><td><b>Site</b></td><td class="num"><b>${(state.runs||[]).length}</b></td><td class="num"><b>${cal?fmtNum(Math.ceil(t.totalM)):"—"}</b></td><td class="num"><b>${cal?fmtNum(Math.ceil(t.totalFt)):"—"}</b></td></tr>`);
+  let nDev=0;state.blocks.forEach(b=>FIELDS.forEach(f=>{if(f.placed)nDev+=(b.items[f.key]||[]).length;}));
+  const done=((state.setupChecklist&&state.setupChecklist.items)||[]).filter(i=>i.done).length;
+  $("cChk").textContent=`${nDev+(state.runs||[]).length} items: ${nDev} device${nDev===1?"":"s"} to install and ${(state.runs||[]).length} cable run${(state.runs||[]).length===1?"":"s"} to pull and test.`+
+    (done?` ${done} already ticked off.`:"")+(window.__nmShim?" ☁ Save stores it with this site's plan.":" Export it as JSON for the checklist page.");
+}
+function exportCableCSV(){
+  if(!(state.runs||[]).length){toast("No cable runs yet.");return;}
+  const rows=[["Run","From","To","Area","Bends","Map m","Cable m","Cable ft","Check"].join(",")];
+  state.runs.forEach(r=>{const e=runEstimate(r),A=markerById(r.a),B=markerById(r.b);
+    rows.push([csv(runName(r)),csv(A?A.it.name:""),csv(B?B.it.name:""),csv(runArea(r)),r.waypoints.length,e?e.mapM.toFixed(1):"",e?Math.ceil(e.totalM):"",e?Math.ceil(e.totalFt):"",csv(e?flagText(e.flag):"needs scale")].join(","));});
+  const t=cableTotals();
+  rows.push(["TOTAL","","","","","",Math.ceil(t.totalM),Math.ceil(t.totalFt),csv(t.spools+" x 1000 ft spools, slack "+state.cable.slackPct+"%, drop "+state.cable.dropM+" m per end")].join(","));
+  download("siteplanner_cable.csv",rows.join("\n"),"text/csv");toast("Cable CSV exported.");
+}
+
+// ---------- scale UI ----------
+function refreshScale(){$("scaleNow").textContent="Now: "+calibLabel();$("geoSec").style.display=window.__nmShim?"block":"none";}
+function openScale(afterPick){
+  refreshScale();$("scaleMsg").textContent=afterPick&&state.scalePick&&state.scalePick.length===2?"Two points picked. Type the real distance and press Apply.":"";
+  $("scaleModal").classList.remove("hidden");if(afterPick)setTimeout(()=>$("scaleDist").focus(),50);
+}
+function applyScale(){
+  const pk=state.scalePick,d=parseFloat($("scaleDist").value),unit=$("scaleUnit").value;
+  if(!pk||pk.length<2){$("scaleMsg").textContent="Pick two points first.";return;}
+  if(!(d>0)){$("scaleMsg").textContent="Type the real distance between the two points.";return;}
+  const px=Math.hypot(pk[1].x-pk[0].x,pk[1].y-pk[0].y);if(px<2){$("scaleMsg").textContent="Those points are too close. Pick two points further apart.";return;}
+  const meters=unit==="ft"?d/M_TO_FT:d;
+  const anchor=(state.calib&&state.calib.lat0!=null)?state.calib:(window.__nmGeoCenter||{lat0:0,lng0:0});
+  state.calib={mode:"scale",mPerPx:meters/px,lat0:anchor.lat0||0,lng0:anchor.lng0||0,refDist:d,refUnit:unit,refPts:pk};
+  state.scalePick=null;refreshScale();refreshCablePanel();render();$("scaleModal").classList.add("hidden");
+  toast("Scale set: "+(px/meters).toFixed(2)+" px per metre.");
+}
+async function matchGeo(){
+  const site=window.__nmShim&&window.__nmShim.SITE;if(!site)return;
+  const msg=t=>{$("geoMsg").textContent=t;};
+  msg("Checking the Map tab…");
+  try{
+    const r=await fetch("/map/geo/"+site);if(!r.ok){msg("Couldn't read the Map tab (HTTP "+r.status+").");return;}
+    const g=await r.json();
+    if(g.center)window.__nmGeoCenter={lat0:g.center[0],lng0:g.center[1]};
+    if(!g.bg||!g.bg.corners){msg("The Map tab has no placed image yet. Add one there, or use two points below.");return;}
+    const c=g.bg.corners,ri=await fetch("/map/geo/"+site+"/bg");if(!ri.ok){msg("Couldn't load the Map tab image.");return;}
+    const blob=await ri.blob(),url=await new Promise(res=>{const fr=new FileReader();fr.onload=()=>res(fr.result);fr.readAsDataURL(blob);});
+    const im=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=url;});
+    const same=state.img&&Math.abs(state.img.width/state.img.height-im.width/im.height)<0.01;
+    if(!same){
+      if(!(await confirmBox("The planner aerial doesn't match the Map tab image. Use the Map tab image here so distances are real? Your blocks and devices stay where they are on screen, so check they still line up.","Use Map image")))
+        {msg("");return;}
+      const sx=state.img?im.width/state.img.width:1,sy=state.img?im.height/state.img.height:1;
+      if(state.img&&(Math.abs(sx-1)>1e-6||Math.abs(sy-1)>1e-6))rescalePlan(sx,sy);
+      state.img=im;state.imageDataUrl=url;fitView();
+    }
+    state.calib={mode:"geo",tl:c.tl,tr:c.tr,bl:c.bl};
+    refreshScale();refreshCablePanel();render();msg("Matched.");$("scaleModal").classList.add("hidden");
+    toast("Scale matched to the Map tab — lengths use real GPS positions.");
+  }catch(e){msg("Failed: "+e.message);}
+}
+function rescalePlan(sx,sy){ // keep drawings over the same spot when the background resolution changes
+  const f=p=>{p.x*=sx;p.y*=sy;};
+  state.blocks.forEach(b=>{b.points.forEach(f);FIELDS.forEach(fl=>{if(fl.placed)(b.items[fl.key]||[]).forEach(f);});});
+  (state.runs||[]).forEach(r=>(r.waypoints||[]).forEach(f));
+}
+
+// ---------- PDF page ----------
+function drawCableTable(doc){
+  const A_=t=>String(t).replace(/→/g,"->"); // jsPDF's built-in fonts have no arrow glyph
+  doc.addPage("a4","portrait");
+  const pw=doc.internal.pageSize.getWidth(),ph=doc.internal.pageSize.getHeight(),M=44;let y=54;
+  const need=h=>{if(y+h>ph-M){doc.addPage("a4","portrait");y=54;}};
+  doc.setFont("helvetica","bold");doc.setFontSize(16);doc.setTextColor(20);doc.text("Cable estimate",M,y);y+=8;
+  doc.setDrawColor(200);doc.line(M,y,pw-M,y);y+=18;
+  doc.setFont("helvetica","normal");doc.setFontSize(9.5);doc.setTextColor(110);
+  doc.text("Map length + "+state.cable.slackPct+"% slack + "+state.cable.dropM+" m drop at each end. "+(calibrated()?calibLabel():"No map scale set."),M,y);y+=18;
+  const cols=[M,M+150,M+285,M+360,M+410,M+455];
+  doc.setFont("helvetica","bold");doc.setFontSize(10);doc.setTextColor(60);
+  ["Run","From -> to","Area","Metres","Feet","Check"].forEach((h,i)=>doc.text(h,cols[i],y));y+=6;doc.line(M,y,pw-M,y);y+=14;
+  doc.setFont("helvetica","normal");
+  state.runs.forEach(r=>{need(16);const e=runEstimate(r),A=markerById(r.a),B=markerById(r.b);
+    doc.setTextColor(35);doc.text(doc.splitTextToSize(A_(runName(r)),142)[0],cols[0],y);
+    doc.text(doc.splitTextToSize((A?A.it.name:"?")+" -> "+(B?B.it.name:"?"),128)[0],cols[1],y);doc.text(doc.splitTextToSize(runArea(r),70)[0],cols[2],y);
+    doc.text(e?String(Math.ceil(e.totalM)):"-",cols[3],y);doc.text(e?String(Math.ceil(e.totalFt)):"-",cols[4],y);
+    if(e&&e.flag!=="ok")doc.setTextColor(200,60,40);doc.text(e?(e.flag==="over"?"Over 100 m":e.flag==="near"?"Over 90 m":"OK"):"No scale",cols[5],y);y+=15;});
+  const t=cableTotals();need(60);y+=4;doc.line(M,y,pw-M,y);y+=16;
+  doc.setFont("helvetica","bold");doc.setFontSize(12);doc.setTextColor(30);
+  doc.text("Site total: "+fmtNum(Math.ceil(t.totalM))+" m / "+fmtNum(Math.ceil(t.totalFt))+" ft  -  "+t.spools+" x 1000 ft spool"+(t.spools===1?"":"s"),M,y);y+=18;
+  Object.entries(t.areas).forEach(([k,v])=>{need(14);doc.setFont("helvetica","normal");doc.setFontSize(10);doc.setTextColor(60);
+    doc.text(k+": "+v.runs+" run"+(v.runs===1?"":"s")+", "+fmtNum(Math.ceil(v.m))+" m / "+fmtNum(Math.ceil(v.m*M_TO_FT))+" ft",M+12,y);y+=14;});
+  if(t.over||t.near){need(30);y+=8;doc.setFont("helvetica","italic");doc.setFontSize(9.5);doc.setTextColor(150,60,40);
+    doc.text(doc.splitTextToSize("Over 90 m is close to the Ethernet limit. Over 100 m won't work reliably: add a switch partway along, or use fibre.",pw-M*2),M,y);}
+}
+</script>
+<style>
 /* NetMonitor device panel */
 #nmPanel{position:fixed;top:110px;right:0;bottom:0;width:280px;z-index:60;background:rgba(10,18,32,.97);border-left:1px solid #24354d;display:none;flex-direction:column;font-size:13px;}
 #nmPanel.open{display:flex;}
@@ -1420,6 +1912,8 @@ setMode("draw");
     return {version:4, imageDataUrl:null, blocks:state.blocks, links:state.links,
             devices:state.devices, statusFeed:state.statusFeed, nextNum:state.nextNum,
             seq:state.seq, mseq:state.mseq, show:state.show, view:{rot:state.view.rot},
+            runs:state.runs, rseq:state.rseq, cable:state.cable, calib:state.calib,
+            setupChecklist:(typeof buildChecklist==="function"?buildChecklist():null),
             nmAssign: window.__nmAssign};
   }
   async function cloudSave(){
@@ -1492,13 +1986,13 @@ setMode("draw");
 
   /* ── device panel (drag real gear onto the map) ── */
   let pendingDrop = null, mseqBefore = 0;
-  function fieldFor(mac){ const t = nmTypes[nMac(mac)]; return t === "ap" ? "AP" : "SB"; }
+  function fieldFor(mac){ const t = nmTypes[nMac(mac)]; return t === "ap" ? "AP" : t === "gateway" ? "GW" : "SB"; }
   function renderPanel(){
     const rows = document.getElementById("nmRows");
     if (!rows) return;
     const qv = (document.getElementById("nmSearch")?.value || "").toLowerCase();
     const linked = new Set();
-    state.blocks.forEach(b => ["SB","AP"].forEach(k => (b.items[k]||[]).forEach(it => { if(it.deviceMac) linked.add(nMac(it.deviceMac)); })));
+    state.blocks.forEach(b => ["SB","AP","Kiosk","GW"].forEach(k => (b.items[k]||[]).forEach(it => { if(it.deviceMac) linked.add(nMac(it.deviceMac)); })));
     rows.innerHTML = "";
     state.devices
       .filter(d => !qv || (d.name||"").toLowerCase().includes(qv) || (d.ip||"").includes(qv) || (d.mac||"").toLowerCase().includes(qv))
@@ -1507,7 +2001,7 @@ setMode("draw");
         const draggable = t === "ap" || t === "switch" || t === "gateway";
         const row = document.createElement("div");
         row.className = "nmRow" + (draggable ? " drag" : "");
-        row.title = draggable ? "Drag onto the map — drops as a live " + (t === "ap" ? "AP" : "SB") + " marker" : (d.mac||"");
+        row.title = draggable ? "Drag onto the map — drops as a live " + fieldFor(d.mac) + " marker" : (d.mac||"");
         const dot = document.createElement("span"); dot.className = "nmDot";
         dot.style.background = statusColor(d.status || "");
         const nm = document.createElement("span"); nm.className = "nmName";

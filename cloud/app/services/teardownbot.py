@@ -15,6 +15,7 @@ never returned to the browser.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import datetime, timezone
 
@@ -24,7 +25,8 @@ from app.core.security import decrypt
 
 logger = logging.getLogger("netmonitor.teardownbot")
 
-BASE = "https://yprisdgqxmwvzadaanpk.supabase.co/functions/v1/teardown-bot"
+# Staging points this at its mock (TEARDOWN_BOT_BASE); prod uses the real API.
+BASE = os.environ.get("TEARDOWN_BOT_BASE", "https://yprisdgqxmwvzadaanpk.supabase.co/functions/v1/teardown-bot")
 MARK = "📦"  # every bot reply starts with this, so we never answer ourselves
 MAX_ITEMS = 12
 
@@ -70,6 +72,8 @@ def extract(text: str) -> list[str]:
     if not text or text.startswith(MARK):
         return []
     clean = _NOT_TAG.sub(" ", text)
+    clean = re.sub(r"(?<=[A-Za-z])-(?=#?\d)", " - ", clean)        # "ap-0951"
+    clean = re.sub(r"(?<=\d)/(?=#?\d{3,4}\b)", " / ", clean)       # "0910/0912"
     out: list[str] = []
     for m in _TAG.finditer(clean):
         if not m.group(0).startswith("#") and 2020 <= int(m.group(1)) <= 2035:
@@ -132,6 +136,43 @@ async def health() -> bool:
 _HINT = re.compile(r"\b(ap|switch|sb|router|asset|tag|teardown|collected|u7|usw)\b", re.I)
 
 
+# tags handled since the process started, so an untagged post never re-uses one
+_posted: set[str] = set()
+
+
+async def _match_untagged(token: str, body: str, sent_at: datetime) -> dict:
+    """Untagged teardown post → {"tag", "why"} or {"ask"} (see teardown_match)."""
+    from app.core.db import SessionLocal
+    from app.services import teardown_match as tm
+
+    async def lk(q):
+        return await lookup(token, q)
+
+    ask = "I couldn't find a tag in that post — please type the 4-digit RCS tag (or the serial) of what you grabbed."
+    try:
+        async with SessionLocal() as db:
+            r = await tm.resolve(db, body, sent_at, lk, taken=_posted)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("untagged match failed: %s", exc)
+        return {"ask": ask}
+    c = r.get("cand")
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo("America/Phoenix")
+
+    def when(x):
+        return x.offline_since.astimezone(tz).strftime("%-I:%M %p") if x.offline_since else "?"
+    if r["status"] == "match":
+        return {"tag": r["tag"], "why": f'UniFi "{c.name}", offline {when(c)}, by {c.via}'}
+    if r["status"] == "no_inventory":
+        mac = (c.mac or "")[-5:].upper()
+        return {"ask": f'that looks like UniFi "{c.name}" (MAC ends {mac}, offline {when(c)}), but it isn\'t in '
+                       f"Inventory. Please add it there, or type its 4-digit tag if it has one."}
+    if r["status"] == "ambiguous":
+        opts = ", ".join(f"#{x.tag} ({x.name})" for x in r["cands"][:3])
+        return {"ask": f"no tag in that post — it could be {opts}. Which one? Reply with the tag and a photo."}
+    return {"ask": ask}
+
+
 def _short(dev: dict) -> str:
     bits = [dev.get("manufacturer"), dev.get("model")]
     where = " / ".join(x for x in (dev.get("venue"), dev.get("area")) if x)
@@ -148,16 +189,21 @@ async def handle(td: dict, body: str, sender: str, sent_at: datetime, attachment
         return None
     items = extract(body)
     who = (td.get("owner") or "Dawid") if sender in ("me", "", "?") else sender
-    if not items:
-        # Only nudge when the caption looks like a teardown post; memes and
-        # caption-less photos are ignored silently.
-        if attachments and _HINT.search(body or ""):
-            return (f"{MARK} NETBOT: I can't read photos yet — please type the 4-digit RCS tag "
-                    f"(or the serial) of what you grabbed.")
-        return None
     token = _token(td)
     dry = td.get("dry_run", True)
     lines: list[str] = []
+    via: dict[str, str] = {}
+    if not items:
+        # Only act when the caption looks like a teardown post; memes and
+        # caption-less photos are ignored silently.
+        if not _HINT.search(body or ""):
+            return None
+        found = await _match_untagged(token, body, sent_at)
+        if found.get("tag"):
+            items = [found["tag"]]
+            via[found["tag"]] = found["why"]
+        else:
+            return f"{MARK} NETBOT: {found['ask']}"
     for q in items:
         try:
             lk = await lookup(token, q)
@@ -189,9 +235,13 @@ async def handle(td: dict, body: str, sender: str, sent_at: datetime, attachment
             lines.append(f"⚠️ {_short(dev)}: inventory said {rr.get('error') or rr.get('http')}.")
             continue
         if (rr.get("inventory") or {}).get("already_returned"):
+            _posted.add(dev["asset_tag"])
             lines.append(f"✅ #{dev['asset_tag']} was already back at ARK — nothing changed.")
             continue
+        _posted.add(dev["asset_tag"])
         msg = rr.get("message") or f"#{dev['asset_tag']} returned by {who}."
+        if q in via:
+            msg += f" (no tag in the post — matched {via[q]})"
         lines.append(("🧪 Practice — would log: " if dry else "✅ ") + msg + (" 📷 photo attached." if photo else ""))
     if not lines:
         return None

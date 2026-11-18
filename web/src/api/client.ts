@@ -417,6 +417,15 @@ export type ServerStats = {
   now: string;
 };
 
+/** Network-wide mode (Setup / Open / Teardown / Off-season). See BRIEF.md contract. */
+export type NetworkModeKey = "setup" | "open" | "teardown" | "offseason";
+export interface ModeEffects { alerts: boolean; ap_restart: boolean; bot: "deploy" | "return" | null; group_posts: string }
+export interface NetworkMode {
+  mode: NetworkModeKey; since: string | null; event_name: string | null; venue: string | null;
+  until: string | null; changed_by: string | null; effects: ModeEffects;
+}
+export interface NetworkModeUpdate { mode: NetworkModeKey; event_name?: string | null; venue?: string | null; until?: string | null }
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   // Guest page: mark calls so the server uses the guest cookie, not a staff one.
   const headers: Record<string, string> = init?.headers
@@ -448,6 +457,9 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => req<{ status: string; version: string }>("/health"),
+  networkMode: () => req<NetworkMode>("/network/mode"),
+  setNetworkMode: (body: NetworkModeUpdate) =>
+    req<NetworkMode>("/network/mode", { method: "PUT", body: JSON.stringify(body) }),
   networkOverview: () => req<NetworkOverview>("/network/overview"),
   siteTopology: (siteId: string) => req<SiteTopology>(`/network/sites/${siteId}/topology`),
   geo: (siteId: string) => req<GeoState>(`/map/geo/${siteId}`),

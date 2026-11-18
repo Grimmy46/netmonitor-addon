@@ -60,6 +60,17 @@ class Account(Base, UUIDPk, Timestamps):
         DateTime(timezone=True), default=None
     )
 
+    # Event mode (app/services/eventmode.py): the one switch the dashboard
+    # shows. setup | open | teardown | offseason. It is a facade: setting it
+    # drives teardown_mode (setup + teardown) and the closure window
+    # (offseason), so the alert code keeps reading those.
+    event_mode: Mapped[str] = mapped_column(default="open", server_default="open")
+    event_mode_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    event_mode_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    event_mode_by: Mapped[str | None] = mapped_column(default=None)
+    event_name: Mapped[str | None] = mapped_column(default=None)
+    event_venue: Mapped[str | None] = mapped_column(default=None)
+
     # Planned closure (app/services/closure.py): alerts pause, the dormant
     # clock freezes, and a single "what didn't come back" push is sent after
     # reopening (closure_report_sent_at marks it done).

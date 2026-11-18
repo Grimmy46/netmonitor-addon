@@ -83,7 +83,8 @@ function SiteRow({ site, onChange }: { site: Site; onChange: () => void }) {
   );
 }
 
-export function TeardownPlanner({ onClose }: { onClose: () => void }) {
+/** Modal by default; `inline` renders it as a page section (the Teardown tab). */
+export function TeardownPlanner({ onClose, inline = false }: { onClose?: () => void; inline?: boolean }) {
   const [sites, setSites] = useState<Site[] | null>(null);
   const [events, setEvents] = useState<StatusEvent[] | null>(null);
   const [showSeq, setShowSeq] = useState(false);
@@ -110,9 +111,8 @@ export function TeardownPlanner({ onClose }: { onClose: () => void }) {
     };
   }, [sites]);
 
-  return (
-    <div className="overlay" onClick={onClose}>
-      <div className="modal" style={{ width: "min(820px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
+  const body = (
+    <>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <h2 style={{ margin: 0 }}>Teardown planner</h2>
           <div className="spacer" style={{ flex: 1 }} />
@@ -123,7 +123,7 @@ export function TeardownPlanner({ onClose }: { onClose: () => void }) {
           teardown for the sites that pack up. {counts.critical} critical · {counts.scheduled} scheduled · {counts.active} in teardown.
         </p>
         {err ? <div className="banner err" style={{ marginBottom: 10 }}>{err}</div> : null}
-        <div style={{ maxHeight: 460, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
+        <div style={{ maxHeight: inline ? "max(460px, calc(100vh - 330px))" : 460, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8 }}>
           {sites === null ? (
             <p className="hint" style={{ padding: 14 }}>Loading…</p>
           ) : shown.length === 0 ? (
@@ -156,9 +156,19 @@ export function TeardownPlanner({ onClose }: { onClose: () => void }) {
           </div>
         ) : null}
 
-        <div className="modal-actions" style={{ marginTop: 16 }}>
-          <button className="btn" onClick={onClose}>Close</button>
-        </div>
+        {onClose && !inline ? (
+          <div className="modal-actions" style={{ marginTop: 16 }}>
+            <button className="btn" onClick={onClose}>Close</button>
+          </div>
+        ) : null}
+    </>
+  );
+
+  if (inline) return <div className="panel td-inline">{body}</div>;
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal" style={{ width: "min(820px, 96vw)" }} onClick={(e) => e.stopPropagation()}>
+        {body}
       </div>
     </div>
   );

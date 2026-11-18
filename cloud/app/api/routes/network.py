@@ -4,6 +4,8 @@ GET /network/overview                — the landing strip: Main's WAN1/WAN2,
                                         switches/APs online, outages with cause.
 GET/PUT/DELETE /network/closure     — planned closure (alerts pause, dormant
                                         clock freezes, reopen report). Admin.
+GET/PUT /network/mode               — the event mode switch (setup | open |
+                                        teardown | offseason). PUT is admin.
 GET /network/sites/{site_id}/topology — the self-building map for one site:
                                         every device, what it plugs into (and on
                                         which port), and outages grouped by root.
@@ -12,7 +14,9 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from typing import Literal
+
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -117,6 +121,39 @@ async def _closure_out(db: AsyncSession, now: datetime | None = None) -> dict | 
     return {"phase": ph, "start": start.isoformat(), "end": end.isoformat(),
             "reopen_until": closure.reopen_until().isoformat(),
             "note": acc.closure_note if acc else None}
+
+
+# ── Event mode (app/services/eventmode.py) ──────────────────────────────────
+class ModeIn(BaseModel):
+    mode: Literal["setup", "open", "teardown", "offseason"]
+    event_name: str | None = Field(default=None, max_length=120)
+    venue: str | None = Field(default=None, max_length=120)
+    until: datetime | None = None
+
+
+@router.get("/mode")
+async def get_mode(db: AsyncSession = Depends(get_db), _user=Depends(current_user)) -> dict:
+    from app.services import eventmode
+    return eventmode.out(await eventmode.sync(db))
+
+
+@router.put("/mode")
+async def put_mode(body: ModeIn, db: AsyncSession = Depends(get_db),
+                   admin=Depends(require_admin)) -> dict:
+    from app.services import eventmode
+    from app.services.sync import get_or_create_account
+    until = body.until
+    if until is not None:
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        if until <= _now():
+            raise HTTPException(status_code=400, detail="The end time is in the past.")
+    acc = await get_or_create_account(db)
+    sent = body.model_fields_set
+    await eventmode.set_mode(db, acc, body.mode, by=getattr(admin, "email", None), until=until,
+                             event_name=body.event_name, venue=body.venue,
+                             set_name="event_name" in sent, set_venue="venue" in sent)
+    return eventmode.out(acc)
 
 
 class ClosureIn(BaseModel):

@@ -1058,24 +1058,20 @@ async def teardown_status(
 
 @router.post("/teardown", response_model=TeardownStatusOut)
 async def set_teardown(
-    body: TeardownIn, db: AsyncSession = Depends(get_db), _admin=Depends(require_admin),
+    body: TeardownIn, db: AsyncSession = Depends(get_db), admin=Depends(require_admin),
 ) -> TeardownStatusOut:
-    """Turn teardown mode on/off. While on, the alert sweep pauses every fault
-    push so packing up a venue doesn't storm the operator. `hours` sets a safety
-    auto-off (default 18h; null = no auto-off)."""
+    """Old teardown toggle, kept for the current UI. Now maps onto the event
+    mode: on -> Teardown (`hours` = safety auto-off, default 18h; null = none),
+    off -> Open (only if the mode was Setup or Teardown)."""
+    from app.services import eventmode
     account = await get_or_create_account(db)
     now = datetime.now(tz=timezone.utc)
+    by = getattr(admin, "email", None)
     if body.enabled:
-        account.teardown_mode = True
-        account.teardown_since = now
-        account.teardown_auto_off_at = (
-            now + timedelta(hours=body.hours) if body.hours and body.hours > 0 else None
-        )
-    else:
-        account.teardown_mode = False
-        account.teardown_since = None
-        account.teardown_auto_off_at = None
-    await db.commit()
+        until = now + timedelta(hours=body.hours) if body.hours and body.hours > 0 else None
+        await eventmode.set_mode(db, account, "teardown", by=by, until=until)
+    elif eventmode.current(account) in eventmode.PAUSED or account.teardown_mode:
+        await eventmode.set_mode(db, account, "open", by=by)
     return await _teardown_status(db, account)
 
 

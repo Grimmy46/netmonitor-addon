@@ -43,15 +43,15 @@ def cfg_of(sigcfg) -> dict:
 
 
 async def teardown_running(db) -> bool:
-    """The bot only listens while teardown is actually on — the global teardown
-    toggle or a site in teardown — never during the live show."""
-    from sqlalchemy import select
+    """The bot only listens in Setup or Teardown mode (or while a site is in
+    its own teardown) — never during the live show."""
+    return await bot_mode(db) is not None
 
-    from app.models import Account, Site
-    acc = (await db.execute(select(Account).limit(1))).scalars().first()
-    if acc is not None and acc.teardown_mode:
-        return True
-    return (await db.execute(select(Site.id).where(Site.teardown_active.is_(True)).limit(1))).first() is not None
+
+async def bot_mode(db) -> str | None:
+    """"deploy" (Setup), "return" (Teardown) or None (not listening)."""
+    from app.services import eventmode
+    return await eventmode.bot_mode(db)
 
 
 def active(td: dict, now: datetime | None = None) -> bool:
@@ -125,6 +125,15 @@ async def mark_returned(token: str, asset_tag: str, who: str, at: datetime, dry_
             return {"http": r.status_code, "ok": False, "error": r.text[:200]}
 
 
+async def mark_deployed(token: str, asset_tag: str, who: str, at: datetime, venue: str | None,
+                        dry_run: bool = True) -> dict:
+    """STUB: the RCS Inventory API has no deploy endpoint yet. When it does,
+    this should POST {asset_tag, deployed_by, deployed_at, venue, dry_run}
+    (mirroring /devices/return). Until then nothing is sent anywhere and the
+    bot always answers in practice wording."""
+    return {"ok": True, "stub": True, "dry_run": True, "asset_tag": asset_tag}
+
+
 async def health() -> bool:
     try:
         async with httpx.AsyncClient(timeout=8) as c:
@@ -133,7 +142,7 @@ async def health() -> bool:
         return False
 
 
-_HINT = re.compile(r"\b(ap|switch|sb|router|asset|tag|teardown|collected|u7|usw)\b", re.I)
+_HINT = re.compile(r"\b(ap|switch|sb|router|asset|tag|teardown|collected|setup|deployed|installed|u7|usw)\b", re.I)
 
 
 # tags handled since the process started, so an untagged post never re-uses one
@@ -181,8 +190,14 @@ def _short(dev: dict) -> str:
 
 
 async def handle(td: dict, body: str, sender: str, sent_at: datetime, attachments: int = 0,
-                 photo: dict | None = None) -> str | None:
-    """Process one group message; returns the reply text (or None to stay quiet)."""
+                 photo: dict | None = None, mode: str = "return",
+                 venue: str | None = None) -> str | None:
+    """Process one group message; returns the reply text (or None to stay quiet).
+
+    mode: "return" (Teardown: mark devices returned) or "deploy" (Setup: mark
+    devices deployed at `venue`; practice wording only until Inventory has a
+    deploy endpoint — see mark_deployed)."""
+    deploy = mode == "deploy"
     # Teardown posts always carry a photo. Plain chat ("check kiosk 6047 at
     # mini bumper boats") is never treated as a return, even if it has a number.
     if not attachments:
@@ -198,6 +213,8 @@ async def handle(td: dict, body: str, sender: str, sent_at: datetime, attachment
         # caption-less photos are ignored silently.
         if not _HINT.search(body or ""):
             return None
+        if deploy:
+            return f"{MARK} NETBOT: I couldn't find a tag in that post — please type the 4-digit RCS tag of what went in."
         found = await _match_untagged(token, body, sent_at)
         if found.get("tag"):
             items = [found["tag"]]
@@ -224,6 +241,13 @@ async def handle(td: dict, body: str, sender: str, sent_at: datetime, attachment
             lines.append(f"❓ {q} matches {len(pick)} devices: {opts}. Which one? (repost the photo with its 4-digit tag)")
             continue
         dev = pick[0]
+        if deploy:
+            await mark_deployed(token, dev["asset_tag"], who, sent_at, venue)
+            _posted.add(dev["asset_tag"])
+            at = f" at {venue}" if venue else ""
+            lines.append(f"🧪 Practice — would mark #{dev['asset_tag']} deployed{at}."
+                         + (" 📷 photo attached." if photo else ""))
+            continue
         try:
             post = " ".join(body.split())[:200]
             rr = await mark_returned(token, dev["asset_tag"], who, sent_at, dry,
@@ -245,5 +269,6 @@ async def handle(td: dict, body: str, sender: str, sent_at: datetime, attachment
         lines.append(("🧪 Practice — would log: " if dry else "✅ ") + msg + (" 📷 photo attached." if photo else ""))
     if not lines:
         return None
-    head = f"{MARK} NETBOT: got it, {who}." + (" (practice mode — nothing saved)" if dry else "")
+    practice = dry or deploy
+    head = f"{MARK} NETBOT: got it, {who}." + (" (practice mode — nothing saved)" if practice else "")
     return head + "\n" + "\n".join(lines)

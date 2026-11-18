@@ -156,7 +156,12 @@ async def receive_once(db: AsyncSession) -> int:
         return 0
     from app.services import teardownbot
     td = teardownbot.cfg_of(cfg)
-    td_on = teardownbot.active(td) and await teardownbot.teardown_running(db)
+    bot_mode = await teardownbot.bot_mode(db) if teardownbot.active(td) else None
+    td_on = bot_mode is not None
+    venue = None
+    if bot_mode == "deploy":
+        from app.services import eventmode
+        venue = getattr(await eventmode._acc(db), "event_venue", None)
     async with httpx.AsyncClient(timeout=90) as c:
         # Photos are only downloaded while the teardown bot is on (it forwards
         # them to Inventory/Cases); every downloaded file is deleted below.
@@ -195,7 +200,8 @@ async def receive_once(db: AsyncSession) -> int:
     for r in teardown:
         try:
             photo = await _first_photo(r.get("att_meta") or [])
-            reply = await teardownbot.handle(td, r["body"], r["sender"], r["sent_at"], r["attachments"], photo=photo)
+            reply = await teardownbot.handle(td, r["body"], r["sender"], r["sent_at"], r["attachments"], photo=photo,
+                                           mode=bot_mode or "return", venue=venue)
             if reply:
                 await send_group(num, td["group_id"], reply)
         except Exception as exc:  # noqa: BLE001

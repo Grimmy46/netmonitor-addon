@@ -194,23 +194,29 @@ class TeardownIn(BaseModel):
     token: str | None = None      # write-only; "" clears
 
 
-def _td_public(td: dict, running: bool = False) -> dict:
+def _td_public(td: dict, running: bool = False, mode: str | None = None) -> dict:
     from app.services import teardownbot
     out = {k: v for k, v in td.items() if k != "token_enc"}
     out["has_token"] = bool(td.get("token_enc"))
     out.setdefault("dry_run", True)
     out.setdefault("enabled", False)
     out["teardown_running"] = running
-    out["active"] = teardownbot.active(td) and running  # listens only during teardown
+    out["active"] = teardownbot.active(td) and running  # listens only in Setup / Teardown
+    out["bot_mode"] = mode if running else None           # "deploy" | "return" | None
     return out
+
+
+async def _running(db) -> tuple[bool, str | None]:
+    from app.services import teardownbot
+    m = await teardownbot.bot_mode(db)
+    return m is not None, m
 
 
 @router.get("/teardown")
 async def teardown_get(db: AsyncSession = Depends(get_db), _=Depends(require_admin)) -> dict:
     cfg = await sig.get_config(db)
     await db.commit()
-    from app.services import teardownbot
-    return _td_public(dict(cfg.teardown or {}), await teardownbot.teardown_running(db))
+    return _td_public(dict(cfg.teardown or {}), *(await _running(db)))
 
 
 @router.put("/teardown")
@@ -241,8 +247,7 @@ async def teardown_put(body: TeardownIn, db: AsyncSession = Depends(get_db), _=D
     td.update(upd)
     cfg.teardown = td
     await db.commit()
-    from app.services import teardownbot
-    return _td_public(td, await teardownbot.teardown_running(db))
+    return _td_public(td, *(await _running(db)))
 
 
 @router.post("/teardown/test")
@@ -258,7 +263,9 @@ async def teardown_test(q: str = Query("", max_length=60), db: AsyncSession = De
     lk = await teardownbot.lookup(teardownbot._token(td), q or "0000")
     out = {"api_up": up, "token_ok": lk.get("http") != 401}
     if q:
-        out["preview"] = await teardownbot.handle({**td, "dry_run": True}, q, "me", datetime.now().astimezone())
+        _, m = await _running(db)
+        out["preview"] = await teardownbot.handle({**td, "dry_run": True}, q, "me", datetime.now().astimezone(),
+                                                  mode=m or "return")
     return out
 
 

@@ -41,6 +41,8 @@ services:
       POSTGRES_HOST: db
       POSTGRES_PORT: "5432"
     ports: [ "127.0.0.1:8010:8000" ]
+    # Teardown/setup bot photos (90 days, then text summaries).
+    volumes: [ photos:/data/photos ]
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     restart: unless-stopped
   # Signal bot: signal-cli REST API, a linked device on the user's account.
@@ -63,6 +65,7 @@ services:
 volumes:
   pgdata:
   signaldata:
+  photos:
 YML
 
 echo "== secrets (.env generated once; never overwritten) =="

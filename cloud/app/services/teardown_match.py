@@ -117,8 +117,107 @@ async def candidates(db, body: str, sent_at: datetime) -> tuple[dict, list[Candi
     return cap, out
 
 
+# OCR mix-ups on printed labels: compare names in a folded alphabet
+_FOLD = str.maketrans({"v": "u", "o": "0", "q": "0", "d": "0", "i": "1", "l": "1", "|": "1", "s": "5",
+                       "z": "2", "b": "8", "g": "9"})
+
+
+def label_key(s: str) -> str:
+    """'U6.Fd.Circ.27' / 'V6 Fd Circ,27' → 'u6f0c1rc27'."""
+    return re.sub(r"[^0-9a-z]", "", (s or "").lower()).translate(_FOLD)
+
+
+def _edits(a: str, b: str, cap: int = 3) -> int:
+    if abs(len(a) - len(b)) > cap:
+        return cap + 1
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def match_label(label: str, names: list[str]) -> list[str]:
+    """Device names an OCR'd label could be: exact (folded) first, else the
+    closest names within 1 edit (2 for names of 9+ characters). Several = ambiguous."""
+    k = label_key(label)
+    if len(k) < 5:
+        return []
+    keys = [(n, label_key(n)) for n in names if n]
+    exact = [n for n, nk in keys if nk == k]
+    if exact:
+        return exact
+    tol = 2 if len(k) >= 9 else 1
+    scored = [(d, n) for n, nk in keys if (d := _edits(k, nk, tol)) <= tol]
+    if not scored:
+        return []
+    best = min(d for d, _ in scored)
+    return [n for d, n in scored if d == best]
+
+
 def _serial_hex(s: str | None) -> str:
     return re.sub(r"[^0-9a-f]", "", (s or "").lower())[:12]
+
+
+async def _tag_for(c: Candidate, lookup) -> None:
+    """Fill c.tag / c.via from Inventory: MAC → serial first (beats a stale tag
+    in the UniFi name), then a tag written in the UniFi name if Inventory
+    doesn't tie that tag to a different MAC."""
+    if c.mac:
+        lk = await lookup(c.mac)
+        hits = [r for r in (lk.get("results") or []) if r.get("matched_on") != "name"
+                and _serial_hex(r.get("primary_serial")) == _serial_hex(c.mac)]
+        if len(hits) == 1:
+            c.tag, c.via = hits[0]["asset_tag"], "MAC"
+    if not c.tag and c.name_tag:
+        lk = await lookup(c.name_tag)
+        hits = [r for r in (lk.get("results") or []) if r.get("matched_on") == "asset_tag"]
+        if len(hits) == 1:
+            ser = _serial_hex(hits[0].get("primary_serial"))
+            if ser and c.mac and ser != _serial_hex(c.mac):
+                c.notes.append(f"Inventory #{c.name_tag} has a different MAC")
+            else:
+                c.tag, c.via = hits[0]["asset_tag"], "UniFi name"
+
+
+async def resolve_label(db, labels: list[str], lookup, taken: set[str] | None = None) -> dict:
+    """UniFi label(s) read off a photo → the device in the devices table → tag.
+
+    Returns {"status": "match"|"no_inventory"|"ambiguous"|"none", "tag", "cand",
+    "cands", "label"}. Unlike `resolve`, no time window: the label names the
+    device outright.
+    """
+    from app.models import Device
+    taken = {t.lstrip("0") for t in (taken or set())}
+    rows = (await db.execute(select(Device.name, Device.mac, Device.device_type, Device.offline_since,
+                                    Device.is_online))).all()
+    by_name: dict[str, list] = {}
+    for r in rows:
+        by_name.setdefault((r[0] or "").strip(), []).append(r)
+    names = [n for n in by_name if n]
+    for label in labels:
+        hit = match_label(label, names)
+        if not hit:
+            continue
+        devs = [r for n in hit for r in by_name[n]]
+        cands = []
+        for name, mac, kind, off, online in devs[:4]:
+            nt = _NAME_TAG.search(name or "")
+            c = Candidate(name=(name or "").strip(), mac=mac, kind=kind, offline_since=off, score=1.0,
+                          in_window=False, online=online, name_tag=nt.group(0) if nt else None)
+            await _tag_for(c, lookup)
+            if c.tag and c.tag.lstrip("0") in taken:
+                c.notes.append(f"#{c.tag} was already posted")
+            cands.append(c)
+        tagged = [c for c in cands if c.tag]
+        if len({c.tag for c in tagged}) == 1:
+            return {"status": "match", "tag": tagged[0].tag, "cand": tagged[0], "label": label}
+        if len(tagged) > 1:
+            return {"status": "ambiguous", "cands": tagged, "label": label}
+        return {"status": "no_inventory", "cand": cands[0], "label": label}
+    return {"status": "none", "label": labels[0] if labels else None}
 
 
 async def resolve(db, body: str, sent_at: datetime, lookup, taken: set[str] | None = None) -> dict:
@@ -139,23 +238,7 @@ async def resolve(db, body: str, sent_at: datetime, lookup, taken: set[str] | No
         return {"status": "none", "cap": cap, "others": cands[:3]}
     resolved: list[Candidate] = []
     for c in live[:4]:
-        # 1) MAC → Inventory serial (beats a stale tag in the UniFi name)
-        if c.mac:
-            lk = await lookup(c.mac)
-            hits = [r for r in (lk.get("results") or []) if r.get("matched_on") != "name"
-                    and _serial_hex(r.get("primary_serial")) == _serial_hex(c.mac)]
-            if len(hits) == 1:
-                c.tag, c.via = hits[0]["asset_tag"], "MAC"
-        # 2) tag written in the UniFi name, if Inventory doesn't tie it to a different MAC
-        if not c.tag and c.name_tag:
-            lk = await lookup(c.name_tag)
-            hits = [r for r in (lk.get("results") or []) if r.get("matched_on") == "asset_tag"]
-            if len(hits) == 1:
-                ser = _serial_hex(hits[0].get("primary_serial"))
-                if ser and c.mac and ser != _serial_hex(c.mac):
-                    c.notes.append(f"Inventory #{c.name_tag} has a different MAC")
-                else:
-                    c.tag, c.via = hits[0]["asset_tag"], "UniFi name"
+        await _tag_for(c, lookup)
         if c.tag and c.tag.lstrip("0") in {t.lstrip("0") for t in taken}:
             c.notes.append(f"#{c.tag} was already posted")
             c.tag = None

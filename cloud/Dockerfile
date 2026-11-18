@@ -4,8 +4,13 @@ WORKDIR /app
 
 # iputils-ping: the Live-page server prober shells out to `ping` (ICMP needs
 # either root or the binary's capabilities — the official package ships them).
-RUN apt-get update && apt-get install -y --no-install-recommends iputils-ping && \
+# tesseract-ocr (+ English data): the teardown bot reads RCS asset tags and
+# UniFi labels off crew photos locally (app/services/photo_reader.py).
+RUN apt-get update && apt-get install -y --no-install-recommends iputils-ping tesseract-ocr && \
     rm -rf /var/lib/apt/lists/*
+
+# Teardown/setup bot photos (kept 90 days, then summarized). Mount a volume here.
+RUN mkdir -p /data/photos
 
 # System deps kept minimal; asyncpg wheels avoid needing build tools.
 COPY pyproject.toml ./

@@ -116,7 +116,11 @@ $DOMAIN {
         file_server
     }
 }
+
+# Extra sites managed outside this script (e.g. staging.<domain> -> ~/staging).
+import /etc/caddy/conf.d/*.caddy
 CADDY
+mkdir -p /etc/caddy/conf.d
 systemctl reload caddy
 
 echo "== nightly database backup (systemd timer) =="

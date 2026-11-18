@@ -90,6 +90,22 @@ async def get_plan(site_id: uuid.UUID, db: AsyncSession = Depends(get_db), _user
     }
 
 
+@router.get("/plans/{site_id}/checklist")
+async def get_plan_checklist(
+    site_id: uuid.UUID, db: AsyncSession = Depends(get_db), _user=Depends(current_user)
+) -> dict:
+    """The Setup checklist SitePlanner generates from the plan (every planned
+    device and cable run is one item). Stored inside the plan JSON as
+    `setupChecklist` (schema "rcs.setup_checklist" v1); no table of its own."""
+    plan = (
+        await db.execute(select(SitePlan).where(SitePlan.site_id == site_id))
+    ).scalars().first()
+    checklist = (plan.data or {}).get("setupChecklist") if plan is not None else None
+    if not checklist:
+        raise HTTPException(status_code=404, detail="No setup checklist saved for this site yet.")
+    return checklist
+
+
 @router.put("/plans/{site_id}", status_code=204)
 async def save_plan(
     site_id: uuid.UUID,

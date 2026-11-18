@@ -29,6 +29,7 @@ services:
       NETMON_STAGING: "1"
       TEARDOWN_BOT_BASE: http://mock:8080/teardown
     networks: [ stagenet ]
+    volumes: [ stagephotos:/data/photos ]
     mem_limit: 512m
     command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
   # Web gateway: serves the staging SPA and proxies the API to cloud. Caddy
@@ -42,3 +43,4 @@ services:
     mem_limit: 64m
 volumes:
   stagepg:
+  stagephotos:

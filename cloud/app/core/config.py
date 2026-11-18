@@ -168,6 +168,9 @@ class Settings(BaseSettings):
     # Planned closures: after reopening, wait this long for gear to power up
     # before the one "what didn't come back" summary push.
     closure_reopen_grace_hours: int = 3
+    # Event mode: post mode changes to the RCS-IT Signal group. Off until
+    # the new group posts are signed off.
+    mode_announce_rcsit: bool = False
 
     @property
     def database_url(self) -> str:

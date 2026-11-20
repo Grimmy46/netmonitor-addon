@@ -1363,3 +1363,27 @@ table.devices td.mono { font-variant-numeric: tabular-nums; color: var(--ink-sec
 :root[data-skin="rcs"] .side-nav .mode-card-sub,
 :root[data-skin="rcs"] .side-nav .mode-card-lbl,
 :root[data-skin="rcs"] .side-section { color: #9ca3af; }
+
+/* Mode: stale / unknown, leave-Open confirm, field errors */
+.mode-card.stale { border-style: dashed; opacity: 0.92; }
+.mode-card-warn { color: var(--warning); font-size: 12px; font-weight: 600; }
+.mode-unknown-tag { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 50%, transparent); white-space: nowrap; }
+.mode-ack { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 8px 10px; border-radius: 8px; font-size: 14px; font-weight: 600;
+  border: 1px solid color-mix(in srgb, var(--warning) 50%, transparent); background: color-mix(in srgb, var(--warning) 9%, transparent); cursor: pointer; }
+.mode-ack input { width: 18px; height: 18px; flex: 0 0 auto; }
+.field-err { color: var(--critical); font-size: 12px; }
+.mode-fields input[aria-invalid="true"] { border-color: var(--critical); }
+.mode-fields-note { grid-column: 1 / -1; margin: 0; }
+:root[data-skin="holo"] .mode-ack { border-radius: 3px; }
+@media (max-width: 760px) {
+  .bottom-nav button { min-width: 0; }
+  .bottom-nav .bn-lbl { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 1px; }
+  .app-header .mode-unknown-tag { font-size: 10px; padding: 2px 6px; }
+}
+@media (max-width: 760px) {
+  /* The title takes the free space (and truncates last); no spacer needed. */
+  .app-header > .spacer { display: none; }
+  /* "Mode unknown" gets its own thin row under the tabs instead of squeezing the title. */
+  .app-header .mode-unknown-tag { order: 11; flex: 1 1 100%; text-align: center; border-radius: 6px; padding: 3px 6px; font-size: 11px; }
+  :root[data-skin="holo"] .app-header h1 { font-size: 15px; letter-spacing: 0.08em; }
+}

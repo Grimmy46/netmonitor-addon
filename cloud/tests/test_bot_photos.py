@@ -46,3 +46,79 @@ def test_unlink_stays_inside_photo_dir(tmp_path, monkeypatch):
     outside = tmp_path.parent / "keep.txt"
     outside.write_text("x")
     assert not bot_photos._unlink("../keep.txt") and outside.exists()
+
+
+# ── storage switch ────────────────────────────────────────────────────────────
+def _settings(monkeypatch, **kw):
+    from app.core.config import get_settings
+    for k, v in kw.items():
+        monkeypatch.setattr(get_settings(), k, v)
+
+
+def test_store_off_unless_mount_or_setting(tmp_path, monkeypatch):
+    _settings(monkeypatch, photo_dir=str(tmp_path), photo_store=False)
+    assert not bot_photos.store_enabled()                      # plain folder (e.g. the image's /data/photos)
+    monkeypatch.setattr(bot_photos.os.path, "ismount", lambda p: p == str(tmp_path))
+    assert bot_photos.store_enabled()                          # a mounted volume
+    monkeypatch.setattr(bot_photos.os.path, "ismount", lambda p: False)
+    _settings(monkeypatch, photo_store=True)
+    assert bot_photos.store_enabled()                          # PHOTO_STORE=true
+
+
+class _DB:
+    def __init__(self, rows=None):
+        self.rows, self.added, self.commits, self.sql = rows or [], [], 0, None
+
+    def add(self, row):
+        self.added.append(row)
+
+    async def commit(self):
+        self.commits += 1
+
+    async def execute(self, q):
+        self.sql = str(q)
+        rows = self.rows
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows))
+
+
+async def test_save_without_store_writes_no_file(tmp_path, monkeypatch):
+    _settings(monkeypatch, photo_dir=str(tmp_path), photo_store=False)
+    db = _DB()
+    r = await bot_photos.save(db, {"bytes": b"\xff\xd8x", "mime": "image/jpeg"}, caption="c", sender="s",
+                              sent_at=datetime(2026, 11, 19, tzinfo=timezone.utc))
+    assert r.path is None and db.added == [r] and list(tmp_path.iterdir()) == []
+
+
+async def test_save_with_store_writes_file(tmp_path, monkeypatch):
+    _settings(monkeypatch, photo_dir=str(tmp_path), photo_store=True)
+    r = await bot_photos.save(_DB(), {"bytes": b"\xff\xd8x", "mime": "image/jpeg"}, caption="c", sender="s",
+                              sent_at=datetime(2026, 11, 19, tzinfo=timezone.utc))
+    assert (tmp_path / r.path).read_bytes() == b"\xff\xd8x"
+
+
+# ── retention ─────────────────────────────────────────────────────────────────
+async def test_retention_survives_os_errors(tmp_path, monkeypatch):
+    _settings(monkeypatch, photo_dir=str(tmp_path))
+    rows = [row(path=f"2026/{i}.jpg", summary=None, summarized_at=None, id=i) for i in range(3)]
+
+    def unlink(rel):
+        if rel == "2026/1.jpg":
+            raise OSError(30, "Read-only file system")
+        return True
+    monkeypatch.setattr(bot_photos, "_unlink", unlink)
+    db = _DB(rows)
+    now = datetime(2027, 3, 1, tzinfo=timezone.utc)
+    assert await bot_photos.summarize_old(db, now=now, keep_days=90) == 3
+    assert "ORDER BY bot_photos.sent_at, bot_photos.id" in db.sql
+    assert [r.path for r in rows] == [None, "2026/1.jpg", None]
+    assert all(r.summarized_at == now for r in rows) and db.commits == 1
+    assert "image file not deleted: OSError: Read-only file system" in rows[1].summary
+
+
+async def test_retention_survives_a_bad_row(tmp_path, monkeypatch):
+    _settings(monkeypatch, photo_dir=str(tmp_path))
+    bad = row(path=None, summary=None, summarized_at=None, id=1, sent_at=None)   # summary_text will fail
+    good = row(path=None, summary=None, summarized_at=None, id=2)
+    db = _DB([bad, good])
+    assert await bot_photos.summarize_old(db, now=datetime(2027, 3, 1, tzinfo=timezone.utc), keep_days=90) == 2
+    assert "could not be summarized" in bad.summary and good.summary.startswith("teardown photo")

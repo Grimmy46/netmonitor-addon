@@ -22,6 +22,7 @@ from pathlib import Path
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, HERE)
 os.environ.setdefault("PHOTO_DIR", tempfile.mkdtemp(prefix="nm-photos-"))
+os.environ["PHOTO_STORE"] = "true"  # a temp dir is not a mount; allow files for the test
 
 from sqlalchemy import text  # noqa: E402
 
@@ -60,11 +61,11 @@ async def main():
     ok(await has_table(), "upgrade head: bot_photos exists")
     # prod shape before 0053: no table
     await q("DROP TABLE bot_photos")
-    alembic("stamp", "0050_close_stale_outages")
+    alembic("stamp", "0051_event_mode")
     alembic("upgrade", "0053_bot_photos")
     ok(await has_table(), "0053 creates bot_photos")
     # idempotent: re-run with the table (and index) present
-    alembic("stamp", "0050_close_stale_outages")
+    alembic("stamp", "0051_event_mode")
     alembic("upgrade", "0053_bot_photos")
     idx = await q("SELECT indexname FROM pg_indexes WHERE tablename='bot_photos'")
     ok("ix_bot_photos_sent_at" in {r["indexname"] for r in idx}, "0053 re-run is a no-op")
@@ -100,6 +101,60 @@ async def main():
        "summary has caption, tags read, match and result")
     async with SessionLocal() as db:
         ok(await bot_photos.summarize_old(db, now=now) == 0, "second run does nothing")
+    # one file that can't be deleted must not hold up the batch
+    await q("DELETE FROM bot_photos")
+    async with SessionLocal() as db:
+        rows = [await bot_photos.save(db, {"bytes": b"\xff\xd8" + bytes([i]), "mime": "image/jpeg"}, caption=f"p{i}",
+                                      sender="Dawid", sent_at=now - timedelta(days=100 - i)) for i in range(4)]
+    stuck = rows[1]
+    real_unlink = bot_photos._unlink
+
+    def flaky(rel):
+        if rel == stuck.path:
+            raise PermissionError(13, "Permission denied")
+        return real_unlink(rel)
+    bot_photos._unlink = flaky
+    try:
+        async with SessionLocal() as db:
+            n = await bot_photos.summarize_old(db, now=now)
+    finally:
+        bot_photos._unlink = real_unlink
+    ok(n == 4, "OSError on one row: all 4 rows handled")
+    r = {x["caption"]: x for x in await q("SELECT caption, path, summary, summarized_at FROM bot_photos")}
+    ok(all(r[f"p{i}"]["summarized_at"] for i in range(4)), "every row marked, so the next batch moves on")
+    ok(r["p1"]["path"] == stuck.path and "image file not deleted: PermissionError" in r["p1"]["summary"],
+       "failed row keeps its path and says why")
+    ok(all(r[f"p{i}"]["path"] is None for i in (0, 2, 3)) and (root / stuck.path).exists(), "others deleted")
+    async with SessionLocal() as db:
+        ok(await bot_photos.summarize_old(db, now=now) == 0, "failed row is not picked up again as new")
+        ok(await bot_photos.retry_failed_deletes(db) == 1, "retry removes the left-over file")
+    r = (await q("SELECT path, summary FROM bot_photos WHERE caption='p1'"))[0]
+    ok(r["path"] is None and "not deleted" not in r["summary"] and not (root / stuck.path).exists(),
+       "after retry: no path, clean summary")
+    # oldest first, ties by id
+    await q("DELETE FROM bot_photos")
+    same = now - timedelta(days=200)
+    async with SessionLocal() as db:
+        for i in range(3):
+            await bot_photos.save(db, {"bytes": b"x"}, caption=f"t{i}", sender="s", sent_at=same)
+    bot_photos.BATCH, old_batch = 2, bot_photos.BATCH
+    try:
+        async with SessionLocal() as db:
+            await bot_photos.summarize_old(db, now=now)
+    finally:
+        bot_photos.BATCH = old_batch
+    done = await q("SELECT id::text AS id FROM bot_photos WHERE summarized_at IS NOT NULL ORDER BY id")
+    ids = [x["id"] for x in await q("SELECT id::text AS id FROM bot_photos ORDER BY id")]
+    ok([d["id"] for d in done] == ids[:2], "same sent_at: the batch takes the lowest ids first")
+    # photo storage off when the dir is not a mount and PHOTO_STORE is off
+    await q("DELETE FROM bot_photos")
+    os.environ["PHOTO_STORE"] = "false"
+    get_settings.cache_clear()
+    async with SessionLocal() as db:
+        row = await bot_photos.save(db, {"bytes": b"x"}, caption="off", sender="s", sent_at=now)
+    ok(row.path is None and not bot_photos.store_enabled(), "storage off: row kept, no file")
+    os.environ["PHOTO_STORE"] = "true"
+    get_settings.cache_clear()
     # a broken volume still records the row
     os.environ["PHOTO_DIR"] = "/proc/nope"
     get_settings.cache_clear()

@@ -179,6 +179,14 @@ class Settings(BaseSettings):
     # Event mode: post mode changes to the RCS-IT Signal group. Off until
     # the new group posts are signed off.
     mode_announce_rcsit: bool = False
+    # After a closure (incl. leaving Off-season) ends and its reopen grace
+    # passes, push ONE "what didn't come back" summary. On by default (the
+    # behaviour before the mode switch); set CLOSURE_REOPEN_REPORT=false to stop it.
+    closure_reopen_report: bool = True
+    # Setup bot: post its replies ("would mark #0951 deployed") in the Signal
+    # equipment group. Off until the Setup flow is signed off; the bot still
+    # reads posts while off, it just stays silent.
+    bot_setup_replies: bool = False
 
     @property
     def database_url(self) -> str:

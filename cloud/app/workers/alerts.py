@@ -375,9 +375,12 @@ async def _maybe_expire_teardown(db: AsyncSession, now: datetime) -> bool:
     if account is None or not account.teardown_mode:
         return False
     if account.teardown_auto_off_at is not None and now >= account.teardown_auto_off_at:
+        from app.services import eventmode
         label = "Setup" if account.event_mode == "setup" else "Teardown"
+        back = ("back to off-season" if eventmode.season_closure(account, now)
+                else "alerts resumed")
         account.teardown_mode = False
-        account.rollout_notice = f"🧰 {label} mode auto-ended (safety expiry) — alerts resumed."
+        account.rollout_notice = f"🧰 {label} mode auto-ended (safety expiry) — {back}."
         account.rollout_notice_at = now
         await db.commit()
         logger.info("Teardown mode auto-expired")
@@ -543,6 +546,8 @@ async def _deliver_recoveries(db: AsyncSession, recs: list) -> int:
 async def _maybe_send_reopen_report(db: AsyncSession, now: datetime) -> None:
     """Once per closure, right after the reopen grace ends: one push listing
     what's still down on Main, grouped by root cause, plus silent kiosks."""
+    if not get_settings().closure_reopen_report:
+        return  # switched off (settings.closure_reopen_report, default on)
     w = closure.window()
     acc = (await db.execute(select(Account).limit(1))).scalar_one_or_none()
     if w is None or acc is None or acc.closure_report_sent_at is not None or now < w[1]:

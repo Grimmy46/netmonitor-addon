@@ -23,3 +23,7 @@ class SitePlan(Base, UUIDPk, Timestamps):
     # The aerial photo, raw bytes + mime (nullable — plans can exist before a photo).
     aerial: Mapped[bytes | None] = mapped_column(LargeBinary, default=None)
     aerial_mime: Mapped[str | None] = mapped_column(default=None)
+    # Setup checklist progress, keyed by checklist item id ("dev:12", "run:3"):
+    # status / evidence / measured cable length. Kept apart from `data` so a
+    # plan save never wipes it (see app/services/setup_checklist.py).
+    checklist_progress: Mapped[dict | None] = mapped_column(JSONB, default=None)

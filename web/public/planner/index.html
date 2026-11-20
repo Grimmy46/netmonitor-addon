@@ -1146,8 +1146,8 @@ function parseCSV(txt){
   const split=l=>{const out=[];let c="",q=false;for(let i=0;i<l.length;i++){const ch=l[i];if(ch==='"'){if(q&&l[i+1]==='"'){c+='"';i++;}else q=!q;}else if(ch===','&&!q){out.push(c);c="";}else c+=ch;}out.push(c);return out;};
   const head=split(rows[0]).map(h=>h.trim().toLowerCase());
   const idx=k=>head.findIndex(h=>h===k||h.includes(k));
-  const iN=idx("name"),iM=idx("mac"),iMo=idx("model"),iS=idx("site"),iSt=idx("status"),iIp=idx("ip");
-  return rows.slice(1).map(l=>{const c=split(l);return {name:iN>=0?(c[iN]||"").trim():"",mac:iM>=0?(c[iM]||"").trim():"",model:iMo>=0?(c[iMo]||"").trim():"",site:iS>=0?(c[iS]||"").trim():"",status:iSt>=0?(c[iSt]||"").trim():"",ip:iIp>=0?(c[iIp]||"").trim():""};});
+  const iN=idx("name"),iM=idx("mac"),iMo=idx("model"),iS=idx("site"),iSt=idx("status"),iIp=idx("ip"),iT=head.findIndex(h=>h==="type"||h==="device_type");
+  return rows.slice(1).map(l=>{const c=split(l);return {name:iN>=0?(c[iN]||"").trim():"",mac:iM>=0?(c[iM]||"").trim():"",model:iMo>=0?(c[iMo]||"").trim():"",site:iS>=0?(c[iS]||"").trim():"",status:iSt>=0?(c[iSt]||"").trim():"",ip:iIp>=0?(c[iIp]||"").trim():"",type:iT>=0?(c[iT]||"").trim():""};});
 }
 function applyStatusFeed(data){
   let list=[];
@@ -1159,7 +1159,7 @@ function applyStatusFeed(data){
     const mac=normMac(row.mac||row.MAC||row.macAddress||row.hwaddr);if(!mac)return;
     let d=deviceByMac(mac);if(!d){d={mac,name:"",model:"",site:"",status:"unknown"};state.devices.push(d);}
     if(row.name)d.name=row.name; if(row.model)d.model=row.model; if(row.site)d.site=row.site;
-    if(row.ip)d.ip=row.ip; if(row.latency!=null)d.latency=row.latency;
+    if(row.ip)d.ip=row.ip; if(row.latency!=null)d.latency=row.latency; if(row.type)d.type=String(row.type).toLowerCase();
     if(row.status){const s=String(row.status).toLowerCase();d.status=STATUS_STATES.includes(s)?s:(s.includes("off")?"offline":s.includes("degrad")?"degraded":s.includes("unreach")?"unreachable":s.includes("on")?"online":d.status);}
     n++;
   });
@@ -1273,7 +1273,7 @@ window.addEventListener("mouseup",e=>{
 
 // ================= SAVE / LOAD / EXPORT =================
 function download(name,content,type){const blob=new Blob([content],{type}),url=URL.createObjectURL(blob),a=$("dl");a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1500);}
-$("saveBtn").addEventListener("click",()=>{download("siteplanner_project.json",JSON.stringify({version:4,imageDataUrl:state.imageDataUrl,blocks:state.blocks,links:state.links,devices:state.devices,statusFeed:state.statusFeed,nextNum:state.nextNum,seq:state.seq,mseq:state.mseq,show:state.show,view:{rot:state.view.rot},runs:state.runs,rseq:state.rseq,cable:state.cable,calib:state.calib,setupChecklist:(typeof buildChecklist==="function"?buildChecklist():null)}),"application/json");toast("Project saved — keep the .json to reopen later.");});
+$("saveBtn").addEventListener("click",()=>{download("siteplanner_project.json",JSON.stringify({version:5,imageDataUrl:state.imageDataUrl,blocks:state.blocks,links:state.links,devices:state.devices,statusFeed:state.statusFeed,nextNum:state.nextNum,seq:state.seq,mseq:state.mseq,show:state.show,view:{rot:state.view.rot},runs:state.runs,rseq:state.rseq,cable:state.cable,calib:state.calib,setupChecklist:(typeof buildChecklist==="function"?buildChecklist():null)}),"application/json");toast("Project saved — keep the .json to reopen later.");});
 $("openBtn").addEventListener("click",()=>$("openInput").click());
 $("openInput").addEventListener("change",e=>{
   const f=e.target.files[0];if(!f)return;const r=new FileReader();
@@ -1641,9 +1641,17 @@ async function deleteRun(id){
 }
 
 // ---------- setup checklist ----------
+const CHK_STATUSES=["planned","reported","verified"], EST_LABEL="Planned / provisional";
+function chkItem(id){return ((state.setupChecklist&&state.setupChecklist.items)||[]).find(i=>i.id===id)||null;}
 function buildChecklist(){
+  // v2 (rcs.setup_checklist). Progress (status/evidence/measured length) is owned by the server
+  // (site_plans.checklist_progress); what's copied here from the last server read is display-only.
   const prev={};((state.setupChecklist&&state.setupChecklist.items)||[]).forEach(it=>{prev[it.id]=it;});
-  const keep=(id,o)=>{const p=prev[id];if(p){o.done=!!p.done;o.status=p.status||(p.done?"done":"todo");if(p.done_at)o.done_at=p.done_at;if(p.done_by)o.done_by=p.done_by;if(p.note)o.note=p.note;}else{o.done=false;o.status="todo";}return o;};
+  const keep=(id,o)=>{const p=prev[id]||{};
+    o.status=CHK_STATUSES.includes(p.status)?p.status:"planned";o.evidence=p.evidence||null;o.evidence_log=Array.isArray(p.evidence_log)?p.evidence_log:[];
+    if(p.note)o.note=p.note;
+    if(o.kind==="cable_run"){o.measured_length_m=p.measured_length_m!=null?p.measured_length_m:null;o.measured_by=p.measured_by||null;o.measured_at=p.measured_at||null;}
+    return o;};
   const items=[];
   state.blocks.forEach(b=>FIELDS.forEach(f=>{if(!f.placed)return;(b.items[f.key]||[]).forEach(it=>{
     const id="dev:"+it.id,ll=pxToLatLng(it),dv=markerDevice(it);
@@ -1657,27 +1665,31 @@ function buildChecklist(){
       from:A?{id:"dev:"+A.it.id,name:A.it.name,device_type:DEVICE_TYPE[A.field]}:null,
       to:B?{id:"dev:"+B.it.id,name:B.it.name,device_type:DEVICE_TYPE[B.field]}:null,
       bends:(r.waypoints||[]).length,
-      map_m:e?+e.mapM.toFixed(1):null,length_m:e?Math.ceil(e.totalM):null,length_ft:e?Math.ceil(e.totalFt):null,
+      est_map_m:e?+e.mapM.toFixed(1):null,est_length_m:e?Math.ceil(e.totalM):null,est_length_ft:e?Math.ceil(e.totalFt):null,estimate_label:EST_LABEL,
       warning:e?(e.flag==="ok"?null:e.flag==="over"?"over_100m":"over_90m"):"no_scale",
-      label:"Run and test cable "+runName(r)+(e?" ("+Math.ceil(e.totalM)+" m / "+Math.ceil(e.totalFt)+" ft)":""),
+      label:"Run and test cable "+runName(r)+(e?" (est. "+Math.ceil(e.totalM)+" m / "+Math.ceil(e.totalFt)+" ft, planned)":""),
       speed_test:null}));
   });
   const t=cableTotals();
-  const cl={schema:"rcs.setup_checklist",version:1,generated_at:new Date().toISOString(),
+  const cl={schema:"rcs.setup_checklist",version:2,generated_at:new Date().toISOString(),
     site_id:(window.__nmShim&&window.__nmShim.SITE)||null,
     settings:{slack_pct:+state.cable.slackPct||0,drop_m_per_end:+state.cable.dropM||0,spool_ft:SPOOL_FT,practical_limit_m:ETH_PRACTICAL_M,max_m:ETH_MAX_M},
     scale:state.calib?state.calib.mode:null,
-    totals:{devices:items.filter(i=>i.kind==="device").length,runs:(state.runs||[]).length,runs_measured:t.measured,
-      cable_m:Math.ceil(t.totalM),cable_ft:Math.ceil(t.totalFt),spools_1000ft:t.spools,runs_over_90m:t.near+t.over,runs_over_100m:t.over,
-      areas:Object.fromEntries(Object.entries(t.areas).map(([k,v])=>[k,{runs:v.runs,cable_m:Math.ceil(v.m),cable_ft:Math.ceil(v.m*M_TO_FT)}]))},
+    totals:{devices:items.filter(i=>i.kind==="device").length,runs:(state.runs||[]).length,runs_estimated:t.measured,estimate_label:EST_LABEL,
+      est_cable_m:Math.ceil(t.totalM),est_cable_ft:Math.ceil(t.totalFt),spools_1000ft:t.spools,runs_over_90m:t.near+t.over,runs_over_100m:t.over,
+      areas:Object.fromEntries(Object.entries(t.areas).map(([k,v])=>[k,{runs:v.runs,est_cable_m:Math.ceil(v.m),est_cable_ft:Math.ceil(v.m*M_TO_FT)}]))},
     items};
+  if(state.setupChecklist&&state.setupChecklist.progress)cl.progress=state.setupChecklist.progress;
   state.setupChecklist=cl;
   return cl;
 }
 function loadCableData(p){
-  state.runs=Array.isArray(p.runs)?p.runs.filter(r=>r&&r.a!=null&&r.b!=null).map((r,i)=>({id:typeof r.id==="number"?r.id:i+1,a:r.a,b:r.b,
-    waypoints:Array.isArray(r.waypoints)?r.waypoints.filter(w=>w&&isFinite(w.x)&&isFinite(w.y)).map(w=>({x:+w.x,y:+w.y})):[],name:r.name||"",notes:r.notes||""})):[];
-  state.rseq=Math.max(p.rseq||0,...state.runs.map(r=>r.id),0);
+  const raw=Array.isArray(p.runs)?p.runs.filter(r=>r&&r.a!=null&&r.b!=null):[];
+  // ids: keep valid unique numeric ids; give the rest (missing or duplicate) fresh ones above every id seen
+  let next=Math.max(+p.rseq||0,0,...raw.map(r=>(Number.isInteger(r.id)&&r.id>0)?r.id:0));const used=new Set();
+  state.runs=raw.map(r=>{let id=(Number.isInteger(r.id)&&r.id>0&&!used.has(r.id))?r.id:++next;used.add(id);
+    return {id,a:r.a,b:r.b,waypoints:Array.isArray(r.waypoints)?r.waypoints.filter(w=>w&&isFinite(w.x)&&isFinite(w.y)).map(w=>({x:+w.x,y:+w.y})):[],name:r.name||"",notes:r.notes||""};});
+  state.rseq=next;
   state.cable=Object.assign({slackPct:15,dropM:3},p.cable||{});
   state.calib=(p.calib&&(p.calib.mode==="geo"||p.calib.mode==="scale"))?p.calib:null;
   state.setupChecklist=p.setupChecklist||null;
@@ -1698,15 +1710,15 @@ function loadCableData(p){
         <div class="crow">
           <label>Slack for routing <input type="number" id="cSlack" min="0" max="200" step="1"> %</label>
           <label>Drop at each end <input type="number" id="cDrop" min="0" max="50" step="0.5"> m</label>
-          <span class="cnote">Each run = map length + slack + a drop at both ends (up the pole, into the box).</span>
+          <span class="cnote">Each run = map length + slack + a drop at both ends (up the pole, into the box). These are planned, provisional estimates until the routes are measured.</span>
         </div></div>
-      <div class="csec"><h4>Site total</h4><div class="cbig" id="cTotals"></div><div id="cWarn" class="cwarn" style="margin-top:8px"></div></div>
-      <div class="csec"><h4>Runs</h4>
-        <table class="ctable"><thead><tr><th>Run</th><th>From → to</th><th>Area</th><th class="num">Map</th><th class="num">Cable (m)</th><th class="num">Cable (ft)</th><th>Check</th><th></th></tr></thead>
+      <div class="csec"><h4>Site total · Planned / provisional</h4><div class="cbig" id="cTotals"></div><div id="cWarn" class="cwarn" style="margin-top:8px"></div></div>
+      <div class="csec"><h4>Runs · estimates are planned / provisional</h4>
+        <table class="ctable"><thead><tr><th>Run</th><th>From → to</th><th>Area</th><th class="num">Map</th><th class="num" title="Planned / provisional">Est. m</th><th class="num" title="Planned / provisional">Est. ft</th><th class="num">Measured</th><th>Check</th><th></th></tr></thead>
         <tbody id="cRuns"></tbody></table>
         <div id="cNoRuns" class="devempty">No cable runs yet. Pick 🧵 Cable run, click a gateway or SB, click along the route, then click the AP, kiosk or SB at the far end.</div></div>
-      <div class="csec"><h4>By area</h4>
-        <table class="ctable"><thead><tr><th>Area</th><th class="num">Runs</th><th class="num">Cable (m)</th><th class="num">Cable (ft)</th></tr></thead><tbody id="cAreas"></tbody></table></div>
+      <div class="csec"><h4>By area · planned / provisional</h4>
+        <table class="ctable"><thead><tr><th>Area</th><th class="num">Runs</th><th class="num">Est. m</th><th class="num">Est. ft</th></tr></thead><tbody id="cAreas"></tbody></table></div>
       <div class="csec"><h4>Setup checklist</h4>
         <div class="cnote" id="cChk"></div></div>
     </div>
@@ -1753,8 +1765,8 @@ function refreshCablePanel(skipInputs){
   $("calibState").textContent=calibLabel();
   if(!skipInputs){$("cSlack").value=state.cable.slackPct;$("cDrop").value=state.cable.dropM;}
   const t=cableTotals(),cal=calibrated();
-  $("cTotals").innerHTML=cal?`<div class="stat"><b>${fmtNum(Math.ceil(t.totalM))} m</b><span>Cat cable, all runs</span></div>
-    <div class="stat"><b>${fmtNum(Math.ceil(t.totalFt))} ft</b><span>Cat cable, all runs</span></div>
+  $("cTotals").innerHTML=cal?`<div class="stat"><b>${fmtNum(Math.ceil(t.totalM))} m</b><span>Est. Cat cable, all runs</span></div>
+    <div class="stat"><b>${fmtNum(Math.ceil(t.totalFt))} ft</b><span>Est. Cat cable, all runs</span></div>
     <div class="stat"><b>${t.spools}</b><span>1000 ft spool${t.spools===1?"":"s"} to bring</span></div>
     <div class="stat"><b>${(state.runs||[]).length}</b><span>run${(state.runs||[]).length===1?"":"s"}</span></div>`
     :`<div class="cwarn">Set the map scale to work out cable lengths.</div>`;
@@ -1773,6 +1785,7 @@ function refreshCablePanel(skipInputs){
     cell(e?fmtNum(e.mapM,1)+" m":"—","num");
     cell(e?fmtNum(Math.ceil(e.totalM)):"—","num");
     cell(e?fmtNum(Math.ceil(e.totalFt)):"—","num");
+    {const ci=chkItem("run:"+r.id),mm=ci&&ci.measured_length_m;cell(mm!=null?fmtNum(mm,1)+" m":`<span class="cnote">not yet</span>`,"num");}
     cell(e?`<span class="cflag ${e.flag}">${esc(flagText(e.flag))}</span>`:`<span class="cnote">needs scale</span>`);
     const td=document.createElement("td"),rb=document.createElement("button");rb.className="drm";rb.textContent="✕";rb.title="Delete run";
     rb.addEventListener("click",()=>deleteRun(r.id));td.appendChild(rb);tr.appendChild(td);
@@ -1784,17 +1797,18 @@ function refreshCablePanel(skipInputs){
     ta.insertAdjacentHTML("beforeend",`<tr><td>${esc(k)}</td><td class="num">${v.runs}</td><td class="num">${cal?fmtNum(Math.ceil(v.m)):"—"}</td><td class="num">${cal?fmtNum(Math.ceil(v.m*M_TO_FT)):"—"}</td></tr>`);});
   if(Object.keys(t.areas).length)ta.insertAdjacentHTML("beforeend",`<tr><td><b>Site</b></td><td class="num"><b>${(state.runs||[]).length}</b></td><td class="num"><b>${cal?fmtNum(Math.ceil(t.totalM)):"—"}</b></td><td class="num"><b>${cal?fmtNum(Math.ceil(t.totalFt)):"—"}</b></td></tr>`);
   let nDev=0;state.blocks.forEach(b=>FIELDS.forEach(f=>{if(f.placed)nDev+=(b.items[f.key]||[]).length;}));
-  const done=((state.setupChecklist&&state.setupChecklist.items)||[]).filter(i=>i.done).length;
+  const its=(state.setupChecklist&&state.setupChecklist.items)||[],nRep=its.filter(i=>i.status==="reported").length,nVer=its.filter(i=>i.status==="verified").length;
   $("cChk").textContent=`${nDev+(state.runs||[]).length} items: ${nDev} device${nDev===1?"":"s"} to install and ${(state.runs||[]).length} cable run${(state.runs||[]).length===1?"":"s"} to pull and test.`+
-    (done?` ${done} already ticked off.`:"")+(window.__nmShim?" ☁ Save stores it with this site's plan.":" Export it as JSON for the checklist page.");
+    ((nRep||nVer)?` So far: ${nVer} verified, ${nRep} reported.`:"")+(window.__nmShim?" ☁ Save stores it with this site's plan.":" Export it as JSON for the checklist page.");
 }
 function exportCableCSV(){
   if(!(state.runs||[]).length){toast("No cable runs yet.");return;}
-  const rows=[["Run","From","To","Area","Bends","Map m","Cable m","Cable ft","Check"].join(",")];
-  state.runs.forEach(r=>{const e=runEstimate(r),A=markerById(r.a),B=markerById(r.b);
-    rows.push([csv(runName(r)),csv(A?A.it.name:""),csv(B?B.it.name:""),csv(runArea(r)),r.waypoints.length,e?e.mapM.toFixed(1):"",e?Math.ceil(e.totalM):"",e?Math.ceil(e.totalFt):"",csv(e?flagText(e.flag):"needs scale")].join(","));});
+  const rows=[["Run","From","To","Area","Bends","Map m","Est. m (planned/provisional)","Est. ft (planned/provisional)","Measured m","Measured by","Check"].join(",")];
+  state.runs.forEach(r=>{const e=runEstimate(r),A=markerById(r.a),B=markerById(r.b),ci=chkItem("run:"+r.id);
+    rows.push([csv(runName(r)),csv(A?A.it.name:""),csv(B?B.it.name:""),csv(runArea(r)),r.waypoints.length,e?e.mapM.toFixed(1):"",e?Math.ceil(e.totalM):"",e?Math.ceil(e.totalFt):"",
+      ci&&ci.measured_length_m!=null?ci.measured_length_m:"",csv((ci&&ci.measured_by)||""),csv(e?flagText(e.flag):"needs scale")].join(","));});
   const t=cableTotals();
-  rows.push(["TOTAL","","","","","",Math.ceil(t.totalM),Math.ceil(t.totalFt),csv(t.spools+" x 1000 ft spools, slack "+state.cable.slackPct+"%, drop "+state.cable.dropM+" m per end")].join(","));
+  rows.push(["TOTAL (planned / provisional)","","","","","",Math.ceil(t.totalM),Math.ceil(t.totalFt),"","",csv(t.spools+" x 1000 ft spools, slack "+state.cable.slackPct+"%, drop "+state.cable.dropM+" m per end")].join(","));
   download("siteplanner_cable.csv",rows.join("\n"),"text/csv");toast("Cable CSV exported.");
 }
 
@@ -1852,22 +1866,24 @@ function drawCableTable(doc){
   doc.addPage("a4","portrait");
   const pw=doc.internal.pageSize.getWidth(),ph=doc.internal.pageSize.getHeight(),M=44;let y=54;
   const need=h=>{if(y+h>ph-M){doc.addPage("a4","portrait");y=54;}};
-  doc.setFont("helvetica","bold");doc.setFontSize(16);doc.setTextColor(20);doc.text("Cable estimate",M,y);y+=8;
+  doc.setFont("helvetica","bold");doc.setFontSize(16);doc.setTextColor(20);doc.text("Cable estimate · Planned / provisional",M,y);y+=8;
   doc.setDrawColor(200);doc.line(M,y,pw-M,y);y+=18;
   doc.setFont("helvetica","normal");doc.setFontSize(9.5);doc.setTextColor(110);
   doc.text("Map length + "+state.cable.slackPct+"% slack + "+state.cable.dropM+" m drop at each end. "+(calibrated()?calibLabel():"No map scale set."),M,y);y+=18;
-  const cols=[M,M+150,M+285,M+360,M+410,M+455];
+  const cols=[M,M+135,M+255,M+325,M+365,M+405,M+455];
   doc.setFont("helvetica","bold");doc.setFontSize(10);doc.setTextColor(60);
-  ["Run","From -> to","Area","Metres","Feet","Check"].forEach((h,i)=>doc.text(h,cols[i],y));y+=6;doc.line(M,y,pw-M,y);y+=14;
+  ["Run","From -> to","Area","Est. m","Est. ft","Measured","Check"].forEach((h,i)=>doc.text(h,cols[i],y));y+=6;doc.line(M,y,pw-M,y);y+=14;
   doc.setFont("helvetica","normal");
   state.runs.forEach(r=>{need(16);const e=runEstimate(r),A=markerById(r.a),B=markerById(r.b);
-    doc.setTextColor(35);doc.text(doc.splitTextToSize(A_(runName(r)),142)[0],cols[0],y);
-    doc.text(doc.splitTextToSize((A?A.it.name:"?")+" -> "+(B?B.it.name:"?"),128)[0],cols[1],y);doc.text(doc.splitTextToSize(runArea(r),70)[0],cols[2],y);
+    const ci=chkItem("run:"+r.id),mm=ci&&ci.measured_length_m;
+    doc.setTextColor(35);doc.text(doc.splitTextToSize(A_(runName(r)),128)[0],cols[0],y);
+    doc.text(doc.splitTextToSize((A?A.it.name:"?")+" -> "+(B?B.it.name:"?"),115)[0],cols[1],y);doc.text(doc.splitTextToSize(runArea(r),66)[0],cols[2],y);
     doc.text(e?String(Math.ceil(e.totalM)):"-",cols[3],y);doc.text(e?String(Math.ceil(e.totalFt)):"-",cols[4],y);
-    if(e&&e.flag!=="ok")doc.setTextColor(200,60,40);doc.text(e?(e.flag==="over"?"Over 100 m":e.flag==="near"?"Over 90 m":"OK"):"No scale",cols[5],y);y+=15;});
+    doc.text(mm!=null?fmtNum(mm,1)+" m":"not yet",cols[5],y);
+    if(e&&e.flag!=="ok")doc.setTextColor(200,60,40);doc.text(e?(e.flag==="over"?"Over 100 m":e.flag==="near"?"Over 90 m":"OK"):"No scale",cols[6],y);y+=15;});
   const t=cableTotals();need(60);y+=4;doc.line(M,y,pw-M,y);y+=16;
   doc.setFont("helvetica","bold");doc.setFontSize(12);doc.setTextColor(30);
-  doc.text("Site total: "+fmtNum(Math.ceil(t.totalM))+" m / "+fmtNum(Math.ceil(t.totalFt))+" ft  -  "+t.spools+" x 1000 ft spool"+(t.spools===1?"":"s"),M,y);y+=18;
+  doc.text("Site total (planned / provisional): "+fmtNum(Math.ceil(t.totalM))+" m / "+fmtNum(Math.ceil(t.totalFt))+" ft  -  "+t.spools+" x 1000 ft spool"+(t.spools===1?"":"s"),M,y);y+=18;
   Object.entries(t.areas).forEach(([k,v])=>{need(14);doc.setFont("helvetica","normal");doc.setFontSize(10);doc.setTextColor(60);
     doc.text(k+": "+v.runs+" run"+(v.runs===1?"":"s")+", "+fmtNum(Math.ceil(v.m))+" m / "+fmtNum(Math.ceil(v.m*M_TO_FT))+" ft",M+12,y);y+=14;});
   if(t.over||t.near){need(30);y+=8;doc.setFont("helvetica","italic");doc.setFontSize(9.5);doc.setTextColor(150,60,40);
@@ -1909,7 +1925,7 @@ function drawCableTable(doc){
 
   /* ── cloud save/load ── */
   function projectObj(){
-    return {version:4, imageDataUrl:null, blocks:state.blocks, links:state.links,
+    return {version:5, imageDataUrl:null, blocks:state.blocks, links:state.links,
             devices:state.devices, statusFeed:state.statusFeed, nextNum:state.nextNum,
             seq:state.seq, mseq:state.mseq, show:state.show, view:{rot:state.view.rot},
             runs:state.runs, rseq:state.rseq, cable:state.cable, calib:state.calib,
@@ -1921,7 +1937,7 @@ function drawCableTable(doc){
       toast("Saving to cloud…");
       const r = await fetch("/map/plans/"+SITE, {method:"PUT",
         headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({name:"Site plan", schema_version:4, data: projectObj()})});
+        body: JSON.stringify({name:"Site plan", schema_version:5, data: projectObj()})});
       if (r.status === 401 || r.status === 403){ toast("Saving needs an ADMIN sign-in on the dashboard."); return false; }
       if (!r.ok){ toast("Cloud save failed (HTTP "+r.status+")."); return false; }
       if (state.imageDataUrl && sig(state.imageDataUrl) !== lastAerialSig){
@@ -1932,6 +1948,7 @@ function drawCableTable(doc){
         else { toast("Plan saved; aerial upload failed (HTTP "+r2.status+")."); return false; }
       }
       toast("Saved to cloud ✓");
+      pullChecklist();
       return true;
     }catch(e){ toast("Cloud save failed — "+e.message); return false; }
   }
@@ -1957,8 +1974,19 @@ function drawCableTable(doc){
       inp.files = dt.files;
       inp.dispatchEvent(new Event("change", {bubbles:true}));
       setTimeout(wireFeed, 900);
+      setTimeout(pullChecklist, 600);
       return true;
     }catch(e){ if(!quiet) toast("Cloud load failed — "+e.message); return false; }
+  }
+
+  /* ── setup checklist: the server's merged copy (crew progress lives server-side) ── */
+  async function pullChecklist(){
+    try{
+      const r = await fetch("/map/plans/"+SITE+"/checklist");
+      if (!r.ok) return;
+      state.setupChecklist = await r.json();
+      if (typeof refreshCablePanel === "function") refreshCablePanel();
+    }catch(e){}
   }
 
   /* ── live feed wiring + type map ── */
@@ -1986,7 +2014,11 @@ function drawCableTable(doc){
 
   /* ── device panel (drag real gear onto the map) ── */
   let pendingDrop = null, mseqBefore = 0;
-  function fieldFor(mac){ const t = nmTypes[nMac(mac)]; return t === "ap" ? "AP" : t === "gateway" ? "GW" : "SB"; }
+  function fieldFor(mac){ const t = nmTypes[nMac(mac)] || devType(mac); return t === "ap" ? "AP" : t === "gateway" ? "GW" : t === "kiosk" ? "Kiosk" : "SB"; }
+  // type from the live feed, else from the device list itself (imported rows: type/model mentioning kiosk)
+  function devType(mac){ const d = state.devices.find(x => nMac(x.mac) === nMac(mac)); if (!d) return null;
+    const t = String(d.type || "").toLowerCase(); if (t) return t;
+    return /kiosk/i.test((d.model||"") + " " + (d.name||"")) ? "kiosk" : null; }
   function renderPanel(){
     const rows = document.getElementById("nmRows");
     if (!rows) return;
@@ -1997,8 +2029,8 @@ function drawCableTable(doc){
     state.devices
       .filter(d => !qv || (d.name||"").toLowerCase().includes(qv) || (d.ip||"").includes(qv) || (d.mac||"").toLowerCase().includes(qv))
       .forEach(d => {
-        const t = nmTypes[nMac(d.mac)];
-        const draggable = t === "ap" || t === "switch" || t === "gateway";
+        const t = nmTypes[nMac(d.mac)] || devType(d.mac);
+        const draggable = t === "ap" || t === "switch" || t === "gateway" || t === "kiosk";
         const row = document.createElement("div");
         row.className = "nmRow" + (draggable ? " drag" : "");
         row.title = draggable ? "Drag onto the map — drops as a live " + fieldFor(d.mac) + " marker" : (d.mac||"");
@@ -2099,7 +2131,7 @@ function drawCableTable(doc){
   };
   if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", boot);
   else boot();
-  window.__nmShim = { cloudSave, cloudLoad, wireFeed, renderPanel, pullTypes, SITE };
+  window.__nmShim = { cloudSave, cloudLoad, wireFeed, renderPanel, pullTypes, pullChecklist, SITE };
 })();
 </script>
 

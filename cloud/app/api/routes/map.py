@@ -43,9 +43,11 @@ async def save_positions(body: PositionsIn, db: AsyncSession = Depends(get_db), 
 # The Planner tab embeds SitePlanner (single-file app) same-origin; these
 # endpoints give it per-site cloud save/load and the live 5-state device feed
 # it already knows how to consume (netcheck-compatible shape).
-from fastapi import HTTPException, Request, Response  # noqa: E402
+from fastapi import Header, HTTPException, Request, Response  # noqa: E402
+from sqlalchemy.orm.attributes import flag_modified  # noqa: E402
 
-from app.models import Device, SitePlan  # noqa: E402
+from app.models import Agent, Device, SitePlan  # noqa: E402
+from app.services import setup_checklist  # noqa: E402
 
 MAX_PLAN_BYTES = 2 * 1024 * 1024
 MAX_AERIAL_BYTES = 8 * 1024 * 1024
@@ -94,16 +96,90 @@ async def get_plan(site_id: uuid.UUID, db: AsyncSession = Depends(get_db), _user
 async def get_plan_checklist(
     site_id: uuid.UUID, db: AsyncSession = Depends(get_db), _user=Depends(current_user)
 ) -> dict:
-    """The Setup checklist SitePlanner generates from the plan (every planned
-    device and cable run is one item). Stored inside the plan JSON as
-    `setupChecklist` (schema "rcs.setup_checklist" v1); no table of its own."""
+    """The Setup checklist (schema "rcs.setup_checklist" v2): SitePlanner's
+    item list from the saved plan, with crew progress (status, evidence,
+    measured cable lengths) from site_plans.checklist_progress laid over it.
+    Older v1 checklists are upgraded on read."""
     plan = (
         await db.execute(select(SitePlan).where(SitePlan.site_id == site_id))
     ).scalars().first()
-    checklist = (plan.data or {}).get("setupChecklist") if plan is not None else None
-    if not checklist:
+    cl = setup_checklist.merged((plan.data or {}).get("setupChecklist"), plan.checklist_progress) \
+        if plan is not None else None
+    if not cl:
         raise HTTPException(status_code=404, detail="No setup checklist saved for this site yet.")
-    return checklist
+    return cl
+
+
+class ChecklistEvidence(BaseModel):
+    type: str
+    ref: str | None = None
+    by: str | None = None
+    at: str | None = None
+
+
+class ChecklistPatch(BaseModel):
+    model_config = {"extra": "forbid"}
+    status: str | None = None
+    evidence: ChecklistEvidence | None = None
+    measured_length_m: float | None = None
+    measured_by: str | None = None
+    measured_at: str | None = None
+    note: str | None = None
+
+
+async def _admin_or_agent(
+    site_id: uuid.UUID,
+    request: Request,
+    x_agent_token: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> str:
+    """Who is writing checklist progress. Works without a browser session: an
+    agent/bot sends X-Agent-Token (and may only touch its own site); otherwise
+    a signed-in admin. Returns a short actor label for the audit fields."""
+    if x_agent_token:
+        from app.api.routes.agents import _agent_from_token
+        agent = await _agent_from_token(db, x_agent_token)
+        if agent.site_id != site_id:
+            raise HTTPException(status_code=403, detail="This agent isn't assigned to that site.")
+        return f"agent:{agent.name or agent.id}"
+    user = await current_user(request, db)
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required.")
+    return getattr(user, "email", None) or getattr(user, "name", None) or str(user.id)
+
+
+@router.patch("/plans/{site_id}/checklist/{item_id}")
+async def patch_checklist_item(
+    site_id: uuid.UUID,
+    item_id: str,
+    body: ChecklistPatch,
+    actor: str = Depends(_admin_or_agent),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Update one checklist item's progress: status (planned|reported|verified),
+    evidence {type: photo|scan|manual|speed_test, ref, by, at} and, for cable
+    runs, the measured length (kept separate from the planned estimate).
+    Returns the merged item. Plan saves never touch this."""
+    plan = (
+        await db.execute(select(SitePlan).where(SitePlan.site_id == site_id).with_for_update())
+    ).scalars().first()
+    if plan is None:
+        raise HTTPException(status_code=404, detail="No plan saved for this site yet.")
+    plan_cl = (plan.data or {}).get("setupChecklist")
+    item = setup_checklist.find_item(plan_cl, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="No such checklist item in this site's plan.")
+    patch = body.model_dump(exclude_unset=True)
+    if "evidence" in patch and patch["evidence"] is not None:
+        patch["evidence"] = body.evidence.model_dump()
+    try:
+        plan.checklist_progress = setup_checklist.apply_patch(plan.checklist_progress, item, patch, actor)
+    except setup_checklist.ChecklistError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from None
+    flag_modified(plan, "checklist_progress")
+    await db.commit()
+    cl = setup_checklist.merged(plan_cl, plan.checklist_progress)
+    return next(it for it in cl["items"] if it["id"] == item_id)
 
 
 @router.put("/plans/{site_id}", status_code=204)
@@ -198,6 +274,29 @@ async def live_feed(site_id: uuid.UUID, db: AsyncSession = Depends(get_db), _use
                 "unifi_state": ("ONLINE" if d.is_online else "OFFLINE") if d.is_online is not None else None,
             }
         )
+    # Kiosk stations at this site (by their LAN MAC) so SitePlanner can drop
+    # them as Kiosk markers. UniFi devices win if a MAC appears in both.
+    seen = {(d["mac"] or "").lower() for d in out}
+    agents = (
+        await db.execute(select(Agent).where(Agent.site_id == site_id, Agent.lan_mac.is_not(None)))
+    ).scalars().all()
+    for a in agents:
+        mac = (a.lan_mac or "").lower()
+        if not mac or mac in seen or (a.station_group or "kiosk") != "kiosk":
+            continue
+        seen.add(mac)
+        out.append(
+            {
+                "mac": a.lan_mac,
+                "name": a.name or a.hostname or "Kiosk",
+                "model": "Kiosk",
+                "ip": a.lan_ip,
+                "status": {"online": "online", "offline": "offline"}.get(a.status, "unknown"),
+                "type": "kiosk",
+                "latency": None,
+                "unifi_state": None,
+            }
+        )
     return {
         "meta": {
             "generated_at": datetime.now(tz=timezone.utc).isoformat(),
@@ -214,8 +313,6 @@ async def live_feed(site_id: uuid.UUID, db: AsyncSession = Depends(get_db), _use
 # public share view gets a sanitized copy (no IPs/MACs) from /map/shared/{t}.
 import secrets  # noqa: E402
 from datetime import datetime as _dt, timezone as _tz  # noqa: E402
-
-from sqlalchemy.orm.attributes import flag_modified  # noqa: E402
 
 from app.models import GeoMap  # noqa: E402
 

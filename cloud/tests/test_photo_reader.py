@@ -97,17 +97,154 @@ def test_blank_image():
     assert got["tags"] == [] and got["labels"] == []
 
 
+@pytest.fixture
+def inv_host(monkeypatch):
+    monkeypatch.setattr(photo_reader, "_qr_hosts", lambda: {"inventory.example.com"})
+
+
 @pytest.mark.parametrize("text,tag", [
     ("0951", "0951"),
     (" 0842 ", "0842"),
+    ("#0912", "0912"),
     ("https://inventory.example.com/assets?tag=0912", "0912"),
     ("https://inventory.example.com/asset/0910", "0910"),
-    ("RCS-0951", "0951"),
-    ("https://example.com/a/1234/b/5678", None),   # two numbers: don't guess
+    ("https://inventory.example.com/devices/0910/", "0910"),
+    ("https://INVENTORY.example.com/item?asset_tag=0951", "0951"),
+    ("https://evil.example.net/asset/0910", None),          # not the Inventory host
+    ("https://inventory.example.com/manual/page/0910.pdf", None),
+    ("https://inventory.example.com/assets?tag=09101", None),
+    ("ftp://inventory.example.com/asset/0910", None),
+    ("RCS-0951", None),                                     # not the tag format
+    ("WIFI:S:Show WiFi;T:WPA;P:secret1234;;", None),
+    ("https://example.com/a/1234/b/5678", None),
+    ("12345", None),
     ("hello", None),
 ])
-def test_qr_tag(text, tag):
+def test_qr_tag(inv_host, text, tag):
     assert photo_reader.qr_tag(text) == tag
+
+
+def test_qr_hosts_come_from_settings(monkeypatch):
+    from app.core.config import get_settings
+    monkeypatch.setattr(get_settings(), "inventory_qr_hosts", " inv.rcs.example , other.example ")
+    assert photo_reader._qr_hosts() == {"inv.rcs.example", "other.example"}
+    assert photo_reader.qr_tag("https://inv.rcs.example/asset/0910") == "0910"
+
+
+def _qr_png(text: str) -> bytes:
+    q = cv2.QRCodeEncoder.create().encode(text)
+    q = cv2.resize(q, None, fx=10, fy=10, interpolation=cv2.INTER_NEAREST)
+    q = cv2.copyMakeBorder(q, 60, 60, 60, 60, cv2.BORDER_CONSTANT, value=255)
+    return cv2.imencode(".png", cv2.cvtColor(q, cv2.COLOR_GRAY2BGR))[1].tobytes()
+
+
+def test_foreign_qr_is_ignored(inv_host):
+    for text in ("WIFI:S:Show WiFi;T:WPA;P:secret1234;;", "https://evil.example.net/asset/0910",
+                 "https://www.ui.com/qr/U6-Mesh/0910"):
+        got = photo_reader.read(_qr_png(text))
+        assert got["qr"] == [] and got["tags"] == [], text
+
+
+def test_rcs_qr_is_read(inv_host):
+    got = photo_reader.read(_qr_png("https://inventory.example.com/asset/0910"))
+    assert got["qr"] == ["https://inventory.example.com/asset/0910"] and got["tags"] == ["0910"]
+    assert photo_reader.read(_qr_png("0951"))["tags"] == ["0951"]
+
+
+# ── limits: size, memory, time, concurrency ───────────────────────────────────
+def test_header_size():
+    img = np.full((300, 500, 3), 128, np.uint8)
+    for ext in (".jpg", ".png", ".webp"):
+        assert photo_reader.image_size(cv2.imencode(ext, img)[1].tobytes()) == (500, 300), ext
+    prog = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_PROGRESSIVE, 1])[1].tobytes()
+    assert photo_reader.image_size(prog) == (500, 300)
+    assert photo_reader.image_size(b"GIF89a....") is None
+
+
+def test_over_25_megapixels_is_refused_before_decoding(monkeypatch):
+    import struct
+    import zlib
+    # a valid PNG header claiming 6000 x 5000 (30 MP), with almost no data
+    ihdr = struct.pack(">IIBBBBB", 6000, 5000, 8, 2, 0, 0, 0)
+    png = (b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + ihdr
+           + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr)))
+    called = []
+    monkeypatch.setattr(cv2, "imdecode", lambda *a: called.append(a))
+    got = photo_reader.read(png)
+    assert got["error"].startswith("too big") and got["tags"] == [] and called == []
+
+
+def test_unknown_format_is_refused():
+    assert photo_reader.read(b"GIF89a" + b"\0" * 100)["error"] == "not a JPEG, PNG or WebP image"
+
+
+def test_big_jpeg_is_decoded_reduced(monkeypatch):
+    flags = []
+    real = cv2.imdecode
+
+    def spy(buf, flag):
+        flags.append(flag)
+        return real(buf, flag)
+    big = cv2.imencode(".jpg", np.full((4000, 3000, 3), 128, np.uint8))[1].tobytes()
+    monkeypatch.setattr(cv2, "imdecode", spy)
+    img, why = photo_reader._load(big)
+    assert flags == [cv2.IMREAD_REDUCED_COLOR_2] and why is None
+    assert max(img.shape[:2]) == photo_reader.WORK_SIDE
+
+
+def test_budget_stops_reading(monkeypatch):
+    calls = []
+
+    def slow_run(cmd, **kw):
+        calls.append(kw["timeout"])
+        time.sleep(0.3)
+        raise photo_reader.subprocess.TimeoutExpired(cmd, kw["timeout"])
+    monkeypatch.setattr(photo_reader, "available", lambda: True)
+    monkeypatch.setattr(photo_reader.subprocess, "run", slow_run)
+    data = (FIX / "tag_0912.jpg").read_bytes()
+    t = time.monotonic()
+    got = photo_reader.read(data, budget=1.0)
+    took = time.monotonic() - t
+    assert took < 2.0 and got.get("timed_out")
+    assert all(x <= 1.0 for x in calls)          # each tesseract call gets what's left, not 8 s
+    assert photo_reader.read(data, deadline=time.monotonic() - 1)["error"] == "timed out"
+
+
+def test_row_cap_per_crop(monkeypatch):
+    rows = [[(i * 30 + j * 10, 100, 8, 20, 1) for j in range(4)] for i in range(25)]
+    monkeypatch.setattr(photo_reader, "_digit_rows", lambda g: (np.zeros(g.shape, np.int32), rows))
+    monkeypatch.setattr(photo_reader, "_render_row", lambda lab, row: np.zeros((40, 80), np.uint8))
+    monkeypatch.setattr(photo_reader, "_stickers", lambda img: [np.zeros((300, 300, 3), np.uint8)])
+    n = []
+    monkeypatch.setattr(photo_reader, "_tess", lambda *a, **k: n.append(1) or [])
+    photo_reader._sticker_tags(np.zeros((300, 300, 3), np.uint8))
+    assert len(n) == photo_reader.MAX_ROWS_PER_CROP   # 4 rotations x 25 rows found, 6 read
+
+
+async def test_one_photo_at_a_time_and_busy_when_queue_full(monkeypatch):
+    import asyncio
+    import threading
+    state = {"now": 0, "max": 0}
+    lock = threading.Lock()
+    gate = threading.Event()
+
+    def fake_read(data, budget, deadline):
+        with lock:
+            state["now"] += 1
+            state["max"] = max(state["max"], state["now"])
+        gate.wait(5)
+        with lock:
+            state["now"] -= 1
+        return {"tags": [], "labels": [], "qr": [], "budget": budget}
+    monkeypatch.setattr(photo_reader, "read", fake_read)
+    tasks = [asyncio.ensure_future(photo_reader.read_async(b"x", budget=7)) for _ in range(photo_reader.MAX_QUEUE)]
+    await asyncio.sleep(0.2)
+    busy = await photo_reader.read_async(b"x")
+    assert busy["error"] == "busy"
+    gate.set()
+    res = await asyncio.gather(*tasks)
+    assert state["max"] == 1 and all(r["budget"] == 7 for r in res)
+    assert photo_reader._waiting == 0
 
 
 def test_label_matching():

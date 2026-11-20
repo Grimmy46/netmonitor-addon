@@ -264,7 +264,8 @@ async def teardown_test(q: str = Query("", max_length=60), db: AsyncSession = De
     out = {"api_up": up, "token_ok": lk.get("http") != 401}
     if q:
         _, m = await _running(db)
-        out["preview"] = await teardownbot.handle({**td, "dry_run": True}, q, "me", datetime.now().astimezone(),
+        # sender "preview": never matches a real person's open photo question
+        out["preview"] = await teardownbot.handle({**td, "dry_run": True}, q, "preview", datetime.now().astimezone(),
                                                   mode=m or "return")
     return out
 

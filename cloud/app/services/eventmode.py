@@ -35,6 +35,11 @@ OFFSEASON_NOTE = "Off-season"
 # Off-season with no end date: keep the closure open this long.
 OFFSEASON_DEFAULT = timedelta(days=365)
 SEASON_MIN_LEFT = timedelta(hours=24)   # same rule as closure.season_paused()
+# Safety end for the pause when no `until` is given, so a forgotten Setup or
+# Teardown can't keep alerts quiet at the next venue. Expiry goes back to the
+# previous mode (Open, or Off-season while its closure is still running).
+DEFAULT_UNTIL = {"teardown": timedelta(hours=18), "setup": timedelta(hours=72)}
+_DEFAULT = object()
 
 _LABEL = {"setup": "Setup", "open": "Open", "teardown": "Teardown", "offseason": "Off-season"}
 _POSTS = {"setup": "setup progress", "open": "outages", "teardown": "teardown progress",
@@ -45,13 +50,22 @@ def _now() -> datetime:
     return datetime.now(tz=timezone.utc)
 
 
-def effects(mode: str) -> dict:
-    """What runs in a mode (the plan's effects table). Pure."""
+def effects(mode: str, reopen_grace_until: datetime | None = None) -> dict:
+    """What runs in a mode (the plan's effects table). Pure.
+
+    reopen_grace_until: set right after leaving Off-season (or any closure).
+    Until then fault alerts stay paused while gear powers back up; at the end
+    one "didn't come back" summary is pushed if settings.closure_reopen_report
+    is on (the default)."""
+    from app.core.config import get_settings
+    in_grace = reopen_grace_until is not None
     return {
-        "alerts": mode == "open",
+        "alerts": mode == "open" and not in_grace,
         "ap_restart": mode == "open",
         "bot": "deploy" if mode == "setup" else "return" if mode == "teardown" else None,
         "group_posts": _POSTS.get(mode, "none"),
+        "reopen_grace_until": reopen_grace_until.isoformat() if in_grace else None,
+        "reopen_report": bool(in_grace and get_settings().closure_reopen_report),
     }
 
 
@@ -69,6 +83,40 @@ def _season_window(acc: Account, now: datetime) -> bool:
 def _closure_running(acc: Account, now: datetime) -> bool:
     s, e = acc.closure_start, acc.closure_end
     return bool(s and e and s <= now < e)
+
+
+def season_closure(acc: Account | None, now: datetime | None = None) -> bool:
+    """An off-season closure is running: one set by this switch, or any closure
+    with more than a day left. A nightly "We're closed" never counts."""
+    if acc is None:
+        return False
+    now = now or _now()
+    return _closure_running(acc, now) and (
+        acc.closure_note == OFFSEASON_NOTE or _season_window(acc, now))
+
+
+def needs_confirm(acc: Account | None, mode: str, now: datetime | None = None) -> bool:
+    """Leaving Off-season (or ending its closure by going Open) must be confirmed."""
+    if mode == "offseason":
+        return False
+    return current(acc) == "offseason" or (mode == "open" and season_closure(acc, now))
+
+
+def _grace(acc: Account) -> timedelta:
+    from app.core.config import get_settings
+    if acc.closure_grace_min is not None:
+        return timedelta(minutes=acc.closure_grace_min)
+    return timedelta(hours=get_settings().closure_reopen_grace_hours)
+
+
+def reopen_grace_until(acc: Account | None, now: datetime | None = None) -> datetime | None:
+    """End of the reopen grace after a closure ended (gear powering back up;
+    the "didn't come back" report goes out then), or None outside it."""
+    if acc is None or not (acc.closure_start and acc.closure_end):
+        return None
+    now = now or _now()
+    until = acc.closure_end + _grace(acc)
+    return until if acc.closure_end <= now < until else None
 
 
 def _end_closure(acc: Account, now: datetime, reopen: bool) -> None:
@@ -100,21 +148,27 @@ def _pause_off(acc: Account) -> None:
 
 
 def apply(acc: Account, mode: str, now: datetime | None = None, *,
-          until: datetime | None = None, by: str | None = None,
+          until=_DEFAULT, by: str | None = None,
           event_name: str | None = None, venue: str | None = None,
           set_name: bool = False, set_venue: bool = False) -> str:
     """Switch the account to `mode` and drive the underlying mechanisms.
-    Pure on the ORM object (no I/O); returns the previous mode."""
+    Pure on the ORM object (no I/O); returns the previous mode.
+
+    until: omitted -> the safety default for Setup/Teardown (DEFAULT_UNTIL),
+    None -> no auto-off (only the old toggle with hours=null does this).
+    Setup/Teardown never delete a running off-season closure: the pause goes
+    on top, and when it ends the mode falls back to Off-season. Only Open
+    ends the closure (callers must check needs_confirm() first)."""
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}")
     now = now or _now()
     old = current(acc)
-    was_season = old == "offseason" or _season_window(acc, now)
+    was_season = old == "offseason" or season_closure(acc, now)
+    if until is _DEFAULT:
+        until = now + DEFAULT_UNTIL[mode] if mode in DEFAULT_UNTIL else None
 
     if mode in PAUSED:
         _pause_on(acc, now, until)
-        if was_season:
-            _end_closure(acc, now, reopen=False)   # no reopen report: setup/teardown has its own
     elif mode == "open":
         _pause_off(acc)
         if was_season:
@@ -147,13 +201,14 @@ def reconcile(acc: Account, now: datetime | None = None) -> bool:
     old = current(acc)
     new = old
     if old in PAUSED and not acc.teardown_mode:
-        new = "open"                       # auto-expired, or old toggle switched off
+        # auto-expired, or old toggle switched off: back to the previous mode
+        new = "offseason" if season_closure(acc, now) else "open"
+    elif old in ("open", "offseason") and acc.teardown_mode:
+        new = "teardown"                   # old /agents/teardown toggle (pause on top)
     elif old == "offseason" and not _closure_running(acc, now):
         new = "open"                       # off-season closure ended / was cleared
-    elif old == "open" and _season_window(acc, now):
+    elif old == "open" and season_closure(acc, now):
         new = "offseason"                  # a long closure set via /network/closure
-    elif old == "open" and acc.teardown_mode:
-        new = "teardown"                   # old /agents/teardown toggle
     if new == old:
         return False
     acc.event_mode = new
@@ -168,9 +223,10 @@ def reconcile(acc: Account, now: datetime | None = None) -> bool:
     return True
 
 
-def out(acc: Account | None) -> dict:
+def out(acc: Account | None, now: datetime | None = None) -> dict:
     """The GET/PUT /network/mode response (shared contract)."""
     mode = current(acc)
+    grace = reopen_grace_until(acc, now)
 
     def iso(x):
         return x.isoformat() if x else None
@@ -181,7 +237,8 @@ def out(acc: Account | None) -> dict:
         "venue": getattr(acc, "event_venue", None),
         "until": iso(getattr(acc, "event_mode_until", None)),
         "changed_by": getattr(acc, "event_mode_by", None),
-        "effects": effects(mode),
+        "reopen_grace_until": iso(grace),
+        "effects": effects(mode, grace),
     }
 
 
@@ -203,7 +260,7 @@ async def sync(db: AsyncSession, now: datetime | None = None) -> Account | None:
 
 
 async def set_mode(db: AsyncSession, acc: Account, mode: str, *, by: str | None,
-                   until: datetime | None = None, event_name: str | None = None,
+                   until=_DEFAULT, event_name: str | None = None,
                    venue: str | None = None, set_name: bool = False,
                    set_venue: bool = False) -> str:
     old = apply(acc, mode, until=until, by=by, event_name=event_name, venue=venue,
@@ -215,6 +272,33 @@ async def set_mode(db: AsyncSession, acc: Account, mode: str, *, by: str | None,
     if old != mode:
         await announce(db, acc, old)
     return old
+
+
+async def end_pause(db: AsyncSession, acc: Account, *, by: str | None) -> str:
+    """Turn the Setup/Teardown pause off and fall back to the previous mode
+    (Off-season while its closure still runs, else Open). Returns the new mode."""
+    old = current(acc)
+    _pause_off(acc)
+    reconcile(acc)
+    if current(acc) != old:
+        acc.event_mode_by = by
+    await db.commit()
+    if current(acc) != old:
+        await announce(db, acc, old)
+    return current(acc)
+
+
+_CONFIRM_MSG = {
+    "setup": "Off-season is on. Switching to Setup turns on the setup pause and ends the "
+             "off-season when you go Open. Send confirm: true to go ahead.",
+    "teardown": "Off-season is on. Send confirm: true to switch to Teardown.",
+    "open": "Off-season is on. Going Open ends it and turns alerts back on. "
+            "Send confirm: true to go ahead.",
+}
+
+
+def confirm_message(mode: str) -> str:
+    return _CONFIRM_MSG.get(mode, "Send confirm: true to leave Off-season.")
 
 
 def announce_text(acc: Account, old: str) -> str:

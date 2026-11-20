@@ -1061,8 +1061,9 @@ async def set_teardown(
     body: TeardownIn, db: AsyncSession = Depends(get_db), admin=Depends(require_admin),
 ) -> TeardownStatusOut:
     """Old teardown toggle, kept for the current UI. Now maps onto the event
-    mode: on -> Teardown (`hours` = safety auto-off, default 18h; null = none),
-    off -> Open (only if the mode was Setup or Teardown)."""
+    mode: on -> Teardown (`hours` = safety auto-off, default 18h; null = none).
+    In Off-season the pause goes on top and the closure stays. Off -> back to
+    the previous mode (Off-season while its closure runs, else Open)."""
     from app.services import eventmode
     account = await get_or_create_account(db)
     now = datetime.now(tz=timezone.utc)
@@ -1071,7 +1072,7 @@ async def set_teardown(
         until = now + timedelta(hours=body.hours) if body.hours and body.hours > 0 else None
         await eventmode.set_mode(db, account, "teardown", by=by, until=until)
     elif eventmode.current(account) in eventmode.PAUSED or account.teardown_mode:
-        await eventmode.set_mode(db, account, "open", by=by)
+        await eventmode.end_pause(db, account, by=by)
     return await _teardown_status(db, account)
 
 

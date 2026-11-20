@@ -128,7 +128,8 @@ class ModeIn(BaseModel):
     mode: Literal["setup", "open", "teardown", "offseason"]
     event_name: str | None = Field(default=None, max_length=120)
     venue: str | None = Field(default=None, max_length=120)
-    until: datetime | None = None
+    until: datetime | None = None    # omitted/null: Teardown 18 h, Setup 72 h safety end
+    confirm: bool = False            # required to leave Off-season (else 409)
 
 
 @router.get("/mode")
@@ -148,9 +149,13 @@ async def put_mode(body: ModeIn, db: AsyncSession = Depends(get_db),
             until = until.replace(tzinfo=timezone.utc)
         if until <= _now():
             raise HTTPException(status_code=400, detail="The end time is in the past.")
+    await eventmode.sync(db)
     acc = await get_or_create_account(db)
+    if eventmode.needs_confirm(acc, body.mode) and not body.confirm:
+        raise HTTPException(status_code=409, detail=eventmode.confirm_message(body.mode))
     sent = body.model_fields_set
-    await eventmode.set_mode(db, acc, body.mode, by=getattr(admin, "email", None), until=until,
+    kw = {"until": until} if until is not None else {}
+    await eventmode.set_mode(db, acc, body.mode, by=getattr(admin, "email", None), **kw,
                              event_name=body.event_name, venue=body.venue,
                              set_name="event_name" in sent, set_venue="venue" in sent)
     return eventmode.out(acc)

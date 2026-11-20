@@ -71,7 +71,14 @@ def bot(monkeypatch):
 
     async def keep(photo, body, who, sent_at, read, out):
         calls["kept"].append({"body": body, "read": read, "out": out})
+        return f"row{len(calls['kept'])}"
     monkeypatch.setattr(teardownbot, "_keep_photo", keep)
+
+    calls["updated"] = []
+
+    async def update(rid, **kw):
+        calls["updated"].append((rid, kw))
+    monkeypatch.setattr(teardownbot, "_update_photo", update)
 
     async def untagged(token, body, sent_at):
         calls["untagged"] += 1
@@ -81,9 +88,10 @@ def bot(monkeypatch):
     import app.core.db as db
     monkeypatch.setattr(db, "SessionLocal", lambda: FakeDB())
     teardownbot._posted.clear()
+    teardownbot._pending.clear()
 
     def reading(r):
-        async def fake(data):
+        async def fake(data, budget=10.0):
             return {"tags": [], "tag_conf": {}, "labels": [], "qr": [], "confidence": 0.0, "ms": 5} | r
         monkeypatch.setattr(photo_reader, "read_async", fake)
     calls["reading"] = reading
@@ -112,20 +120,97 @@ async def test_unsure_photo_read_does_not_contradict_caption(bot):
     assert "Which one" not in r
 
 
-async def test_photo_tag_when_caption_has_none(bot):
+async def test_photo_tag_only_suggests(bot):
     bot["reading"]({"tags": ["0912"], "tag_conf": {"0912": 0.96}, "confidence": 0.96})
     r = await teardownbot.handle(TD, "switch", "me", NOW, 1, photo=PHOTO)
+    assert bot["returned"] == []
+    assert "Looks like #0912 — reply 'yes' to confirm" in r and "USW PRO MAX" in r
+    assert "Nothing is logged until you confirm" in r
+    assert bot["kept"][0]["out"]["via"] == "photo" and "tag" not in bot["kept"][0]["out"]
+
+
+async def test_yes_from_same_sender_confirms(bot):
+    bot["reading"]({"tags": ["0912"], "tag_conf": {"0912": 0.96}, "confidence": 0.96})
+    await teardownbot.handle(TD, "switch", "Kim", NOW, 1, photo=PHOTO)
+    r = await teardownbot.handle(TD, "yes", "Kim", NOW + timedelta(minutes=5), 0)
     assert bot["returned"] == ["0912"]
-    assert "read #0912 off the tag in the photo" in r
-    assert bot["kept"][0]["out"]["via"] == "photo"
+    assert "#0912 returned by Kim" in r and "read off the tag in the photo, confirmed by Kim" in r
+    assert "photo attached" in r
+    assert bot["updated"] == [("row1", {"tag": "0912", "via": "confirmed", "reply": r})]
+    # the question is closed: a second yes does nothing
+    assert await teardownbot.handle(TD, "yes", "Kim", NOW + timedelta(minutes=6), 0) is None
+    assert bot["returned"] == ["0912"]
 
 
-async def test_qr_tag_without_caption(bot):
-    bot["reading"]({"tags": ["0951"], "tag_conf": {"0951": 1.0}, "qr": ["https://inv.example/asset/0951"],
+async def test_yes_from_someone_else_is_ignored(bot):
+    bot["reading"]({"tags": ["0912"], "tag_conf": {"0912": 0.96}, "confidence": 0.96})
+    await teardownbot.handle(TD, "switch", "Kim", NOW, 1, photo=PHOTO)
+    assert await teardownbot.handle(TD, "yes", "Lee", NOW + timedelta(minutes=1), 0) is None
+    assert bot["returned"] == []
+    assert await teardownbot.handle(TD, "yes", "Kim", NOW + timedelta(minutes=2), 0)  # still open for Kim
+    assert bot["returned"] == ["0912"]
+
+
+async def test_yes_after_30_minutes_is_ignored(bot):
+    bot["reading"]({"tags": ["0912"], "tag_conf": {"0912": 0.96}, "confidence": 0.96})
+    await teardownbot.handle(TD, "switch", "Kim", NOW, 1, photo=PHOTO)
+    assert await teardownbot.handle(TD, "yes", "Kim", NOW + timedelta(minutes=31), 0) is None
+    assert bot["returned"] == [] and teardownbot._pending == {}
+
+
+async def test_no_or_chatter_does_not_log(bot):
+    bot["reading"]({"tags": ["0912"], "tag_conf": {"0912": 0.96}, "confidence": 0.96})
+    await teardownbot.handle(TD, "switch", "Kim", NOW, 1, photo=PHOTO)
+    assert await teardownbot.handle(TD, "yes I'll grab the other one too", "Kim", NOW, 0) is None
+    assert await teardownbot.handle(TD, "check kiosk 6047", "Kim", NOW, 0) is None
+    r = await teardownbot.handle(TD, "no", "Kim", NOW, 0)
+    assert "nothing logged" in r and bot["returned"] == []
+    assert await teardownbot.handle(TD, "yes", "Kim", NOW, 0) is None and bot["returned"] == []
+
+
+async def test_typed_tag_answers_the_question(bot):
+    bot["reading"]({"tags": ["0310"], "tag_conf": {"0310": 0.9}, "confidence": 0.9})
+    r = await teardownbot.handle(TD, "switch", "Kim", NOW, 1, photo=PHOTO)
+    assert "type the 4-digit tag" in r
+    assert await teardownbot.handle(TD, "yes", "Kim", NOW, 0) is None   # nothing to say yes to
+    r = await teardownbot.handle(TD, "0912", "Kim", NOW + timedelta(minutes=2), 0)
+    assert bot["returned"] == ["0912"] and "typed by Kim after I asked" in r
+
+
+async def test_conflict_answered_by_typed_tag(bot):
+    bot["reading"]({"tags": ["0912"], "tag_conf": {"0912": 0.96}, "confidence": 0.96})
+    await teardownbot.handle(TD, "switch 0910", "Kim", NOW, 1, photo=PHOTO)
+    r = await teardownbot.handle(TD, "#0912", "Kim", NOW + timedelta(minutes=1), 0)
+    assert bot["returned"] == ["0912"] and "#0912" in r
+
+
+async def test_qr_tag_only_suggests(bot):
+    bot["reading"]({"tags": ["0951"], "tag_conf": {"0951": 1.0}, "qr": ["0951"], "confidence": 1.0})
+    r = await teardownbot.handle(TD, "", "Kim", NOW, 1, photo=PHOTO)
+    assert bot["returned"] == [] and "Looks like #0951 — reply 'yes' to confirm" in r and "QR code" in r
+    assert bot["kept"][0]["out"]["via"] == "qr"
+
+
+async def test_two_tags_in_photo_asks_which(bot):
+    bot["reading"]({"tags": ["0951", "0912"], "tag_conf": {"0951": 1.0, "0912": 0.97}, "qr": ["0951"],
                     "confidence": 1.0})
     r = await teardownbot.handle(TD, "", "Kim", NOW, 1, photo=PHOTO)
-    assert bot["returned"] == ["0951"] and "QR code" in r and "Kim" in r
-    assert bot["kept"][0]["out"]["via"] == "qr"
+    assert bot["returned"] == [] and "more than one tag" in r and "#0951" in r and "#0912" in r
+    assert await teardownbot.handle(TD, "yes", "Kim", NOW, 0) is None
+    r = await teardownbot.handle(TD, "0951", "Kim", NOW, 0)
+    assert bot["returned"] == ["0951"]
+
+
+async def test_two_tags_in_photo_caption_picks_one(bot):
+    bot["reading"]({"tags": ["0951", "0912"], "tag_conf": {"0951": 1.0, "0912": 0.97}, "confidence": 1.0})
+    r = await teardownbot.handle(TD, "AP 0951", "Kim", NOW, 1, photo=PHOTO)
+    assert bot["returned"] == ["0951"] and "Which one" not in r
+
+
+async def test_photo_tag_not_in_inventory(bot):
+    bot["reading"]({"tags": ["0777"], "tag_conf": {"0777": 0.97}, "confidence": 0.97})
+    r = await teardownbot.handle(TD, "AP", "Kim", NOW, 1, photo=PHOTO)
+    assert "isn't in Inventory" in r and "yes" not in r and bot["returned"] == []
 
 
 async def test_low_confidence_photo_tag_asks(bot):
@@ -134,15 +219,17 @@ async def test_low_confidence_photo_tag_asks(bot):
     assert bot["returned"] == [] and "#0310" in r and "type the 4-digit tag" in r
 
 
-async def test_unifi_label_matched_to_device(bot):
+async def test_unifi_label_suggests_then_confirms(bot):
     # OCR read U as V; the devices table has U6.Fd.Circ.27, whose MAC is #0842's serial
     bot["reading"]({"labels": ["V6.Fd.Circ.27"], "confidence": 0.6})
     r = await teardownbot.handle(TD, "AP - Rave Wave", "me", NOW, 1, photo=PHOTO)
-    assert bot["returned"] == ["0842"]
-    assert 'UniFi "U6.Fd.Circ.27"' in r and "by MAC" in r
+    assert bot["returned"] == []
+    assert "Looks like #0842 — reply 'yes' to confirm" in r and 'UniFi "U6.Fd.Circ.27"' in r and "by MAC" in r
     out = bot["kept"][0]["out"]
-    assert out["via"] == "label" and out["device"] == "U6.Fd.Circ.27" and out["tag"] == "0842"
+    assert out["via"] == "label" and out["device"] == "U6.Fd.Circ.27"
     assert bot["untagged"] == 0
+    r = await teardownbot.handle(TD, "Yes!", "me", NOW + timedelta(minutes=10), 0)
+    assert bot["returned"] == ["0842"] and "confirmed by Dawid" in r
 
 
 async def test_label_not_in_inventory_asks(bot, monkeypatch):
@@ -165,12 +252,31 @@ async def test_meme_stays_quiet_and_is_not_kept(bot):
 
 async def test_no_photo_no_reply(bot):
     assert await teardownbot.handle(TD, "check kiosk 6047", "me", NOW, 0) is None
+    assert await teardownbot.handle(TD, "yes", "me", NOW, 0) is None
+
+
+async def test_bot_echo_is_not_an_answer(bot):
+    bot["reading"]({"tags": ["0912"], "tag_conf": {"0912": 0.96}, "confidence": 0.96})
+    await teardownbot.handle(TD, "switch", "me", NOW, 1, photo=PHOTO)
+    assert await teardownbot.handle(TD, "📦 NETBOT: 0912", "me", NOW, 0) is None
+    assert bot["returned"] == []
 
 
 async def test_ocr_switched_off(bot, monkeypatch):
     bot["reading"]({"tags": ["0912"], "tag_conf": {"0912": 0.96}})
     r = await teardownbot.handle(TD | {"photo_ocr": False}, "switch", "me", NOW, 1, photo=PHOTO)
     assert bot["returned"] == [] and bot["untagged"] == 1 and r
+
+
+async def test_ocr_gets_a_time_budget(bot, monkeypatch):
+    seen = {}
+
+    async def fake(data, budget=None):
+        seen["budget"] = budget
+        return {"tags": [], "labels": [], "qr": []}
+    monkeypatch.setattr(photo_reader, "read_async", fake)
+    await teardownbot.handle(TD, "AP", "me", NOW, 1, photo=PHOTO)
+    assert seen["budget"] == teardownbot.OCR_BUDGET == 10.0
 
 
 async def test_resolve_label_ambiguous():
@@ -200,15 +306,17 @@ async def test_real_photo_tag_without_caption(bot, monkeypatch):
     monkeypatch.setattr(photo_reader, "read_async", _real_read_async)
     photo = {"bytes": (FIX / "tag_0912.jpg").read_bytes(), "mime": "image/jpeg", "name": "s.jpg"}
     r = await teardownbot.handle(TD, "switch", "me", NOW, 1, photo=photo)
-    assert bot["returned"] == ["0912"] and "#0912" in r
+    assert bot["returned"] == [] and "Looks like #0912" in r
+    await teardownbot.handle(TD, "yes", "me", NOW + timedelta(minutes=1), 0)
+    assert bot["returned"] == ["0912"]
 
 
-async def _real_read_async(data):
+async def _real_read_async(data, budget=10.0):
     import asyncio
-    return await asyncio.to_thread(photo_reader.read, data)
+    return await asyncio.to_thread(photo_reader.read, data, budget)
 
 
-async def test_setup_mode_photo_tag_marks_deployed_and_keeps_mode(bot, monkeypatch):
+async def test_setup_mode_photo_tag_suggests_then_deploys(bot, monkeypatch):
     deployed = []
 
     async def mark_deployed(token, tag, who, at, venue, dry_run=True):
@@ -217,9 +325,23 @@ async def test_setup_mode_photo_tag_marks_deployed_and_keeps_mode(bot, monkeypat
     monkeypatch.setattr(teardownbot, "mark_deployed", mark_deployed)
     bot["reading"]({"tags": ["0951"], "tag_conf": {"0951": 1.0}, "qr": ["0951"], "confidence": 1.0})
     r = await teardownbot.handle(TD, "AP installed", "me", NOW, 1, photo=PHOTO, mode="deploy", venue="Fresno")
+    assert deployed == [] and "Looks like #0951" in r
+    assert bot["kept"][0]["out"]["mode"] == "deploy" and bot["kept"][0]["out"]["via"] == "qr"
+    r = await teardownbot.handle(TD, "yes", "me", NOW, 0)
     assert deployed == [("0951", "Fresno")] and bot["returned"] == []
     assert "would mark #0951 deployed at Fresno" in r and "QR code" in r and "practice mode" in r
-    assert bot["kept"][0]["out"]["mode"] == "deploy" and bot["kept"][0]["out"]["via"] == "qr"
+
+
+async def test_setup_mode_caption_tag_deploys(bot, monkeypatch):
+    deployed = []
+
+    async def mark_deployed(token, tag, who, at, venue, dry_run=True):
+        deployed.append((tag, venue))
+        return {"ok": True}
+    monkeypatch.setattr(teardownbot, "mark_deployed", mark_deployed)
+    bot["reading"]({"tags": ["0951"], "tag_conf": {"0951": 1.0}, "qr": ["0951"], "confidence": 1.0})
+    await teardownbot.handle(TD, "AP 0951 installed", "me", NOW, 1, photo=PHOTO, mode="deploy", venue="Fresno")
+    assert deployed == [("0951", "Fresno")]
 
 
 async def test_teardown_mode_is_kept_as_return(bot):

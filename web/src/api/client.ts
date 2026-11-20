@@ -423,8 +423,26 @@ export interface ModeEffects { alerts: boolean; ap_restart: boolean; bot: "deplo
 export interface NetworkMode {
   mode: NetworkModeKey; since: string | null; event_name: string | null; venue: string | null;
   until: string | null; changed_by: string | null; effects: ModeEffects;
+  /** Optional: end of the grace window after reopening (alerts held back until then). */
+  reopen_grace_until?: string | null;
 }
-export interface NetworkModeUpdate { mode: NetworkModeKey; event_name?: string | null; venue?: string | null; until?: string | null }
+export interface NetworkModeUpdate {
+  mode: NetworkModeKey; event_name?: string | null; venue?: string | null; until?: string | null;
+  /** Sent only after the server asked for it with a 409. */
+  confirm?: boolean;
+}
+
+/** Error from the API, with the HTTP status (0 = network failure) and raw `detail`. */
+export class ApiError extends Error {
+  status: number;
+  detail: unknown;
+  constructor(message: string, status: number, detail: unknown = null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   // Guest page: mark calls so the server uses the guest cookie, not a staff one.
@@ -443,13 +461,20 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
+    let raw: unknown = null;
     try {
       const body = await res.json();
-      if (body?.detail) detail = body.detail;
+      raw = body?.detail ?? null;
+      if (typeof raw === "string") detail = raw;
+      else if (raw && typeof raw === "object") {
+        const o = raw as { message?: unknown; detail?: unknown };
+        const msg = typeof o.message === "string" ? o.message : typeof o.detail === "string" ? o.detail : null;
+        detail = msg ?? JSON.stringify(raw);
+      }
     } catch {
       /* ignore */
     }
-    throw new Error(detail);
+    throw new ApiError(detail, res.status, raw);
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;

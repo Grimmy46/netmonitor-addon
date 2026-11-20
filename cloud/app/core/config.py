@@ -164,10 +164,15 @@ class Settings(BaseSettings):
     # Teardown/setup bot photos: read RCS tags / UniFi labels off them (local
     # OCR) and keep them on disk this many days; after that a daily job writes
     # a text summary to the bot_photos row and deletes the image file.
-    # PHOTO_DIR must be a mounted volume in prod (e.g. photos:/data/photos).
+    # Image files are only written when PHOTO_DIR is a mounted volume (e.g.
+    # photos:/data/photos) or PHOTO_STORE=true; otherwise just the row is kept.
     photo_ocr: bool = True
     photo_dir: str = "/data/photos"
+    photo_store: bool = False
     photo_keep_days: int = 90
+    # Hosts whose QR links count as RCS Inventory asset links (comma-separated,
+    # e.g. "inventory.example.com"). A QR holding just the 4-digit tag always counts.
+    inventory_qr_hosts: str = ""
 
     # Network map: how often to pull uplinks + WAN link state from each console.
     topology_interval_seconds: int = 20

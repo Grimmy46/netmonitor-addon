@@ -9,9 +9,10 @@ them (apt package tesseract-ocr in the cloud image). No paid APIs.
 
 How it works:
   * QR: OpenCV's ArUco-based QR detector (it reads the small stickers much
-    better than the classic one). The RCS sticker QR holds the tag itself or an
-    Inventory URL; both are reported in `qr`, and a tag found in it goes into
-    `tags` too.
+    better than the classic one). Only RCS codes count: the bare 4-digit tag
+    or an Inventory link on a host in settings.inventory_qr_hosts (qr_tag).
+    Those are reported in `qr` and their tag goes into `tags`; any other QR
+    (Wi-Fi, product links) is dropped.
   * RCS tag: the sticker is red ("PROPERTY OF Ray Cammack Shows") with a white
     strip holding a bold 4-digit number. We find red blobs, cut out the sticker
     around each one, and in each of the 4 orientations look for a row of 3-5
@@ -26,8 +27,12 @@ How it works:
   * Sanity: a 4-digit number is only reported as a tag when it was read off a
     red sticker or its QR, so memes and screenshots yield nothing.
 
-Everything is CPU-bound, so callers in async code should use `read_async`.
-Runs in ~0.5-2 s per photo on 2 CPUs.
+Limits: photos over MAX_PIXELS (25 MP, from the header) are refused before
+decoding, and big JPEGs are decoded at 1/2-1/8 size. read() gets a time budget
+(default 10 s) and skips what's left once it runs out. read_async runs one
+photo at a time on a single worker and turns photos away ("busy") when
+MAX_QUEUE are already in line. At most MAX_ROWS_PER_CROP digit rows per sticker
+go to tesseract. Runs in ~0.5-2 s per photo on 2 CPUs.
 """
 from __future__ import annotations
 
@@ -49,22 +54,38 @@ DIGIT_H = 40              # digit height fed to tesseract
 LINE_H = 64               # text-line height fed to tesseract
 MIN_TAG_CONF = 60.0       # tesseract word confidence (0-100) to accept a tag
 TESS_TIMEOUT = 8
+READ_BUDGET = 10.0        # seconds for one whole photo, queue wait included
+MAX_PIXELS = 25_000_000   # bigger photos are refused before decoding
+MAX_ROWS_PER_CROP = 6     # digit rows sent to tesseract per sticker crop
+MAX_QUEUE = 3             # photos waiting for the reader; more are skipped
 
 _TAG_RX = re.compile(r"^\d{4}$")
 _QR_TAG = re.compile(r"(?:^|[^\d])(\d{4})(?:[^\d]|$)")
 # UniFi-style name: letters+digits split by 2+ dots/dashes, e.g. U6.Fd.Circ.27
 _LABEL_RX = re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9]+(?:[.\-_][A-Za-z0-9]+){2,}(?![A-Za-z0-9])")
 
+# One photo is read at a time (_reader, one worker = a queue). Inside that one
+# read, the two label passes run side by side on _pool (2 tesseract processes
+# at most, matching the server's 2 CPUs).
+_reader = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ocr-read")
 _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ocr")
+_waiting = 0
 
 
 def available() -> bool:
     return shutil.which("tesseract") is not None
 
 
-def _tess(img, psm: int, whitelist: str | None = None) -> list[tuple[str, float]]:
-    """(word, confidence) pairs from tesseract's TSV output."""
+def _left(deadline: float | None) -> float:
+    return TESS_TIMEOUT if deadline is None else deadline - time.monotonic()
+
+
+def _tess(img, psm: int, whitelist: str | None = None, deadline: float | None = None) -> list[tuple[str, float]]:
+    """(word, confidence) pairs from tesseract's TSV output. Nothing once the budget is spent."""
     import cv2
+    left = _left(deadline)
+    if left < 0.2:
+        return []
     ok, buf = cv2.imencode(".png", img)
     if not ok:
         return []
@@ -74,7 +95,8 @@ def _tess(img, psm: int, whitelist: str | None = None) -> list[tuple[str, float]
     cmd.append("tsv")
     env = {**os.environ, "OMP_THREAD_LIMIT": "1"}
     try:
-        r = subprocess.run(cmd, input=buf.tobytes(), capture_output=True, timeout=TESS_TIMEOUT, env=env)
+        r = subprocess.run(cmd, input=buf.tobytes(), capture_output=True,
+                           timeout=min(TESS_TIMEOUT, left), env=env)
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.warning("tesseract failed: %s", exc)
         return []
@@ -138,16 +160,48 @@ def _qr_retry(det, img, quad) -> list[str]:
     return []
 
 
+_QR_PLAIN = re.compile(r"^#?(\d{4})$")
+_QR_PATH = re.compile(r"/(?:assets?|tags?|devices?|items?)/(\d{4})/?$", re.I)
+_QR_KEYS = ("tag", "asset_tag", "asset", "assettag")
+
+
+def _qr_hosts() -> set[str]:
+    try:
+        from app.core.config import get_settings
+        raw = get_settings().inventory_qr_hosts
+    except Exception:  # noqa: BLE001
+        raw = ""
+    return {h.strip().lower() for h in (raw or "").split(",") if h.strip()}
+
+
 def qr_tag(text: str) -> str | None:
-    """'0951' or 'https://inventory…/asset/0951' → '0951'."""
+    """The RCS tag a QR code holds, or None if it isn't an RCS code.
+
+    Accepted: the bare tag ("0951", "#0951") or an RCS Inventory link on a host
+    in settings.inventory_qr_hosts, with the tag as the last path part
+    (".../asset/0951") or as ?tag= / ?asset_tag= / ?asset=. Anything else
+    (Wi-Fi codes, product links, other people's asset stickers) is ignored."""
+    from urllib.parse import parse_qs, urlsplit
     t = (text or "").strip()
-    if _TAG_RX.match(t):
-        return t
-    m = re.search(r"(?:tag|asset[_-]?tag|asset)[=/:#]\s*0*?(\d{4})\b", t, re.I)
+    m = _QR_PLAIN.match(t)
     if m:
         return m.group(1)
-    nums = _QR_TAG.findall(t)
-    return nums[-1] if len(nums) == 1 else None
+    try:
+        u = urlsplit(t)
+    except ValueError:
+        return None
+    if u.scheme not in ("http", "https") or (u.hostname or "").lower() not in _qr_hosts():
+        return None
+    m = _QR_PATH.search(u.path or "")
+    if m:
+        return m.group(1)
+    q = parse_qs(u.query or "")
+    for k in _QR_KEYS:
+        for v in q.get(k, []):
+            m = re.fullmatch(r"(\d{4})", v.strip())
+            if m:
+                return m.group(1)
+    return None
 
 
 # ── red sticker → 4-digit tag ─────────────────────────────────────────────────
@@ -260,7 +314,7 @@ def _render_row(lab, row):
     return cv2.copyMakeBorder(255 - m, 16, 16, 16, 16, cv2.BORDER_CONSTANT, value=255)
 
 
-def _sticker_tags(img) -> list[tuple[str, float]]:
+def _sticker_tags(img, deadline: float | None = None) -> list[tuple[str, float]]:
     """[(tag, conf 0-1)] read off red stickers."""
     import cv2
     out: dict[str, float] = {}
@@ -270,24 +324,29 @@ def _sticker_tags(img) -> list[tuple[str, float]]:
         crop = cv2.resize(crop, None, fx=k, fy=k, interpolation=cv2.INTER_CUBIC if k > 1 else cv2.INTER_AREA)
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
         red = _red_mask(crop)
+        cands = []
         for rot in rots:
             g = gray if rot is None else cv2.rotate(gray, rot)
             rm = red if rot is None else cv2.rotate(red, rot)
             lab, rows = _digit_rows(g)
-            for row in rows:
-                # upright sticker: the red part is above the number
-                cy = sum(r[1] + r[3] / 2 for r in row) / len(row)
-                ys = rm.nonzero()[0]
-                upright = len(ys) and ys.mean() < cy
-                bw = _render_row(lab, row)
-                if bw is None:
-                    continue
-                for word, conf in _tess(bw, 7, "0123456789"):
-                    if _TAG_RX.match(word) and conf >= MIN_TAG_CONF:
-                        c = conf / 100 * (1.0 if upright else 0.6)
-                        out[word] = max(out.get(word, 0.0), c)
-    # drop pieces of a longer read ("d.Circ.27" when "U6.Fd.Circ.27" was found)
-    out = {w: c for w, c in out.items() if not any(w != o and w in o for o in out)}
+            cands += [(lab, rm, row) for row in rows]
+        # busy crops (barcodes, small print) can give dozens of rows: read the
+        # ones with the biggest digits only
+        cands.sort(key=lambda c: -sum(r[3] for r in c[2]) / len(c[2]))
+        for lab, rm, row in cands[:MAX_ROWS_PER_CROP]:
+            if _left(deadline) < 0.2:
+                break
+            # upright sticker: the red part is above the number
+            cy = sum(r[1] + r[3] / 2 for r in row) / len(row)
+            ys = rm.nonzero()[0]
+            upright = len(ys) and ys.mean() < cy
+            bw = _render_row(lab, row)
+            if bw is None:
+                continue
+            for word, conf in _tess(bw, 7, "0123456789", deadline):
+                if _TAG_RX.match(word) and conf >= MIN_TAG_CONF:
+                    c = conf / 100 * (1.0 if upright else 0.6)
+                    out[word] = max(out.get(word, 0.0), c)
     return sorted(out.items(), key=lambda kv: -kv[1])
 
 
@@ -395,16 +454,67 @@ def _labels(words: list[tuple[str, float]]) -> list[tuple[str, float]]:
 
 
 # ── entry points ──────────────────────────────────────────────────────────────
+def image_size(data: bytes) -> tuple[int, int] | None:
+    """(width, height) from a JPEG / PNG / WebP header, without decoding. None if unknown."""
+    import struct
+    d = data
+    if d[:8] == b"\x89PNG\r\n\x1a\n" and len(d) >= 24:
+        return struct.unpack(">II", d[16:24])
+    if d[:4] == b"RIFF" and d[8:12] == b"WEBP" and len(d) >= 30:
+        kind = d[12:16]
+        if kind == b"VP8X":
+            return 1 + int.from_bytes(d[24:27], "little"), 1 + int.from_bytes(d[27:30], "little")
+        if kind == b"VP8L":
+            b = int.from_bytes(d[21:25], "little")
+            return 1 + (b & 0x3FFF), 1 + ((b >> 14) & 0x3FFF)
+        if kind == b"VP8 ":
+            w, h = struct.unpack("<HH", d[26:30])
+            return w & 0x3FFF, h & 0x3FFF
+        return None
+    if d[:2] == b"\xff\xd8":
+        i = 2
+        while i + 9 < len(d):
+            if d[i] != 0xFF:
+                i += 1
+                continue
+            m = d[i + 1]
+            if m in (0xD8, 0x01) or 0xD0 <= m <= 0xD7 or m == 0xFF:
+                i += 1 if m == 0xFF else 2
+                continue
+            seg = struct.unpack(">H", d[i + 2:i + 4])[0]
+            if m in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+                h, w = struct.unpack(">HH", d[i + 5:i + 9])
+                return w, h
+            i += 2 + seg
+    return None
+
+
 def _load(data: bytes):
+    """Decoded, resized photo, or (None, reason). Sizes come from the header
+    first: anything over MAX_PIXELS is refused, and big JPEGs are decoded at
+    1/2, 1/4 or 1/8 size straight away so a 48 MP photo never sits in RAM."""
     import cv2
     import numpy as np
-    img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    size = image_size(data)
+    if size is None:
+        return None, "not a JPEG, PNG or WebP image"
+    w, h = size
+    if w <= 0 or h <= 0:
+        return None, "not an image"
+    if w * h > MAX_PIXELS:
+        return None, f"too big ({w}x{h})"
+    flag = cv2.IMREAD_COLOR
+    for f, fl in ((8, cv2.IMREAD_REDUCED_COLOR_8), (4, cv2.IMREAD_REDUCED_COLOR_4), (2, cv2.IMREAD_REDUCED_COLOR_2)):
+        if max(w, h) / f >= WORK_SIDE:
+            flag = fl
+            break
+    img = cv2.imdecode(np.frombuffer(data, np.uint8), flag)
     if img is None:
-        return None
+        return None, "not an image"
     k = WORK_SIDE / max(img.shape[:2])
     if k < 1 or k > 1.25:  # downscale big photos; upscale small ones so text is readable
         img = cv2.resize(img, None, fx=k, fy=k, interpolation=cv2.INTER_AREA if k < 1 else cv2.INTER_CUBIC)
-    return img
+    return img, None
 
 
 def _brighten(img):
@@ -417,18 +527,24 @@ def _brighten(img):
     return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
 
-def read(data: bytes) -> dict:
-    """Read one photo. Never raises; returns empty lists when nothing is found."""
+def read(data: bytes, budget: float = READ_BUDGET, deadline: float | None = None) -> dict:
+    """Read one photo within `budget` seconds (or by the monotonic `deadline`).
+
+    Never raises; returns empty lists when nothing is found. When time runs
+    out the rest of the reading is skipped and "timed_out" is set."""
     t0 = time.monotonic()
+    deadline = deadline if deadline is not None else t0 + budget
     empty = {"tags": [], "tag_conf": {}, "labels": [], "qr": [], "confidence": 0.0, "ms": 0}
+    if t0 >= deadline:
+        return empty | {"error": "timed out", "timed_out": True}
     try:
         import cv2
-        img = _load(data)
+        img, why = _load(data)
     except Exception as exc:  # noqa: BLE001
         logger.warning("photo decode failed: %s", exc)
-        img = None
+        img, why = None, "not an image"
     if img is None:
-        return empty | {"error": "not an image"}
+        return empty | {"error": why}
     if not available():
         logger.warning("tesseract is not installed; reading QR codes only")
     try:
@@ -438,10 +554,11 @@ def read(data: bytes) -> dict:
         lines = _text_lines(gray) if available() else []
         if lines:
             # all text lines in one tesseract call, plus the same upside down
-            futs = [_pool.submit(_tess, _stack(lines), 4),
-                    _pool.submit(_tess, _stack([cv2.rotate(c, cv2.ROTATE_180) for c in lines]), 4)]
-        qr = _qr(img)
-        stick = _sticker_tags(img) if available() else []
+            futs = [_pool.submit(_tess, _stack(lines), 4, None, deadline),
+                    _pool.submit(_tess, _stack([cv2.rotate(c, cv2.ROTATE_180) for c in lines]), 4, None, deadline)]
+        # only RCS codes count: a bare tag or an Inventory link (see qr_tag)
+        qr = [q for q in _qr(img) if qr_tag(q)]
+        stick = _sticker_tags(img, deadline) if available() else []
         words = [w for f in futs for w in f.result()]
     except Exception as exc:  # noqa: BLE001
         logger.warning("photo read failed: %s", exc)
@@ -464,7 +581,7 @@ def read(data: bytes) -> dict:
         tags = {t: c for t, c in tags.items() if c >= 0.75 * best}
     labels = _labels(words)
     conf = max([*tags.values(), *(c for _, c in labels), 0.0])
-    return {
+    res = {
         "tags": sorted(tags, key=lambda t: -tags[t]),
         "tag_conf": {t: round(c, 2) for t, c in tags.items()},   # 1.0 = from the QR
         "labels": [w for w, _ in labels],
@@ -472,7 +589,21 @@ def read(data: bytes) -> dict:
         "confidence": round(conf, 2),
         "ms": int((time.monotonic() - t0) * 1000),
     }
+    if time.monotonic() >= deadline - 0.2:  # stages stop with < 0.2 s left
+        res["timed_out"] = True
+    return res
 
 
-async def read_async(data: bytes) -> dict:
-    return await asyncio.to_thread(read, data)
+async def read_async(data: bytes, budget: float = READ_BUDGET) -> dict:
+    """read() on the single OCR worker. The budget starts now, so time spent
+    waiting behind other photos counts; with MAX_QUEUE photos already
+    waiting, this one is skipped ("busy") rather than piling up."""
+    global _waiting
+    deadline = time.monotonic() + budget
+    if _waiting >= MAX_QUEUE:
+        return {"tags": [], "tag_conf": {}, "labels": [], "qr": [], "confidence": 0.0, "ms": 0, "error": "busy"}
+    _waiting += 1
+    try:
+        return await asyncio.get_running_loop().run_in_executor(_reader, read, data, budget, deadline)
+    finally:
+        _waiting -= 1

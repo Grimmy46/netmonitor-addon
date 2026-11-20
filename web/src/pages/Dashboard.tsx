@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, isAdmin, session, type NetworkMode, type NetworkModeKey, type Site, type TeardownStatus, type UnifiStatus } from "../api/client";
+import { ApiError, api, isAdmin, session, type NetworkMode, type NetworkModeKey, type Site, type TeardownStatus, type UnifiStatus } from "../api/client";
 import { PlannerView } from "../components/PlannerView";
 import { TeardownPlanner } from "../components/TeardownPlanner";
 import { PulseLogo } from "../components/PulseLogo";
@@ -16,14 +16,14 @@ import { SiteCard } from "../components/SiteCard";
 import { MapTab } from "../components/GeoMap";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { SitePage } from "./SitePage";
-import { ComingSoon, ModeCard, ModeDialog, ModeTabs } from "../components/ModeControl";
+import { ComingSoon, ModeCard, ModeDialog, ModeTabs, ModeUnknownCard } from "../components/ModeControl";
 import { MODE_LABEL, TABS, describeEffects, tabForMode, type Tab } from "../lib/modes";
 
 type View =
   | "live" | "fleet" | "map" | "dormant" | "kiosks" | "cameras" | "ticketboxes" | "server"
   | "planner" | "setupchecklist" | "cabletests"
   | "teardown" | "stillout" | "photolog";
-type ViewDef = { key: View; tab: Tab; label: string; icon: string; mobile: boolean; kiosk?: boolean };
+type ViewDef = { key: View; tab: Tab; label: string; short?: string; icon: string; mobile: boolean; kiosk?: boolean };
 // Left menu, grouped under the three main tabs. Order = menu order.
 const VIEWS: ViewDef[] = [
   { key: "live", tab: "open", label: "Live", icon: "📈", mobile: true },
@@ -31,11 +31,11 @@ const VIEWS: ViewDef[] = [
   { key: "kiosks", tab: "open", label: "Kiosks", icon: "🖥", mobile: true, kiosk: true },
   { key: "cameras", tab: "open", label: "Cameras", icon: "📷", mobile: true },
   { key: "fleet", tab: "open", label: "Fleet", icon: "🌐", mobile: true },
-  { key: "ticketboxes", tab: "open", label: "Ticket Boxes", icon: "🎟", mobile: true, kiosk: true },
+  { key: "ticketboxes", tab: "open", label: "Ticket Boxes", short: "Tickets", icon: "🎟", mobile: true, kiosk: true },
   { key: "dormant", tab: "open", label: "Dormant", icon: "💤", mobile: false },
   { key: "server", tab: "open", label: "Server", icon: "🖧", mobile: false },
   { key: "planner", tab: "setup", label: "Planner", icon: "🗓", mobile: true },
-  { key: "setupchecklist", tab: "setup", label: "Setup checklist", icon: "☑", mobile: true },
+  { key: "setupchecklist", tab: "setup", label: "Setup checklist", short: "Checklist", icon: "☑", mobile: true },
   { key: "cabletests", tab: "setup", label: "Cable tests", icon: "🔌", mobile: true },
   { key: "teardown", tab: "teardown", label: "Teardown", icon: "🧰", mobile: true },
   { key: "stillout", tab: "teardown", label: "Still out", icon: "📦", mobile: true },
@@ -126,27 +126,55 @@ export function Dashboard() {
   // Network mode (Setup / Open / Teardown / Off-season). If the server doesn't
   // have the endpoint yet, fall back to "open" and hide the admin control.
   const [mode, setMode] = useState<NetworkMode | null>(null);
-  const [modeApi, setModeApi] = useState<"unknown" | "ok" | "missing">("unknown");
+  // ok = loaded; missing = 404 (old server, fall back to "open");
+  // error = anything else (keep the last mode as stale, retry on refresh).
+  const [modeApi, setModeApi] = useState<"unknown" | "ok" | "missing" | "error">("unknown");
   const modeApiRef = useRef(modeApi);
   modeApiRef.current = modeApi;
   const [modeDialog, setModeDialog] = useState<NetworkModeKey | "current" | null>(null);
   const [modeNote, setModeNote] = useState<string>("");
-  const liveTab: Tab | null = mode ? tabForMode(mode.mode) : modeApi === "missing" ? "open" : null;
+  const liveTab: Tab | null = modeApi === "ok" && mode ? tabForMode(mode.mode) : modeApi === "missing" ? "open" : null;
   const canSwitchMode = isAdmin() && modeApi === "ok" && !!mode;
+
+  // Auto-jump to the new live tab when the mode changes: on first load (if it
+  // changed since this browser last saw it), when another admin switches it
+  // mid-session, and after our own switch. Never off a site page, and not on
+  // first load when the URL named a view.
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
+  const goRef = useRef(go);
+  goRef.current = go;
+  const urlViewAtLoad = useRef(viewFromHash() !== null || siteIdFromHash() !== null);
+  const lastModeRef = useRef<NetworkModeKey | null>(null);
+  const noteModeChange = useCallback((m: NetworkMode, own: boolean) => {
+    const prev = lastModeRef.current;
+    lastModeRef.current = m.mode;
+    let seen: string | null = null;
+    try { seen = localStorage.getItem("nm-mode-seen"); localStorage.setItem("nm-mode-seen", m.mode); } catch { /* private mode */ }
+    const first = prev === null && !own;
+    if (first ? seen === m.mode : prev === m.mode) return;
+    const t = tabForMode(m.mode);
+    if (!t || siteIdFromHash() || (first && urlViewAtLoad.current) || tabRef.current === t) return;
+    goRef.current(lastViewIn(t));
+    if (!first && !own) setModeNote(`Mode changed to ${MODE_LABEL[m.mode]}${m.changed_by ? ` by ${m.changed_by}` : ""}. Showing the ${MODE_LABEL[m.mode]} tab.`);
+  }, []);
 
   const loadMode = useCallback(() => {
     api.networkMode()
-      .then((m) => { setMode(m); setModeApi("ok"); })
-      .catch(() => setModeApi((s) => (s === "ok" ? s : "missing")));
-  }, []);
+      .then((m) => { setMode(m); setModeApi("ok"); noteModeChange(m, false); })
+      .catch((e) => {
+        if (e instanceof ApiError && e.status === 404) { setMode(null); setModeApi("missing"); }
+        else setModeApi("error");
+      });
+  }, [noteModeChange]);
 
   const onModeSaved = (m: NetworkMode) => {
     setMode(m);
+    setModeApi("ok");
     setModeDialog(null);
     const fx = describeEffects(m.effects).map((r) => `${r.label}: ${r.value.toLowerCase()}`).join(" · ");
     setModeNote(`Mode is now ${MODE_LABEL[m.mode]}.${fx ? ` ${fx}.` : ""}`);
-    const t = tabForMode(m.mode);
-    if (t && t !== tab && !siteRoute) go(lastViewIn(t));
+    noteModeChange(m, true);
     refresh();
   };
 
@@ -176,13 +204,6 @@ export function Dashboard() {
   }, [td, view]);
 
   useEffect(() => { loadMode(); }, [loadMode]);
-  useEffect(() => {
-    if (!mode) return;
-    let seen: string | null = null;
-    try { seen = localStorage.getItem("nm-mode-seen"); localStorage.setItem("nm-mode-seen", mode.mode); } catch { /* private mode */ }
-    const t = tabForMode(mode.mode);
-    if (seen && seen !== mode.mode && t && !siteIdFromHash() && !viewFromHash()) setView(lastViewIn(t));
-  }, [mode?.mode]);
 
   const refresh = useCallback(async () => {
     try {
@@ -196,7 +217,6 @@ export function Dashboard() {
       setConsoleCount(cs.length);
       setError("");
       api.getTeardown().then(setTeardown).catch(() => {});
-      if (modeApiRef.current === "ok") loadMode();
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
     }
@@ -205,9 +225,12 @@ export function Dashboard() {
   useEffect(() => {
     api.health().then((h) => setVersion(h.version)).catch(() => {});
     refresh();
-    const id = setInterval(refresh, 15000); // live-ish refresh
+    const id = setInterval(() => {
+      refresh();
+      if (modeApiRef.current !== "missing") loadMode(); // ok: keep fresh; error: retry
+    }, 15000); // live-ish refresh
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [refresh, loadMode]);
 
   // Fleet is available once EITHER integration is connected.
   const configured = Boolean(status?.configured) || consoleCount > 0;
@@ -249,11 +272,12 @@ export function Dashboard() {
   const pickTab = (t: Tab) => go(lastViewIn(t));
   const tabLabel = TABS.find((t) => t.key === tab)!.label;
   // Pages that need the UniFi fleet; the rest (Live, Setup/Teardown placeholders) render regardless.
-  const needsFleet = !["live", "setupchecklist", "cabletests", "stillout", "photolog"].includes(view);
+  // Planner and Teardown work without UniFi too (they show an empty site list).
+  const needsFleet = !["live", "planner", "setupchecklist", "cabletests", "teardown", "stillout", "photolog"].includes(view);
 
   const modeBlock = mode ? (
-    <ModeCard mode={mode} canChange={canSwitchMode} onChange={() => setModeDialog("current")} />
-  ) : null;
+    <ModeCard mode={mode} stale={modeApi === "error"} canChange={canSwitchMode} onChange={() => setModeDialog("current")} />
+  ) : modeApi === "error" ? <ModeUnknownCard /> : null;
 
   return (
     <div className={`shell${siteRoute ? " shell-site" : ""}`}>
@@ -307,10 +331,14 @@ export function Dashboard() {
         {sites.length > 0 && !siteRoute && view === "fleet" ? (
           <span className="sub hide-sm">{sites.length} sites · {online} online{issues > 0 ? ` · ${issues} need attention` : ""}</span>
         ) : null}
-        {mode?.mode === "offseason" ? <span className="offseason-tag hide-sm">Off-season</span> : null}
+        {modeApi === "error" ? (
+          <span className="offseason-tag mode-unknown-tag" title="Can't reach the server. Trying again.">Mode unknown</span>
+        ) : modeApi === "ok" && mode?.mode === "offseason" ? <span className="offseason-tag hide-sm">Off-season</span> : null}
         <div className="spacer" />
         {configured && view === "fleet" && !siteRoute ? (
-          <button className="btn btn-primary" onClick={sync} disabled={syncing}>{syncing ? "Syncing…" : "Sync now"}</button>
+          <button className="btn btn-primary" onClick={sync} disabled={syncing} title="Sync now">
+            {syncing ? "…" : "⟳"}<span className="hide-sm">{syncing ? " Syncing" : " Sync now"}</span>
+          </button>
         ) : null}
         {isAdmin() ? <GuestShareButton /> : null}
         <NotifyBell />
@@ -329,7 +357,7 @@ export function Dashboard() {
             <button className="btn btn-xs" onClick={() => setModeNote("")} aria-label="Dismiss">✕</button>
           </div>
         ) : null}
-        {mode && liveTab !== tab ? (
+        {modeApi === "ok" && mode && liveTab !== tab ? (
           <div className="mode-strip">
             <span>
               Viewing <b>{tabLabel}</b>. The network is in <b>{MODE_LABEL[mode.mode]}</b> mode.
@@ -433,11 +461,11 @@ export function Dashboard() {
         {navItems.filter((v) => v.mobile).map((v) => (
           <button key={v.key} className={view === v.key && !siteRoute ? "active" : ""}
             onClick={() => go(v.key)}>
-            <span className="bn-ico">{v.icon}</span><span>{v.label}</span>{badge(v.key)}
+            <span className="bn-ico">{v.icon}</span><span className="bn-lbl">{v.short ?? v.label}</span>{badge(v.key)}
           </button>
         ))}
         <button className={moreOpen ? "active" : ""} onClick={() => setMoreOpen(true)}>
-          <span className="bn-ico">⋯</span><span>More</span>
+          <span className="bn-ico">⋯</span><span className="bn-lbl">More</span>
         </button>
       </nav>
       {moreOpen ? (
@@ -475,6 +503,7 @@ export function Dashboard() {
           initial={modeDialog === "current" ? undefined : modeDialog}
           onClose={() => setModeDialog(null)}
           onSaved={onModeSaved}
+          onError={loadMode}
         />
       ) : null}
     </div>

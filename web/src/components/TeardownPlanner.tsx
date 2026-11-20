@@ -113,10 +113,11 @@ export function TeardownPlanner({ onClose, inline = false }: { onClose?: () => v
 
   const body = (
     <>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <h2 style={{ margin: 0 }}>Teardown planner</h2>
           <div className="spacer" style={{ flex: 1 }} />
-          <input className="search" placeholder="Filter site…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <input className="search" placeholder="Filter site…" value={q} onChange={(e) => setQ(e.target.value)}
+            style={{ width: 220, maxWidth: "100%", minWidth: 0, boxSizing: "border-box" }} />
         </div>
         <p className="sub" style={{ marginTop: 6, marginBottom: 10, fontSize: 12 }}>
           Flag critical sites to keep them monitored through a move (via UniFi API), and schedule

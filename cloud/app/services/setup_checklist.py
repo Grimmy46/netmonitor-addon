@@ -9,8 +9,8 @@ wipe it. Readers get the merged view from `merged()`.
 Statuses follow the RCS evidence labels:
   planned   intended work only (the default)
   reported  someone says it's done, not checked against evidence
-  verified  backed by evidence: a scan, a speed test, a direct check
-            (manual) or a photo
+  verified  backed by a scan, a speed test or a manual check confirmed by a
+            named person. A photo alone only makes an item reported.
 
 Cable lengths from the plan are estimates (`est_length_m`, "Planned /
 provisional"). Measured lengths are recorded separately and never overwrite
@@ -151,6 +151,19 @@ def merged(plan_checklist: dict | None, progress: dict | None) -> dict | None:
     return cl
 
 
+VERIFYING_EVIDENCE = ("scan", "manual", "speed_test")
+
+
+def _verifies(rec: dict) -> bool:
+    """Evidence that can back "verified". Photos never do; a manual check must
+    come from a named person, not an agent."""
+    t = rec.get("type")
+    if t == "manual":
+        by = str(rec.get("by") or "").strip()
+        return bool(by) and not by.startswith("agent:")
+    return t in VERIFYING_EVIDENCE
+
+
 def apply_patch(progress: dict | None, item: dict, patch: dict, actor: str,
                 now: str | None = None) -> dict:
     """Return a NEW progress dict with `patch` applied to `item`.
@@ -209,8 +222,13 @@ def apply_patch(progress: dict | None, item: dict, patch: dict, actor: str,
         st = patch["status"]
         if st not in STATUSES:
             raise ChecklistError(f"status must be one of {', '.join(STATUSES)}.")
-        if st == "verified" and not cur.get("evidence"):
-            raise ChecklistError("verified needs evidence (photo, scan, manual check or speed test).")
+        if st == "verified":
+            if ev is not None and ev.get("type") == "photo":
+                raise ChecklistError("A photo can only mark an item reported. Verified needs a scan, "
+                                     "speed test or a named person's manual check.")
+            if not any(_verifies(r) for r in cur.get("evidence_log") or []):
+                raise ChecklistError("verified needs a scan, speed test or a named person's manual check "
+                                     "(a photo alone is not enough).")
         cur["status"] = st
         changed = True
     elif ev is not None and cur.get("status", "planned") == "planned":

@@ -93,7 +93,7 @@ def test_patch_evidence_then_verify():
 
 
 def test_verified_needs_evidence():
-    with pytest.raises(ChecklistError, match="evidence"):
+    with pytest.raises(ChecklistError, match="scan, speed test"):
         sc.apply_patch({}, ITEM_DEV, {"status": "verified"}, "a")
     assert sc.apply_patch({}, ITEM_DEV, {"status": "reported"}, "a")["dev:1"]["status"] == "reported"
 
@@ -131,3 +131,34 @@ def test_speed_test_evidence():
 def test_find_item():
     assert sc.find_item(V1, "run:1")["est_length_m"] == 25
     assert sc.find_item(V1, "run:9") is None and sc.find_item(None, "dev:1") is None
+
+
+def test_photo_alone_never_verifies():
+    p = sc.apply_patch({}, ITEM_DEV, {"evidence": {"type": "photo", "ref": "bot_photos/1"}}, "bot")
+    assert p["dev:1"]["status"] == "reported"
+    with pytest.raises(ChecklistError, match="photo"):
+        sc.apply_patch(p, ITEM_DEV, {"status": "verified"}, "admin")
+    with pytest.raises(ChecklistError, match="photo"):
+        sc.apply_patch({}, ITEM_DEV, {"status": "verified", "evidence": {"type": "photo"}}, "admin")
+
+
+@pytest.mark.parametrize("ev,actor,ok", [
+    ({"type": "scan", "ref": "#0951"}, "agent:TB1", True),
+    ({"type": "speed_test", "ref": "940 Mbps"}, "agent:TB1", True),
+    ({"type": "manual"}, "dawid@rcs", True),                       # admin's own confirmation
+    ({"type": "manual", "by": "Ann"}, "agent:TB1", True),         # named person relayed by an agent
+    ({"type": "manual"}, "agent:TB1", False),                     # no named person
+])
+def test_verifying_evidence(ev, actor, ok):
+    patch = {"status": "verified", "evidence": ev}
+    if ok:
+        assert sc.apply_patch({}, ITEM_DEV, patch, actor)["dev:1"]["status"] == "verified"
+    else:
+        with pytest.raises(ChecklistError, match="named person"):
+            sc.apply_patch({}, ITEM_DEV, patch, actor)
+
+
+def test_verify_later_after_scan_then_photo():
+    p = sc.apply_patch({}, ITEM_DEV, {"evidence": {"type": "scan", "ref": "#1"}}, "bot")
+    p = sc.apply_patch(p, ITEM_DEV, {"evidence": {"type": "photo", "ref": "x"}}, "bot")
+    assert sc.apply_patch(p, ITEM_DEV, {"status": "verified"}, "admin")["dev:1"]["status"] == "verified"

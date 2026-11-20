@@ -80,6 +80,15 @@ async def migration_checks():
     alembic("upgrade", "0051_event_mode")
     ok((await q("SELECT event_mode FROM accounts"))[0]["event_mode"] == "offseason",
        "0051 derives offseason over teardown")
+    before = (await q("SELECT event_mode, event_mode_since, event_mode_until, closure_start, "
+                      "closure_end FROM accounts"))[0]
+    ok(before["event_mode_until"] == before["closure_end"], "0051 offseason until = closure end")
+    # re-run with the season closure still running: nothing changes
+    alembic("stamp", "0050_close_stale_outages")
+    alembic("upgrade", "0051_event_mode")
+    after = (await q("SELECT event_mode, event_mode_since, event_mode_until, closure_start, "
+                     "closure_end FROM accounts"))[0]
+    ok(dict(after) == dict(before), "0051 re-run keeps offseason + closure as is")
 
     # open: short (nightly) closure, teardown off
     alembic("downgrade", "0050_close_stale_outages")
@@ -112,14 +121,17 @@ async def api_checks():
         ok(r["mode"] == "setup" and r["venue"] == "Phoenix" and r["changed_by"] == U.email
            and r["effects"]["bot"] == "deploy", "PUT setup")
         a = (await q("SELECT teardown_mode, teardown_auto_off_at FROM accounts"))[0]
-        ok(a["teardown_mode"] is True and a["teardown_auto_off_at"] is None,
-           "setup -> teardown_mode on, no auto-off")
+        left = a["teardown_auto_off_at"] - datetime.now(timezone.utc)
+        ok(a["teardown_mode"] is True and timedelta(hours=71) < left <= timedelta(hours=72),
+           "setup -> teardown_mode on, 72 h safety end")
         async with SessionLocal() as db:
             ok(await teardownbot.bot_mode(db) == "deploy", "bot listens: deploy")
 
         r = (await c.put("/network/mode", json={"mode": "teardown"})).json()
         ok(r["mode"] == "teardown" and r["venue"] == "Phoenix" and r["effects"]["bot"] == "return",
            "PUT teardown keeps venue")
+        left = datetime.fromisoformat(r["until"]) - datetime.now(timezone.utc)
+        ok(timedelta(hours=17) < left <= timedelta(hours=18), "teardown 18 h safety end")
         async with SessionLocal() as db:
             ok(await teardownbot.bot_mode(db) == "return", "bot listens: return")
 
@@ -139,10 +151,37 @@ async def api_checks():
             ok(await teardownbot.bot_mode(db) is None, "bot quiet in offseason")
         cl = (await c.get("/network/closure")).json()["closure"]
         ok(cl and cl["phase"] == "closed", "old /network/closure shows the window")
+        season = dict((await q("SELECT closure_start, closure_end FROM accounts"))[0])
 
-        r = (await c.put("/network/mode", json={"mode": "open"})).json()
-        ok(r["mode"] == "open" and not closure.season_paused(), "PUT open ends season pause")
+        for m in ("setup", "teardown", "open"):
+            r = await c.put("/network/mode", json={"mode": m})
+            ok(r.status_code == 409 and "confirm" in r.json()["detail"], f"leave offseason -> {m} needs confirm")
+
+        # old toggle in offseason: pause on top, closure intact, then back to offseason
+        r = (await c.post("/agents/teardown", json={"enabled": True, "hours": 2})).json()
+        ok(r["active"] is True and (await c.get("/network/mode")).json()["mode"] == "teardown",
+           "old toggle in offseason -> teardown")
+        ok(dict((await q("SELECT closure_start, closure_end FROM accounts"))[0]) == season,
+           "closure intact under the old toggle")
+        await c.post("/agents/teardown", json={"enabled": False})
+        ok((await c.get("/network/mode")).json()["mode"] == "offseason", "toggle off -> offseason")
+
+        # PUT setup with confirm: closure kept; expiry falls back to offseason
+        r = (await c.put("/network/mode", json={"mode": "setup", "confirm": True})).json()
+        ok(r["mode"] == "setup", "PUT setup with confirm")
+        ok(dict((await q("SELECT closure_start, closure_end FROM accounts"))[0]) == season,
+           "closure intact under setup")
+        await q("UPDATE accounts SET teardown_mode=false")    # safety expiry
+        async with SessionLocal() as db:
+            await eventmode.sync(db)
+        ok((await c.get("/network/mode")).json()["mode"] == "offseason", "setup expiry -> offseason")
+
+        r = (await c.put("/network/mode", json={"mode": "open", "confirm": True})).json()
+        ok(r["mode"] == "open" and not closure.season_paused(), "PUT open (confirm) ends season pause")
         ok(closure.phase() == "reopening", "open from offseason -> normal reopen grace")
+        ok(r["reopen_grace_until"] is not None and r["effects"]["reopen_grace_until"]
+           == r["reopen_grace_until"] and r["effects"]["reopen_report"] is True,
+           "reopen_grace_until exposed")
 
         # old teardown toggle maps onto the mode
         r = (await c.post("/agents/teardown", json={"enabled": True, "hours": 2})).json()

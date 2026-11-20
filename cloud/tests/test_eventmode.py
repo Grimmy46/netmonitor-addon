@@ -21,14 +21,17 @@ def acc(**kw) -> Account:
     return a
 
 
+_G = {"reopen_grace_until": None, "reopen_report": False}
+
+
 def test_effects_table():
-    assert eventmode.effects("setup") == {"alerts": False, "ap_restart": False, "bot": "deploy",
+    assert eventmode.effects("setup") == {**_G, "alerts": False, "ap_restart": False, "bot": "deploy",
                                           "group_posts": "setup progress"}
-    assert eventmode.effects("open") == {"alerts": True, "ap_restart": True, "bot": None,
+    assert eventmode.effects("open") == {**_G, "alerts": True, "ap_restart": True, "bot": None,
                                          "group_posts": "outages"}
-    assert eventmode.effects("teardown") == {"alerts": False, "ap_restart": False, "bot": "return",
+    assert eventmode.effects("teardown") == {**_G, "alerts": False, "ap_restart": False, "bot": "return",
                                              "group_posts": "teardown progress"}
-    assert eventmode.effects("offseason") == {"alerts": False, "ap_restart": False, "bot": None,
+    assert eventmode.effects("offseason") == {**_G, "alerts": False, "ap_restart": False, "bot": None,
                                               "group_posts": "none"}
 
 
@@ -37,10 +40,22 @@ def test_unknown_mode_rejected():
         eventmode.apply(acc(), "party", NOW)
 
 
-def test_teardown_has_no_auto_off_unless_until():
+def test_default_safety_end():
     a = acc()
     eventmode.apply(a, "teardown", NOW, by="d@x")
-    assert a.teardown_mode is True and a.teardown_auto_off_at is None
+    assert a.teardown_mode is True and a.teardown_auto_off_at == NOW + timedelta(hours=18)
+    assert a.event_mode_until == NOW + timedelta(hours=18)
+    b = acc()
+    eventmode.apply(b, "setup", NOW)
+    assert b.teardown_auto_off_at == NOW + timedelta(hours=72)
+    c = acc()
+    eventmode.apply(c, "teardown", NOW, until=None)        # old toggle, hours=null
+    assert c.teardown_auto_off_at is None
+
+
+def test_teardown_until():
+    a = acc()
+    eventmode.apply(a, "teardown", NOW, by="d@x")
     assert a.event_mode == "teardown" and a.event_mode_since == NOW and a.event_mode_by == "d@x"
     until = NOW + timedelta(hours=6)
     eventmode.apply(a, "teardown", NOW + timedelta(minutes=5), until=until)
@@ -88,12 +103,80 @@ def test_open_from_offseason_reopens_now():
     assert a.teardown_mode is False and a.event_mode == "open"
 
 
-def test_setup_from_offseason_drops_closure():
+def test_setup_from_offseason_keeps_closure_and_falls_back():
     a = acc()
     eventmode.apply(a, "offseason", NOW)
-    eventmode.apply(a, "setup", NOW + timedelta(days=30))
-    assert a.closure_start is None and a.closure_end is None
-    assert a.teardown_mode is True
+    end = a.closure_end
+    t = NOW + timedelta(days=30)
+    eventmode.apply(a, "setup", t)
+    assert (a.closure_start, a.closure_end) == (NOW, end)       # not deleted
+    assert a.teardown_mode is True and a.event_mode == "setup"
+    # safety expiry (what the sweep does) -> back to off-season, not open
+    a.teardown_mode = False
+    assert eventmode.reconcile(a, t + timedelta(hours=73))
+    assert a.event_mode == "offseason"
+
+
+def test_old_toggle_in_offseason_pauses_on_top():
+    a = acc()
+    eventmode.apply(a, "offseason", NOW)
+    end = a.closure_end
+    a.teardown_mode = True                     # old toggle / DB edit, no apply()
+    assert eventmode.reconcile(a, NOW + timedelta(hours=1)) and a.event_mode == "teardown"
+    assert a.closure_end == end
+    a.teardown_mode = False
+    assert eventmode.reconcile(a, NOW + timedelta(hours=2)) and a.event_mode == "offseason"
+
+
+def test_expiry_without_closure_goes_open():
+    a = acc()
+    eventmode.apply(a, "teardown", NOW)
+    a.closure_start, a.closure_end = NOW, NOW + timedelta(hours=8)   # nightly close
+    a.teardown_mode = False
+    assert eventmode.reconcile(a, NOW + timedelta(hours=1)) and a.event_mode == "open"
+
+
+def test_needs_confirm():
+    a = acc()
+    assert not eventmode.needs_confirm(a, "setup", NOW)
+    eventmode.apply(a, "offseason", NOW)
+    for m in ("setup", "teardown", "open"):
+        assert eventmode.needs_confirm(a, m, NOW)
+    assert not eventmode.needs_confirm(a, "offseason", NOW)
+    eventmode.apply(a, "setup", NOW)                  # pause on top of the season
+    assert eventmode.needs_confirm(a, "open", NOW)    # Open would end the closure
+    assert not eventmode.needs_confirm(a, "teardown", NOW)
+    assert "confirm" in eventmode.confirm_message("open")
+
+
+def test_reopen_grace_exposed(monkeypatch):
+    a = acc()
+    eventmode.apply(a, "offseason", NOW)
+    t = NOW + timedelta(days=10)
+    eventmode.apply(a, "open", t)
+    o = eventmode.out(a, t + timedelta(minutes=5))
+    g = t + timedelta(hours=3)                       # closure_reopen_grace_hours default
+    assert o["reopen_grace_until"] == g.isoformat()
+    assert o["effects"]["reopen_grace_until"] == g.isoformat()
+    assert o["effects"]["alerts"] is False and o["effects"]["reopen_report"] is True
+    assert eventmode.out(a, g + timedelta(minutes=1))["reopen_grace_until"] is None
+    from app.core.config import get_settings
+    monkeypatch.setattr(get_settings(), "closure_reopen_report", False)
+    assert eventmode.out(a, t + timedelta(minutes=5))["effects"]["reopen_report"] is False
+
+
+def test_reopen_report_default_on():
+    from app.core.config import get_settings
+    assert get_settings().closure_reopen_report is True
+
+
+def test_setup_replies_gated(monkeypatch):
+    from app.core.config import get_settings
+    assert get_settings().bot_setup_replies is False
+    assert not teardownbot.reply_allowed("deploy")
+    assert teardownbot.reply_allowed("return")
+    monkeypatch.setattr(get_settings(), "bot_setup_replies", True)
+    assert teardownbot.reply_allowed("deploy")
 
 
 def test_open_clears_teardown_but_keeps_nightly_closure():
@@ -148,7 +231,8 @@ def test_out_shape():
     a = acc()
     eventmode.apply(a, "setup", NOW, by="d@x", event_name="ASF", set_name=True)
     o = eventmode.out(a)
-    assert set(o) == {"mode", "since", "event_name", "venue", "until", "changed_by", "effects"}
+    assert set(o) == {"mode", "since", "event_name", "venue", "until", "changed_by",
+                      "reopen_grace_until", "effects"}
     assert o["mode"] == "setup" and o["since"] == NOW.isoformat() and o["changed_by"] == "d@x"
     assert eventmode.out(None)["mode"] == "open"
 

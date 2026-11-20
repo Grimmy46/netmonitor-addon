@@ -202,7 +202,9 @@ async def receive_once(db: AsyncSession) -> int:
             photo = await _first_photo(r.get("att_meta") or [])
             reply = await teardownbot.handle(td, r["body"], r["sender"], r["sent_at"], r["attachments"], photo=photo,
                                            mode=bot_mode or "return", venue=venue)
-            if reply:
+            if reply and not teardownbot.reply_allowed(bot_mode):
+                logger.info("setup bot reply not sent (bot_setup_replies off): %s", reply[:120])
+            elif reply:
                 await send_group(num, td["group_id"], reply)
         except Exception as exc:  # noqa: BLE001
             logger.warning("teardown bot failed: %s", exc)

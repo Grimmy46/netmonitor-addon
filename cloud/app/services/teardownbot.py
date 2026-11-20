@@ -126,6 +126,15 @@ async def mark_returned(token: str, asset_tag: str, who: str, at: datetime, dry_
             return {"http": r.status_code, "ok": False, "error": r.text[:200]}
 
 
+def reply_allowed(mode: str | None) -> bool:
+    """Setup-mode replies are posted only when settings.bot_setup_replies is on
+    (default off); Teardown replies always go out."""
+    if mode == "deploy":
+        from app.core.config import get_settings
+        return bool(get_settings().bot_setup_replies)
+    return True
+
+
 async def mark_deployed(token: str, asset_tag: str, who: str, at: datetime, venue: str | None,
                         dry_run: bool = True) -> dict:
     """STUB: the RCS Inventory API has no deploy endpoint yet. When it does,
